@@ -1,0 +1,6 @@
+{
+  "name": "Math Notes Editor stage 2",
+  "description": "A block-based WYSIWYG math note editor with live KaTeX rendering and CodeMirror 6.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

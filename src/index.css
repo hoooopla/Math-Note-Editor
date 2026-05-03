@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme {
+  --color-base: #0f1115;
+  --color-surface: #1a1d23;
+  --color-sidebar: #0a0c0e;
+  --color-accent: #4a90e2;
+  --color-primary: #ffffff;
+  --color-secondary: #8b949e;
+  --color-outline: #30363d;
+  --font-mono: 'Droid Sans Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  --font-sans: 'Palatino', 'Palatino Linotype', 'Book Antiqua', serif;
+}
+
+body {
+  background-color: var(--color-base);
+}
+
+::selection {
+  background-color: rgba(100, 150, 255, 0.4);
+}
+
+.cm-math-block {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  display: block;
+  margin: 2px 0;
+  text-align: center;
+  color: #fff;
+}
+
+.cm-math-block .katex-display {
+  margin: 2px 0 !important;
+}
+
+.cm-math-inline {
+  color: inherit;
+  background: transparent;
+  padding: 0 2px;
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.cm-math-inline .katex {
+  font-size: 1.1em; /* KaTeX default is 1.21em, scaling down to match editor text */
+}
+
+.cm-math-editing {
+  color: #d19a66 !important;
+  background: transparent !important;
+  font-weight: normal;
+  font-family: var(--font-mono) !important;
+  font-size: 14.5px;
+}
