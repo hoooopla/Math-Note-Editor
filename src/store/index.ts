@@ -24,6 +24,8 @@ interface AppState {
   setMacros: (macros: Record<string, string>) => void;
 }
 
+const syncTimeouts: Record<string, NodeJS.Timeout> = {};
+
 export const useStore = create<AppState>((set, get) => ({
   blocks: [],
   activeBlockId: null,
@@ -73,13 +75,20 @@ export const useStore = create<AppState>((set, get) => ({
     }));
     
     // Background sync
-    // Simple debouncing would be better, but we do optimistic update here.
-    // Ensure we don't spam too quickly? We expect standard rate for now.
-    fetch(`/api/blocks/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    }).catch(console.error);
+    if (syncTimeouts[id]) {
+      clearTimeout(syncTimeouts[id]);
+    }
+
+    syncTimeouts[id] = setTimeout(() => {
+      const block = get().blocks.find(b => b.id === id);
+      if (!block) return;
+
+      fetch(`/api/blocks/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(block)
+      }).catch(console.error);
+    }, 500);
   },
   deleteBlock: async (id) => {
     try {

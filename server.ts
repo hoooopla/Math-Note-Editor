@@ -20,63 +20,39 @@ async function ensureDir(dir: string) {
 const INITIAL_BLOCKS = [
     {
         id: uuidv4(),
-        title: '0.0 Navigation Example Main',
-        label: 'nav:main',
-        content: 'This is the showcase for navigation in the editor.\nYou can use the \'ArrowUp\' and \'ArrowDown\' keys to seamlessly enter and exit embedded blocks.\nYou can also use \'Enter\' to open and close embedded blocks, which automatically focuses the proper bounds.\n\nHere is a simple closed block to try \'Enter\' on:\n[[nav:child1]]\n\nAnd here is an open block you can navigate into by just pressing \'ArrowDown\' from the line above it!\n[[nav:child2∨]]\n\nThis completes our showcase. Try navigating all the way from the top to the bottom using just the arrow keys!',
+        title: '0. Welcome to Math Notes 🚀',
+        label: 'showcase:main',
+        content: "Welcome to **Math Notes**!\n\nThis editor is designed to break down long, complex mathematical treatises into small, composable blocks. You can reference blocks inside other blocks.\n\nTry clicking on the chip below, or moving your cursor inside it and pressing `Enter`:\n[[showcase:embed-1]]\n\nWhen a block is toggled 'open', it expands inline so you can read and edit it directly within the parent block context. Like this:\n[[showcase:embed-2∨]]\n\nYou can also click the empty space below this block to create a new one!",
     },
     {
         id: uuidv4(),
-        title: '0.0.1 Navigation Child 1',
-        label: 'nav:child1',
-        content: 'You\'ve opened the first child using \'Enter\'!\nYou can press \'Esc\' to blur out, \'Enter\' again to close it, or just use your arrow keys to go up/down.',
+        title: '0.1 Inline Editing',
+        label: 'showcase:embed-1',
+        content: "You've successfully opened an embedded block! \n\nNotice how your focus smoothly shifted into this space. Try editing the text here, and press `Esc` or `Enter` or click the header to close it when you are done.\n\nYou can also use `ArrowUp` and `ArrowDown` to seamlessly step into open embedded blocks and out of them.",
     },
     {
         id: uuidv4(),
-        title: '0.0.2 Navigation Child 2',
-        label: 'nav:child2',
-        content: 'You are now inside the second child block!\nNotice how smooth the transition is?\nIf you press \'ArrowUp\' from the first line, you\'ll go jump back to the parent block above the embed.\nIf you press \'ArrowDown\' from the last line (here), you\'ll jump to the parent block below the embed!',
+        title: '0.2 Relative Referencing & Infinite Recursion',
+        label: 'showcase:embed-2',
+        content: "Blocks can have paths like `folder:subfolder:block`. You can reference them relatively using a leading `/` in the embed syntax.\n\nFor example, this is `showcase:embed-2`, and there is a block called `showcase:embed-2/child`. Let's embed it!\n[[/child]]\n\nWhat happens if we try to embed `showcase:main` inside here?\n[[showcase:main]]\nCyclic references are automatically detected and stopped to prevent your browser from crashing!",
     },
     {
         id: uuidv4(),
-        title: '0. Test Cases for Embedded Blocks',
-        label: 'test:embeds',
-        content: 'Here are tests covering all embedding features:\n\n1. Basic embedding (inline, closed):\n[[sec:intro]]\n\n2. Standout embedding (standout, closed):\n[[@sec:intro]]\n\n3. Embedded open (inline, open):\n[[sec:intro∨]]\n\n4. Standout embedded open (standout, open):\n[[@sec:intro∨]]\n\n5. Aliasing (inline with alias, closed):\n[[sec:intro | Intro to Fourier]]\n\n6. Recursive and relative path (parent block with child target):\n[[@/child]]',
+        title: '0.2.1 Relative Child Block',
+        label: 'showcase:embed-2/child',
+        content: "I was referenced using `[[/child]]` rather than my full name `showcase:embed-2/child`!",
     },
     {
         id: uuidv4(),
-        title: '0.1 Child block for relative path test',
-        label: 'test:embeds/child',
-        content: 'This block is a child. It can be referenced relatively from its parent `test:embeds` via `[[/child]]`.\n\nLet\'s test the relative path:\n[[/grandchild]]',
+        title: '1. Mathematical Capabilities 🧮',
+        label: 'showcase:math',
+        content: "Math Notes uses **KaTeX** to provide blazingly fast live previews of your math.\n\nFor block math, write your equations wrapped in `$$`:\n$$\n\\mathcal{F}\\{f(t)\\} = \\int_{-\\infty}^{\\infty} f(t) e^{-i\\omega t} dt\n$$\n\nFor inline math, use single `$`. Try clicking into this equation to see the interactive math tooltip: $\\sum_{v \\in V} \\text{deg}(v) = 2|E|$. It lets you safely edit the raw LaTeX while previewing the outcome immediately above your cursor!",
     },
     {
         id: uuidv4(),
-        title: '0.1.1 Grandchild block for relative path test',
-        label: 'test:embeds/child/grandchild',
-        content: 'This is the grandchild.',
-    },
-    {
-        id: uuidv4(),
-        title: '1. Introduction to the Fourier Transform',
-        label: 'sec:intro',
-        content: 'The **Continuous Fourier Transform** (CFT) is a highly mathematical operation that transforms a function of time, $f(t)$, into a function of frequency, $\\hat{f}(\\omega)$. Over the domain $\\R$, the transform provides a frequency-domain representation of the original signal.\n\nThe forward Fourier Transform is defined as:\n\n$$\n\\hat{f}(\\omega) = \\mathcal{F}\\{f(t)\\} = \\int_{-\\infty}^{\\infty} f(t) e^{-i\\omega t} dt\n$$\n\nConversely, we can recover the original time-domain signal $f(t)$ from its frequency spectrum using the **Inverse Fourier Transform**:\n\n$$\nf(t) = \\mathcal{F}^{-1}\\{\\hat{f}(\\omega)\\} = \\frac{1}{2\\pi} \\int_{-\\infty}^{\\infty} \\hat{f}(\\omega) e^{i\\omega t} d\\omega\n$$',
-    },
-    {
-        id: uuidv4(),
-        title: '2. Key Properties',
-        label: 'sec:properties',
-        content: 'The Fourier transform exhibits several fundamental properties that make it a powerful tool in signal processing and differential equations:\n\n**Linearity:**\nFor any constants $a, b \\in \\mathbb{C}$ and functions $f(t), g(t)$:\n$$\n\\mathcal{F}\\{a f(t) + b g(t)\\} = a\\hat{f}(\\omega) + b\\hat{g}(\\omega)\n$$\n\n**Time Shifting:**\nA delay in the time domain corresponds to a linear phase shift in the frequency domain.\n$$\n\\mathcal{F}\\{f(t - t_0)\\} = e^{-i\\omega t_0} \\hat{f}(\\omega)\n$$\n\n**Frequency Shifting (Modulation):**\n$$\n\\mathcal{F}\\{e^{i\\omega_0 t} f(t)\\} = \\hat{f}(\\omega - \\omega_0)\n$$',
-    },
-    {
-        id: uuidv4(),
-        title: '3. The Convolution Theorem',
-        label: 'sec:convolution',
-        content: 'One of the most important theorems related to the Fourier Transform is the **Convolution Theorem**. It states that convolution in the time domain is equivalent to point-wise multiplication in the frequency domain.\n\nLet the convolution of two functions $f$ and $g$ be defined as:\n\n$$\n(f * g)(t) = \\int_{-\\infty}^{\\infty} f(\\tau) g(t - \\tau) d\\tau\n$$\n\nApplying the Fourier Transform to both sides, we get:\n\n$$\n\\mathcal{F}\\{(f * g)(t)\\} = \\hat{f}(\\omega) \\cdot \\hat{g}(\\omega)\n$$\n\nThis fundamentally simplifies solving linear time-invariant (LTI) systems, converting complex integral equations into straightforward algebraic multiplications.',
-    },
-    {
-        id: uuidv4(),
-        title: '4. Common Example: Rectangular Pulse',
-        label: 'ex:rect',
-        content: 'Consider the rectangular pulse function (also known as the window function), defined as:\n\n$$\n\\text{rect}(t) = \n\\begin{cases} \n1 & \\text{if } |t| < \\frac{1}{2} \\\\ \n0 & \\text{if } |t| > \\frac{1}{2} \n\\end{cases}\n$$\n\nThe Fourier transform of the rectangular pulse evaluates to the normalized **sinc** function:\n\n$$\n\\mathcal{F}\\{\\text{rect}(t)\\} = \\int_{-1/2}^{1/2} 1 \\cdot e^{-i\\omega t} dt = \\frac{e^{-i\\omega/2} - e^{i\\omega/2}}{-i\\omega} = \\frac{\\sin(\\omega/2)}{\\omega/2} = \\text{sinc}\\left(\\frac{\\omega}{2\\pi}\\right)\n$$\n\nThis duality illustrates that a perfectly bounded signal in time creates an infinitely extending frequency spectrum.',
+        title: '2. Aliases and Block Creation 🪄',
+        label: 'showcase:aliases',
+        content: "Sometimes you want to reference a block, but its label doesn't flow correctly in your sentence. Use the `|` pipe character to set a custom alias!\n\nFor example: For more details, check out the [[showcase:math | math examples]]!\n\n**Creating on the fly:**\nWhat if you want to reference a block that doesn't exist yet?\nJust type it out, e.g., `[[showcase:new-idea | My Brilliant Idea]]`, close the brackets, and then put your cursor on the chip and hit `Enter` (or click on the alias). A new block will seamlessly be created for you! Try it here on this non-existent block:\n[[test:create-me]]"
     }
 ];
 
