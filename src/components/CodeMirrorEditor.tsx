@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { EditorState, StateEffect, Compartment } from "@codemirror/state";
+import { EditorState, StateEffect, Compartment, Transaction } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -132,7 +132,8 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                     }
                 }),
                 EditorView.updateListener.of((update) => {
-                    if (update.docChanged && onChangeRef.current) {
+                    const isUserEvent = update.transactions.some(tr => Boolean(tr.annotation(Transaction.userEvent)));
+                    if (update.docChanged && onChangeRef.current && isUserEvent) {
                         onChangeRef.current(update.state.doc.toString());
                     }
                     // Sync only when focus is lost to prevent React from re-rendering the app rapidly
