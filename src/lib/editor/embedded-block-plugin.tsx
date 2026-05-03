@@ -77,7 +77,10 @@ class EmbeddedBlockWidget extends WidgetType {
                 view={view}
                 pos={this.from}
                 length={this.to - this.from}
-                toggleOpen={() => {
+                toggleOpen={(e?: React.MouseEvent) => {
+                    const coords = view.coordsAtPos(this.from);
+                    const initialY = coords ? coords.top : 0;
+
                     const doc = view.state.doc.toString();
                     const slice = doc.slice(this.from, this.to);
                     if (slice.startsWith("[[") && slice.endsWith("]]")) {
@@ -90,6 +93,15 @@ class EmbeddedBlockWidget extends WidgetType {
                         const newText = `[[${inner}]]`;
                         view.dispatch({
                             changes: { from: this.from, to: this.to, insert: newText },
+                        });
+
+                        requestAnimationFrame(() => {
+                            const newCoords = view.coordsAtPos(this.from);
+                            const newY = newCoords ? newCoords.top : 0;
+                            
+                            if (initialY && newY && newY !== initialY) {
+                                window.scrollBy(0, newY - initialY);
+                            }
                         });
                     }
                 }}
@@ -109,7 +121,10 @@ class EmbeddedBlockWidget extends WidgetType {
                     view={view}
                     pos={this.from}
                     length={this.to - this.from}
-                    toggleOpen={() => {
+                    toggleOpen={(e?: React.MouseEvent) => {
+                        const coords = view.coordsAtPos(this.from);
+                        const initialY = coords ? coords.top : 0;
+
                         const doc = view.state.doc.toString();
                         const slice = doc.slice(this.from, this.to);
                         if (slice.startsWith("[[") && slice.endsWith("]]")) {
@@ -122,6 +137,15 @@ class EmbeddedBlockWidget extends WidgetType {
                             const newText = `[[${inner}]]`;
                             view.dispatch({
                                 changes: { from: this.from, to: this.to, insert: newText },
+                            });
+
+                            requestAnimationFrame(() => {
+                                const newCoords = view.coordsAtPos(this.from);
+                                const newY = newCoords ? newCoords.top : 0;
+                                
+                                if (initialY && newY && newY !== initialY) {
+                                    window.scrollBy(0, newY - initialY);
+                                }
                             });
                         }
                     }}
@@ -325,11 +349,24 @@ export const embedKeymap: KeyBinding[] = [
                         } else {
                             inner = inner.slice(0, -1);
                         }
+                        
+                        const coords = view.coordsAtPos(link.from);
+                        const initialY = coords ? coords.top : 0;
+
                         const newText = `[[${inner}]]`;
                         view.dispatch({
                             changes: { from: link.from, to: link.to, insert: newText },
                             selection: { anchor: link.from + newText.length }
                         });
+
+                        requestAnimationFrame(() => {
+                            const newCoords = view.coordsAtPos(link.from);
+                            const newY = newCoords ? newCoords.top : 0;
+                            if (initialY && newY && newY !== initialY) {
+                                window.scrollBy(0, newY - initialY);
+                            }
+                        });
+
                         if (isOpening) {
                             const store = useStore.getState();
                             const targetBlock = store.blocks.find(b => b.label === fullLabel);

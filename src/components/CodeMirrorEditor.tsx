@@ -208,10 +208,25 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
     useEffect(() => {
         if (viewRef.current) {
             const currentDoc = viewRef.current.state.doc.toString();
-            // Ignore trailing newline differences to avoid recursive doc replace
-            if (content.replace(/\n$/, "") !== currentDoc.replace(/\n$/, "") && !viewRef.current.hasFocus) {
+            if (content !== currentDoc && !viewRef.current.hasFocus) {
+                let start = 0;
+                while (start < currentDoc.length && start < content.length && currentDoc[start] === content[start]) {
+                    start++;
+                }
+                
+                let endCurrent = currentDoc.length - 1;
+                let endContent = content.length - 1;
+                while (endCurrent >= start && endContent >= start && currentDoc[endCurrent] === content[endContent]) {
+                    endCurrent--;
+                    endContent--;
+                }
+                
                 viewRef.current.dispatch({
-                    changes: { from: 0, to: currentDoc.length, insert: content }
+                    changes: { 
+                        from: start, 
+                        to: endCurrent + 1, 
+                        insert: content.slice(start, endContent + 1) 
+                    }
                 });
             }
         }

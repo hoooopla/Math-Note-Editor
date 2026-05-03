@@ -8,7 +8,7 @@ export interface EmbeddedBlockUIProps {
     text: string;
     parentLabel: string;
     visitedLabels?: string[];
-    toggleOpen: () => void;
+    toggleOpen: (e?: React.MouseEvent) => void;
     view?: EditorView;
     pos?: number;
     length?: number;
@@ -85,7 +85,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             return (
                 <div 
                     className="block w-full border border-outline rounded-lg my-2 px-3 py-2 cursor-pointer hover:border-accent transition-colors select-none"
-                    onClick={(e) => { e.stopPropagation(); toggleOpen(); }}
+                    onClick={(e) => { e.stopPropagation(); toggleOpen(e); }}
                 >
                     <div className="flex items-center gap-2">
                         <span className="text-accent">▶</span>
@@ -98,7 +98,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             return (
                 <span 
                     className="inline border-b-2 border-dotted border-accent text-accent cursor-pointer mx-1 select-none font-semibold hover:bg-accent/10 transition-colors"
-                    onClick={(e) => { e.stopPropagation(); toggleOpen(); }}
+                    onClick={(e) => { e.stopPropagation(); toggleOpen(e); }}
                 >
                     {displayTitle}
                 </span>
@@ -134,7 +134,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             <div className="block w-full border border-outline rounded-lg my-3 select-none">
                 <div 
                     className="flex justify-between items-center px-3 py-2 border-b border-outline bg-surface rounded-t-lg cursor-pointer hover:bg-accent/10 transition-colors"
-                    onClick={(e) => { e.stopPropagation(); toggleOpen(); }}
+                    onClick={(e) => { e.stopPropagation(); toggleOpen(e); }}
                 >
                     <div className="flex items-center gap-2">
                         <span className="text-accent transform rotate-90">▶</span>
@@ -179,7 +179,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             <span className="inline-flex flex-col w-full align-top my-1">
                 <span 
                     className="inline-block self-start border-b-2 border-dotted border-accent text-accent cursor-pointer mx-1 select-none font-semibold hover:bg-accent/10 transition-colors"
-                    onClick={(e) => { e.stopPropagation(); toggleOpen(); }}
+                    onClick={(e) => { e.stopPropagation(); toggleOpen(e); }}
                     title={`Close ${displayTitle}`}
                 >
                     {displayTitle}
