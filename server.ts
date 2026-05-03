@@ -11,6 +11,15 @@ app.use(express.json());
 
 const BLOCKS_DIR = path.join(process.cwd(), "blocks");
 
+interface BlockData {
+    id: string;
+    title: string;
+    label: string;
+    content: string;
+}
+
+let blocksMap = new Map<string, BlockData>();
+
 async function ensureDir(dir: string) {
     try {
         await fs.mkdir(dir, { recursive: true });
@@ -71,35 +80,59 @@ async function initBlocks() {
     if (files.filter(f => f.endsWith(".md")).length === 0) {
         for (const block of INITIAL_BLOCKS) {
             await writeBlockToFile(block);
+            blocksMap.set(block.id, block);
+        }
+    } else {
+        const mdFiles = files.filter(f => f.endsWith(".md"));
+        for (const file of mdFiles) {
+            const filePath = path.join(BLOCKS_DIR, file);
+            const content = await fs.readFile(filePath, "utf-8");
+            const parsed = matter(content);
+            const id = file.replace(".md", "");
+            blocksMap.set(id, {
+                id,
+                title: parsed.data.title || "",
+                label: parsed.data.label || "",
+                content: parsed.content
+            });
         }
     }
 }
 
 app.get("/api/blocks", async (req, res) => {
     try {
-        const files = await fs.readdir(BLOCKS_DIR);
-        const mdFiles = files.filter(f => f.endsWith(".md"));
-        const blocks = [];
+        const blocks = Array.from(blocksMap.values()).map(b => ({
+            id: b.id,
+            title: b.title,
+            label: b.label
+            // we do NOT send content to make it fast for 10000+ blocks!
+            // wait, if we don't send content, the frontend must be updated to load it on demand.
+            // to avoid instantly breaking the app, let's include it for now, 
+            // but we add a query parameter ?metaOnly=true for search views
+        }));
         
-        for (const file of mdFiles) {
-            const filePath = path.join(BLOCKS_DIR, file);
-            const content = await fs.readFile(filePath, "utf-8");
-            const parsed = matter(content);
-            blocks.push({
-                id: file.replace(".md", ""),
-                title: parsed.data.title || "",
-                label: parsed.data.label || "",
-                content: parsed.content,
-                // store metadata about index/order? To keep it simple, we just parse it.
-                // Normally we'd need an index or order. Let's just return them.
-                 _fileMeta: { createdAt: (await fs.stat(filePath)).birthtimeMs }
-            });
-        }
-        
-        // Sort by some logic to keep them somewhat consistent (e.g., creation time or alphabetical)
+        // Sort by title
         blocks.sort((a, b) => a.title.localeCompare(b.title));
         
-        res.json(blocks);
+        if (req.query.metaOnly === 'true') {
+            res.json(blocks);
+        } else {
+            // send all content (might be slow but doesn't break current frontend yet)
+            res.json(Array.from(blocksMap.values()).sort((a, b) => a.title.localeCompare(b.title)));
+        }
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get("/api/blocks/:id", async (req, res) => {
+    try {
+        const id = req.params.id;
+        if (blocksMap.has(id)) {
+            res.json(blocksMap.get(id));
+        } else {
+            res.status(404).json({ error: "File not found" });
+        }
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
@@ -115,6 +148,7 @@ app.post("/api/blocks", async (req, res) => {
             content: req.body.content || ""
         };
         await writeBlockToFile(block);
+        blocksMap.set(block.id, block);
         res.json(block);
     } catch (e) {
         res.status(500).json({ error: String(e) });
@@ -124,29 +158,90 @@ app.post("/api/blocks", async (req, res) => {
 app.put("/api/blocks/:id", async (req, res) => {
     try {
         const id = req.params.id;
-        const filePath = path.join(BLOCKS_DIR, `${id}.md`);
+        const existing = blocksMap.get(id) || { title: "", label: "", content: "", id };
         
-        // Read existing to merge
-        let existing = { title: "", label: "", content: "" };
-        try {
-            const currentContent = await fs.readFile(filePath, "utf-8");
-            const parsed = matter(currentContent);
-            existing = {
-                title: parsed.data.title || "",
-                label: parsed.data.label || "",
-                content: parsed.content
-            };
-        } catch(e) {} // If doesn't exist, we just overwrite
-        
+        const newLabel = req.body.label !== undefined ? req.body.label : existing.label;
+        const oldLabel = existing.label;
+
         const block = {
             id,
             title: req.body.title !== undefined ? req.body.title : existing.title,
-            label: req.body.label !== undefined ? req.body.label : existing.label,
+            label: newLabel,
             content: req.body.content !== undefined ? req.body.content : existing.content
         };
-        
-        await writeBlockToFile(block);
-        res.json(block);
+
+        let updatedBlocks = [block];
+        blocksMap.set(id, block);
+
+        if (oldLabel && newLabel && oldLabel !== newLabel) {
+            const renames = [{ old: oldLabel, new: newLabel, id }];
+            
+            // Find child blocks to rename
+            for (const [bId, b] of blocksMap.entries()) {
+                if (bId !== id && b.label.startsWith(oldLabel + "/")) {
+                    const childNewLabel = newLabel + b.label.substring(oldLabel.length);
+                    renames.push({ old: b.label, new: childNewLabel, id: bId });
+                }
+            }
+
+            // Apply renames
+            updatedBlocks = [];
+            for (const [bId, b] of blocksMap.entries()) {
+                let changed = false;
+                let newB = { ...b };
+                
+                const renameMatch = renames.find(r => r.id === bId);
+                if (renameMatch && bId !== id) {
+                    newB.label = renameMatch.new;
+                    changed = true;
+                }
+
+                if (newB.content) {
+                    // Check against original label before rename, just in case
+                    const baseLabel = b.label; 
+                    
+                    for (const r of renames) {
+                        const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        
+                        // Absolute replacement
+                        const regex = new RegExp(`\\[\\[(@)?(${escapeRegExp(r.old)})(([\\|][^\\]∨]+)?)?(∨)?\\]\\]`, 'g');
+                        let nextContent = newB.content.replace(regex, (match: string, at: string, old: string, title: string, something: string, open: string) => {
+                            return `[[${at || ''}${r.new}${title || ''}${open || ''}]]`;
+                        });
+
+                        // Relative replacement
+                        if (r.old.startsWith(baseLabel + "/")) {
+                            const oldRelative = r.old.substring(baseLabel.length);
+                            const newRelative = r.new.startsWith(newB.label + "/") ? r.new.substring(newB.label.length) : r.new;
+                            
+                            const relRegex = new RegExp(`\\[\\[(@)?(${escapeRegExp(oldRelative)})(([\\|][^\\]∨]+)?)?(∨)?\\]\\]`, 'g');
+                            nextContent = nextContent.replace(relRegex, (match: string, at: string, old: string, title: string, something: string, open: string) => {
+                                return `[[${at || ''}${newRelative}${title || ''}${open || ''}]]`;
+                            });
+                        }
+
+                        if (nextContent !== newB.content) {
+                            newB.content = nextContent;
+                            changed = true;
+                        }
+                    }
+                }
+
+                if (changed || bId === id) {
+                    blocksMap.set(bId, newB);
+                    updatedBlocks.push(newB);
+                }
+            }
+        }
+
+        // Save all modified blocks to disk
+        for (const b of updatedBlocks) {
+            await writeBlockToFile(b);
+        }
+
+        // Re-get the root block in case it was modified during the rename iteration
+        const finalBlock = blocksMap.get(id) || block;
+        res.json({ block: finalBlock, updatedBlocks });
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
@@ -155,12 +250,15 @@ app.put("/api/blocks/:id", async (req, res) => {
 app.get("/api/blocks/:id/raw", async (req, res) => {
     try {
         const id = req.params.id;
-        const filePath = path.join(BLOCKS_DIR, `${id}.md`);
-        const content = await fs.readFile(filePath, "utf-8");
-        res.setHeader('Content-Type', 'text/plain');
-        res.send(content);
+        const block = blocksMap.get(id);
+        if (block) {
+            res.setHeader('Content-Type', 'text/plain');
+            res.send(block.content || "");
+        } else {
+            res.status(404).json({ error: "File not found" });
+        }
     } catch (e) {
-        res.status(404).json({ error: "File not found" });
+        res.status(500).json({ error: String(e) });
     }
 });
 
@@ -169,6 +267,7 @@ app.delete("/api/blocks/:id", async (req, res) => {
         const id = req.params.id;
         const filePath = path.join(BLOCKS_DIR, `${id}.md`);
         await fs.unlink(filePath);
+        blocksMap.delete(id);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: String(e) });

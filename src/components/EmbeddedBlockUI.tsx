@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import type { EditorView } from "@codemirror/view";
@@ -18,7 +18,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     let displayStyle: "standout" | "inline" = "inline";
     let ifToggled: "open" | "closed" = "closed";
     
-    const { activePath, focusDirection, activeFocusPos } = useStore();
+    const { activePath, focusDirection, activeFocusPos, loadBlockContent } = useStore();
     const [isLocalFocused, setIsLocalFocused] = useState(false);
 
     let rawText = text;
@@ -50,6 +50,12 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     const targetBlock = blocks.find(b => b.label === fullLabel);
     const isLabelExisted = !!targetBlock;
 
+    useEffect(() => {
+        if (targetBlock && targetBlock.content === undefined && ifToggled === "open") {
+            loadBlockContent(targetBlock.id);
+        }
+    }, [targetBlock, ifToggled, loadBlockContent]);
+
     if (visitedLabels.includes(fullLabel)) {
         return (
             <span className="text-red-400 bg-red-400/10 px-2 py-0.5 rounded mx-1 inline-flex items-center gap-1 border border-red-500/30" title="Circular embedding detected">
@@ -79,13 +85,22 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         );
     }
 
+    const handleClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (e.metaKey || e.ctrlKey) {
+            useStore.getState().openBlockInTab(targetBlock!.id, true);
+        } else {
+            toggleOpen(e);
+        }
+    };
+
     // if_toggled = closed
     if (ifToggled === "closed") {
         if (displayStyle === "standout") {
             return (
                 <div 
                     className="block w-full border border-outline rounded-lg my-2 px-3 py-2 cursor-pointer hover:border-accent transition-colors select-none"
-                    onClick={(e) => { e.stopPropagation(); toggleOpen(e); }}
+                    onClick={handleClick}
                 >
                     <div className="flex items-center gap-2">
                         <span className="text-accent">▶</span>
@@ -98,7 +113,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             return (
                 <span 
                     className="inline border-b-2 border-dotted border-accent text-accent cursor-pointer mx-1 select-none font-semibold hover:bg-accent/10 transition-colors"
-                    onClick={(e) => { e.stopPropagation(); toggleOpen(e); }}
+                    onClick={handleClick}
                 >
                     {displayTitle}
                 </span>
@@ -134,7 +149,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             <div className="block w-full border border-outline rounded-lg my-3 select-none">
                 <div 
                     className="flex justify-between items-center px-3 py-2 border-b border-outline bg-surface rounded-t-lg cursor-pointer hover:bg-accent/10 transition-colors"
-                    onClick={(e) => { e.stopPropagation(); toggleOpen(e); }}
+                    onClick={handleClick}
                 >
                     <div className="flex items-center gap-2">
                         <span className="text-accent transform rotate-90">▶</span>
@@ -150,7 +165,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                      }}
                 >
                     <CodeMirrorEditor 
-                        content={targetBlock!.content}
+                        content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
                         onBlur={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
                             setIsLocalFocused(false);
@@ -179,7 +194,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             <span className="inline-flex flex-col w-full align-top my-1">
                 <span 
                     className="inline-block self-start border-b-2 border-dotted border-accent text-accent cursor-pointer mx-1 select-none font-semibold hover:bg-accent/10 transition-colors"
-                    onClick={(e) => { e.stopPropagation(); toggleOpen(e); }}
+                    onClick={handleClick}
                     title={`Close ${displayTitle}`}
                 >
                     {displayTitle}
@@ -187,7 +202,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 <span className="block w-full pl-4 py-2 border-l-2 border-accent/30 my-2 select-text bg-surface/30 rounded-r-lg relative z-50 overflow-visible" 
                      onClick={e => e.stopPropagation()}>
                     <CodeMirrorEditor 
-                        content={targetBlock!.content}
+                        content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
                         onBlur={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
                             setIsLocalFocused(false);

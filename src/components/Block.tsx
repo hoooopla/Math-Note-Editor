@@ -1,18 +1,25 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import type { PointerEvent } from "react";
 import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { GripVertical, Trash2, FileText } from "lucide-react";
+import { GripVertical, Trash2, FileText, Check, X } from "lucide-react";
 
 export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, index }) => {
     const block = useStore(state => state.blocks.find(b => b.id === id));
+    const blocks = useStore(state => state.blocks);
     const activeBlockId = useStore(state => state.activeBlockId);
     const activePath = useStore(state => state.activePath);
     const isFocused = activeBlockId === id && (!activePath || (activePath.length === 1 && activePath[0] === block?.label));
     const focusDirection = useStore(state => state.focusDirection);
     const macros = useStore(state => state.macros);
 
-    const { setActiveBlock, updateBlock, deleteBlock, blocks } = useStore();
+    const { setActiveBlock, updateBlock, deleteBlock, loadBlockContent } = useStore();
+
+    useEffect(() => {
+        if (block && block.content === undefined) {
+            loadBlockContent(id);
+        }
+    }, [block, id, loadBlockContent]);
 
     const onUp = useCallback(() => {
         if (index > 0) setActiveBlock(blocks[index - 1].id, "end", [blocks[index - 1].label]);
@@ -23,10 +30,11 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
         else if (index === blocks.length - 1) useStore.getState().addBlock(index);
     }, [index, blocks, setActiveBlock]);
 
-    if (!block) return null;
+    if (!block || block.content === undefined) return <div className="h-24 animate-pulse bg-surface/50 rounded-lg mb-6 border border-outline"></div>;
 
     return <Block 
         block={block} 
+        blocks={blocks}
         isFocused={isFocused} 
         focusDirection={isFocused ? focusDirection : null}
         macros={macros}
@@ -40,6 +48,7 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
 
 interface BlockProps {
     block: any;
+    blocks: any[];
     isFocused: boolean;
     focusDirection: "start" | "end" | null;
     macros: Record<string, string>;
@@ -50,10 +59,13 @@ interface BlockProps {
     deleteBlock: (id: string) => void;
 }
 
-export function Block({ block, isFocused, focusDirection, macros, setActive, onUp, onDown, updateBlock, deleteBlock }: BlockProps) {
+export function Block({ block, blocks, isFocused, focusDirection, macros, setActive, onUp, onDown, updateBlock, deleteBlock }: BlockProps) {
     const [isEditingMeta, setIsEditingMeta] = useState(false);
     const [titleInput, setTitleInput] = useState(block.title);
     const [labelInput, setLabelInput] = useState(block.label);
+    const [error, setError] = useState<string | null>(null);
+
+    const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
     const handleContentChange = useCallback((val: string) => {
         updateBlock(block.id, { content: val });
@@ -66,7 +78,17 @@ export function Block({ block, isFocused, focusDirection, macros, setActive, onU
     }, [isFocused, block.id, block.label, setActive]);
 
     const submitMeta = () => {
-        updateBlock(block.id, { title: titleInput, label: labelInput });
+        let finalLabel = labelInput.trim() || block.id.substring(0, 8);
+        if (finalLabel !== block.label) {
+            const isDuplicate = blocks.some(b => b.id !== block.id && b.label === finalLabel);
+            if (isDuplicate) {
+                setError(`Label "${finalLabel}" already exists`);
+                setLabelInput(block.label);
+                return;
+            }
+        }
+        setError(null);
+        updateBlock(block.id, { title: titleInput.trim(), label: finalLabel });
         setIsEditingMeta(false);
     };
 
@@ -75,6 +97,7 @@ export function Block({ block, isFocused, focusDirection, macros, setActive, onU
         if (e.key === 'Escape') {
             setTitleInput(block.title);
             setLabelInput(block.label);
+            setError(null);
             setIsEditingMeta(false);
         }
     };
@@ -121,13 +144,23 @@ export function Block({ block, isFocused, focusDirection, macros, setActive, onU
                                 onKeyDown={handleMetaKeyDown}
                                 placeholder="Title"
                             />
-                            <input 
-                                className="bg-base text-secondary px-2 py-1 rounded outline-none border border-outline text-xs uppercase tracking-widest font-sans max-w-[150px] focus:border-accent"
-                                value={labelInput}
-                                onChange={e => setLabelInput(e.target.value.replace(/\s+/g, '-').replace(/[\[\]\|]/g, ''))}
-                                onKeyDown={handleMetaKeyDown}
-                                placeholder="Label"
-                            />
+                            <div className="relative flex items-center">
+                                <input 
+                                    className={`bg-base text-secondary px-2 py-1 rounded outline-none border ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} text-xs uppercase tracking-widest font-sans max-w-[150px]`}
+                                    value={labelInput}
+                                    onChange={e => {
+                                        setError(null);
+                                        setLabelInput(e.target.value.replace(/\s+/g, '-').replace(/[\[\]\|]/g, ''))
+                                    }}
+                                    onKeyDown={handleMetaKeyDown}
+                                    placeholder="Label"
+                                />
+                                {error && (
+                                    <span className="absolute left-full ml-2 whitespace-nowrap text-xs text-red-500 font-sans">
+                                        {error}
+                                    </span>
+                                )}
+                            </div>
                         </div>
                     ) : (
                         <div className="flex items-center gap-3 font-sans text-[11px] text-secondary transition-colors">
@@ -151,13 +184,21 @@ export function Block({ block, isFocused, focusDirection, macros, setActive, onU
                         >
                             <FileText size={16} />
                         </a>
-                        <button 
-                             onClick={(e) => { e.stopPropagation(); deleteBlock(block.id); }}
-                             className="text-secondary hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
-                             title="Delete Block"
-                        >
-                            <Trash2 size={16} />
-                        </button>
+                        {isConfirmingDelete ? (
+                            <div className="flex items-center gap-1 opacity-100 bg-red-500/10 text-red-500 rounded px-2 py-0.5" onClick={e => e.stopPropagation()}>
+                                <span className="text-xs font-sans mr-1">Delete?</span>
+                                <button onClick={() => deleteBlock(block.id)} className="hover:text-red-400 p-0.5"><Check size={14} /></button>
+                                <button onClick={() => setIsConfirmingDelete(false)} className="hover:text-secondary p-0.5"><X size={14} /></button>
+                            </div>
+                        ) : (
+                            <button 
+                                 onClick={(e) => { e.stopPropagation(); setIsConfirmingDelete(true); }}
+                                 className="text-secondary hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                                 title="Delete Block"
+                            >
+                                <Trash2 size={16} />
+                            </button>
+                        )}
                     </div>
                 )}
             </div>

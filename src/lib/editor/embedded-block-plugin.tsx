@@ -60,7 +60,11 @@ class EmbeddedBlockWidget extends WidgetType {
     }
 
     eq(other: EmbeddedBlockWidget) {
-        return this.text === other.text && this.parentLabel === other.parentLabel && JSON.stringify(this.visitedLabels) === JSON.stringify(other.visitedLabels);
+        return this.text === other.text && 
+               this.parentLabel === other.parentLabel && 
+               JSON.stringify(this.visitedLabels) === JSON.stringify(other.visitedLabels) &&
+               this.from === other.from &&
+               this.to === other.to;
     }
 
     toDOM(view: EditorView) {

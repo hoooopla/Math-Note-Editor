@@ -208,7 +208,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
     useEffect(() => {
         if (viewRef.current) {
             const currentDoc = viewRef.current.state.doc.toString();
-            if (content !== currentDoc && !viewRef.current.hasFocus) {
+            if (content !== currentDoc && (!viewRef.current.hasFocus || currentDoc === "")) {
                 let start = 0;
                 while (start < currentDoc.length && start < content.length && currentDoc[start] === content[start]) {
                     start++;
