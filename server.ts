@@ -65,13 +65,34 @@ const INITIAL_BLOCKS = [
     }
 ];
 
+const blockIdToFileMap = new Map<string, string>();
+
 async function writeBlockToFile(block: any) {
-    const filePath = path.join(BLOCKS_DIR, `${block.id}.md`);
+    const safeTitle = (block.title || "Untitled").replace(/[/\\?%*:|"<>]/g, '-').trim() || "Untitled";
+    let oldFilename = blockIdToFileMap.get(block.id);
+    let newFilename = `${safeTitle}.md`;
+
+    const isConflict = Array.from(blockIdToFileMap.entries()).some(([i, f]) => f === newFilename && i !== block.id);
+    if (isConflict) {
+        newFilename = `${safeTitle} - ${block.id.slice(0, 8)}.md`;
+    }
+
+    const filePath = path.join(BLOCKS_DIR, newFilename);
     const fileContent = matter.stringify(block.content || "", {
+        id: block.id,
         title: block.title,
         label: block.label
     });
     await fs.writeFile(filePath, fileContent, "utf-8");
+
+    if (oldFilename && oldFilename !== newFilename) {
+        try {
+            await fs.unlink(path.join(BLOCKS_DIR, oldFilename));
+        } catch (e) {
+            console.warn(`Could not delete old file ${oldFilename}:`, e);
+        }
+    }
+    blockIdToFileMap.set(block.id, newFilename);
 }
 
 async function initBlocks() {
@@ -88,13 +109,14 @@ async function initBlocks() {
             const filePath = path.join(BLOCKS_DIR, file);
             const content = await fs.readFile(filePath, "utf-8");
             const parsed = matter(content);
-            const id = file.replace(".md", "");
+            const id = parsed.data.id || file.replace(".md", "");
             blocksMap.set(id, {
                 id,
                 title: parsed.data.title || "",
                 label: parsed.data.label || "",
                 content: parsed.content
             });
+            blockIdToFileMap.set(id, file);
         }
     }
 }
@@ -265,8 +287,15 @@ app.get("/api/blocks/:id/raw", async (req, res) => {
 app.delete("/api/blocks/:id", async (req, res) => {
     try {
         const id = req.params.id;
-        const filePath = path.join(BLOCKS_DIR, `${id}.md`);
-        await fs.unlink(filePath);
+        const filename = blockIdToFileMap.get(id);
+        if (filename) {
+            const filePath = path.join(BLOCKS_DIR, filename);
+            await fs.unlink(filePath).catch(() => {});
+            blockIdToFileMap.delete(id);
+        } else {
+            const fallbackPath = path.join(BLOCKS_DIR, `${id}.md`);
+            await fs.unlink(fallbackPath).catch(() => {});
+        }
         blocksMap.delete(id);
         res.json({ success: true });
     } catch (e) {
