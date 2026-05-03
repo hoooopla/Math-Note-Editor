@@ -105,7 +105,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                     <div className="flex items-center gap-2">
                         <span className="text-accent">▶</span>
                         <span className="font-bold text-primary">{displayTitle}</span>
-                        <span className="text-xs text-secondary uppercase bg-surface px-1 rounded">{fullLabel}</span>
+                        <span className="text-xs text-secondary bg-surface px-1 rounded">{fullLabel}</span>
                     </div>
                 </div>
             );
@@ -155,7 +155,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         <span className="text-accent transform rotate-90">▶</span>
                         <span className="font-bold text-primary">{displayTitle}</span>
                     </div>
-                    <span className="text-xs text-secondary uppercase px-1 rounded border border-outline">{fullLabel}</span>
+                    <span className="text-xs text-secondary px-1 rounded border border-outline">{fullLabel}</span>
                 </div>
                 <div className="p-3 bg-surface/50 rounded-b-lg font-sans text-primary relative z-50 overflow-visible" 
                      onClick={e => {

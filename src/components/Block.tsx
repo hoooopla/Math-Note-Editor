@@ -146,7 +146,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                             />
                             <div className="relative flex items-center">
                                 <input 
-                                    className={`bg-base text-secondary px-2 py-1 rounded outline-none border ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} text-xs uppercase tracking-widest font-sans max-w-[150px]`}
+                                    className={`bg-base text-secondary px-2 py-1 rounded outline-none border ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} text-xs tracking-widest font-sans max-w-[150px]`}
                                     value={labelInput}
                                     onChange={e => {
                                         setError(null);
@@ -165,7 +165,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                     ) : (
                         <div className="flex items-center gap-3 font-sans text-[11px] text-secondary transition-colors">
                             <span className="font-sans text-[16px] font-bold text-primary group-hover:text-accent transition-colors">{block.title || 'Untitled'}</span>
-                            <span className="font-sans text-[11px] bg-transparent border border-outline px-1.5 py-0.5 rounded text-secondary uppercase tracking-widest">
+                            <span className="font-sans text-[11px] bg-transparent border border-outline px-1.5 py-0.5 rounded text-secondary tracking-widest">
                                 {block.label || 'label'}
                             </span>
                         </div>

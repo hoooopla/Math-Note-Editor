@@ -104,14 +104,14 @@ export default function App() {
                                     className="px-3 py-2 cursor-pointer hover:bg-accent/10 rounded flex flex-col"
                                 >
                                     <span className="font-semibold text-sm truncate">{b.title}</span>
-                                    <span className="text-[10px] text-secondary uppercase tracking-wider truncate">{b.label}</span>
+                                    <span className="text-[10px] text-secondary tracking-wider truncate">{b.label}</span>
                                 </div>
                             ))}
                             {searchResults.length === 0 && <div className="p-3 text-secondary text-sm">No results found.</div>}
                         </div>
                     ) : (
                         <div className="space-y-1">
-                            <div className="px-3 py-2 text-xs font-semibold text-secondary uppercase tracking-wider">Recent Blocks</div>
+                            <div className="px-3 py-2 text-xs font-semibold text-secondary tracking-wider">Recent Blocks</div>
                             {blocks.slice(0, 50).map(b => (
                                 <div 
                                     key={b.id} 
@@ -119,7 +119,7 @@ export default function App() {
                                     className="px-3 py-2 cursor-pointer hover:bg-accent/10 rounded flex flex-col"
                                 >
                                     <span className="font-semibold text-sm truncate">{b.title}</span>
-                                    <span className="text-[10px] text-secondary uppercase tracking-wider truncate">{b.label}</span>
+                                    <span className="text-[10px] text-secondary tracking-wider truncate">{b.label}</span>
                                 </div>
                             ))}
                         </div>
