@@ -19,6 +19,8 @@ interface AppState {
   openTabs: string[];
   activeTab: string | null;
   loadBlocks: () => Promise<void>;
+  loadMacros: () => Promise<void>;
+  saveMacros: (macros: Record<string, string>) => Promise<void>;
   loadBlockContent: (id: string) => Promise<void>;
   addBlock: (index?: number, data?: Partial<BlockData>) => Promise<BlockData | void>;
   updateBlock: (id: string, data: Partial<BlockData>) => void;
@@ -43,6 +45,29 @@ export const useStore = create<AppState>((set, get) => ({
   macros: {
     "\\R": "\\mathbb{R}",
     "\\N": "\\mathbb{N}"
+  },
+  loadMacros: async () => {
+    try {
+      const res = await fetch('/api/macros');
+      const data = await res.json();
+      if (Object.keys(data).length > 0) {
+        set({ macros: data });
+      }
+    } catch (e) {
+      console.error("Failed to load macros", e);
+    }
+  },
+  saveMacros: async (macros) => {
+    try {
+      set({ macros });
+      await fetch('/api/macros', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(macros),
+      });
+    } catch (e) {
+      console.error("Failed to save macros", e);
+    }
   },
   loadBlocks: async () => {
     try {

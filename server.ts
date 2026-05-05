@@ -166,6 +166,26 @@ app.get("/api/blocks/:id", async (req, res) => {
     }
 });
 
+app.get("/api/macros", async (req, res) => {
+    try {
+        const macrosPath = path.join(process.cwd(), "macros.json");
+        const content = await fs.readFile(macrosPath, "utf-8").catch(() => "{}");
+        res.json(JSON.parse(content));
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.post("/api/macros", async (req, res) => {
+    try {
+        const macrosPath = path.join(process.cwd(), "macros.json");
+        await fs.writeFile(macrosPath, JSON.stringify(req.body || {}, null, 2), "utf-8");
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 app.post("/api/blocks", async (req, res) => {
     try {
         const id = uuidv4();

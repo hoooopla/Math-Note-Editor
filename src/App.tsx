@@ -6,17 +6,20 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useStore } from "./store";
 import { BlockContainer } from "./components/Block";
-import { Search, Plus, X } from "lucide-react";
+import { MacroSettingsModal } from "./components/MacroSettingsModal";
+import { Search, Plus, X, Settings } from "lucide-react";
 import "./index.css";
 
 export default function App() {
     const blocks = useStore(state => state.blocks);
-    const { addBlock, setActiveBlock, loadBlocks, openTabs, activeTab, setOpenTabs, setActiveTab } = useStore();
+    const { addBlock, setActiveBlock, loadBlocks, loadMacros, openTabs, activeTab, setOpenTabs, setActiveTab } = useStore();
     const [searchQuery, setSearchQuery] = useState("");
+    const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
 
     useEffect(() => {
         loadBlocks();
-    }, [loadBlocks]);
+        loadMacros();
+    }, [loadBlocks, loadMacros]);
 
     useEffect(() => {
         const validTabs = openTabs.filter(t => blocks.some(b => b.id === t));
@@ -70,19 +73,28 @@ export default function App() {
             <div className="w-full md:w-64 bg-surface border-r border-outline flex flex-col h-[30vh] md:h-full shrink-0">
                 <div className="p-4 border-b border-outline flex items-center justify-between">
                     <h1 className="text-[16px] font-bold tracking-tight text-primary">Math Notes</h1>
-                    <button 
-                        onClick={async () => {
-                            const newBlock = await addBlock();
-                            if (newBlock) {
-                                setOpenTabs([...openTabs, newBlock.id]);
-                                setActiveTab(newBlock.id);
-                            }
-                        }}
-                        className="p-1 hover:bg-accent/20 rounded text-accent transition-colors"
-                        title="New Block"
-                    >
-                        <Plus size={18} />
-                    </button>
+                    <div className="flex items-center gap-1">
+                        <button 
+                            onClick={() => setIsMacroModalOpen(true)}
+                            className="p-1 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
+                            title="Macro Settings"
+                        >
+                            <Settings size={18} />
+                        </button>
+                        <button 
+                            onClick={async () => {
+                                const newBlock = await addBlock();
+                                if (newBlock) {
+                                    setOpenTabs([...openTabs, newBlock.id]);
+                                    setActiveTab(newBlock.id);
+                                }
+                            }}
+                            className="p-1 hover:bg-accent/20 rounded text-accent transition-colors"
+                            title="New Block"
+                        >
+                            <Plus size={18} />
+                        </button>
+                    </div>
                 </div>
                 <div className="p-4 border-b border-outline relative">
                     <Search size={16} className="absolute left-6 top-6 text-secondary" />
@@ -172,6 +184,7 @@ export default function App() {
                     </div>
                 </div>
             </div>
+            <MacroSettingsModal isOpen={isMacroModalOpen} onClose={() => setIsMacroModalOpen(false)} />
         </div>
     );
 }

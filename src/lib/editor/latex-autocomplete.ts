@@ -1,4 +1,5 @@
 import { CompletionContext, snippetCompletion } from "@codemirror/autocomplete";
+import { useStore } from "../../store";
 
 // Standard Overleaf-style rich snippets that auto-place your cursor inside brackets
 const latexSnippets = [
@@ -25,9 +26,17 @@ export function latexCompletion(context: CompletionContext) {
     if (!word) return null;
     if (word.from === word.to && !context.explicit) return null;
 
+    // Get custom macros from store
+    const macros = useStore.getState().macros;
+    const macroOptions = Object.keys(macros).map(mac => ({
+        label: mac,
+        detail: "macro",
+        type: "keyword"
+    }));
+
     return {
         from: word.from,
-        options: [...latexSnippets, ...latexKeywords],
+        options: [...latexSnippets, ...latexKeywords, ...macroOptions],
         validFor: /^\\[a-zA-Z]*$/
     };
 }
