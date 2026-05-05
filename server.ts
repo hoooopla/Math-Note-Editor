@@ -61,7 +61,13 @@ const INITIAL_BLOCKS = [
         id: uuidv4(),
         title: '2. Aliases and Block Creation 🪄',
         label: 'showcase:aliases',
-        content: "Sometimes you want to reference a block, but its label doesn't flow correctly in your sentence. Use the `|` pipe character to set a custom alias!\n\nFor example: For more details, check out the [[showcase:math | math examples]]!\n\n**Creating on the fly:**\nWhat if you want to reference a block that doesn't exist yet?\nJust type it out, e.g., `[[showcase:new-idea | My Brilliant Idea]]`, close the brackets, and then put your cursor on the chip and hit `Enter` (or click on the alias). A new block will seamlessly be created for you! Try it here on this non-existent block:\n[[test:create-me]]"
+        content: "Sometimes you want to reference a block, but its label doesn't flow correctly in your sentence. Use the `||` double pipe character to set a custom alias!\n\nFor example: For more details, check out the [[showcase:math || math examples]]!\n\n**Creating on the fly:**\nWhat if you want to reference a block that doesn't exist yet?\nJust type it out, e.g., `[[showcase:new-idea || My Brilliant Idea]]`, close the brackets, and then put your cursor on the chip and hit `Enter` (or click on the alias). A new block will seamlessly be created for you! Try it here on this non-existent block:\n[[test:create-me]]"
+    },
+    {
+        id: uuidv4(),
+        title: '3. All Features Showcase 🌟',
+        label: 'showcase:features',
+        content: "Here is a quick showcase of **all the formatting** you can use in Math Notes!\n\n**Markdown Styling**\n* You can use **bold text** for emphasis.\n* You can also use *italic text* if you prefer.\n* Or perhaps some _underline text_ to highlight things.\n\n**Mathematics**\nMath features make it easy to write equations, like $e^{i\\pi} + 1 = 0$ inline!\n\nFor more complex formulas, use block math:\n$$\n\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}\n$$\n\n**Embedded Blocks**\nYou can easily embed other blocks inline to build up complex thoughts.\nHere is the math page again: [[showcase:math || Math Features∨]]"
     }
 ];
 
@@ -226,7 +232,7 @@ app.put("/api/blocks/:id", async (req, res) => {
                         const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                         
                         // Absolute replacement
-                        const regex = new RegExp(`\\[\\[(@)?(${escapeRegExp(r.old)})(([\\|][^\\]∨]+)?)?(∨)?\\]\\]`, 'g');
+                        const regex = new RegExp(`\\[\\[(@)?(${escapeRegExp(r.old)})((\\|\\|[^\\]∨]+)?)?(∨)?\\]\\]`, 'g');
                         let nextContent = newB.content.replace(regex, (match: string, at: string, old: string, title: string, something: string, open: string) => {
                             return `[[${at || ''}${r.new}${title || ''}${open || ''}]]`;
                         });
@@ -236,7 +242,7 @@ app.put("/api/blocks/:id", async (req, res) => {
                             const oldRelative = r.old.substring(baseLabel.length);
                             const newRelative = r.new.startsWith(newB.label + "/") ? r.new.substring(newB.label.length) : r.new;
                             
-                            const relRegex = new RegExp(`\\[\\[(@)?(${escapeRegExp(oldRelative)})(([\\|][^\\]∨]+)?)?(∨)?\\]\\]`, 'g');
+                            const relRegex = new RegExp(`\\[\\[(@)?(${escapeRegExp(oldRelative)})((\\|\\|[^\\]∨]+)?)?(∨)?\\]\\]`, 'g');
                             nextContent = nextContent.replace(relRegex, (match: string, at: string, old: string, title: string, something: string, open: string) => {
                                 return `[[${at || ''}${newRelative}${title || ''}${open || ''}]]`;
                             });

@@ -33,10 +33,10 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
 
     let rawLabel = rawText;
     let displayTitle: string | null = null;
-    const pipeIdx = rawText.indexOf("|");
+    const pipeIdx = rawText.indexOf("||");
     if (pipeIdx !== -1) {
         rawLabel = rawText.slice(0, pipeIdx).trim();
-        displayTitle = rawText.slice(pipeIdx + 1).trim();
+        displayTitle = rawText.slice(pipeIdx + 2).trim();
     } else {
         rawLabel = rawLabel.trim();
     }

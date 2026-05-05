@@ -243,7 +243,7 @@ function getEmbedTooltip(state: import("@codemirror/state").EditorState): Toolti
             if (rawText.startsWith("@")) rawText = rawText.slice(1);
             if (rawText.endsWith("∨")) rawText = rawText.slice(0, -1);
             
-            const pipeIdx = rawText.indexOf("|");
+            const pipeIdx = rawText.indexOf("||");
             let rawLabel = pipeIdx !== -1 ? rawText.slice(0, pipeIdx).trim() : rawText.trim();
             
             let fullLabel = rawLabel;
@@ -318,7 +318,7 @@ export const embedKeymap: KeyBinding[] = [
                     let rawText = link.text;
                     if (rawText.startsWith("@")) rawText = rawText.slice(1);
                     if (rawText.endsWith("∨")) rawText = rawText.slice(0, -1);
-                    const pipeIdx = rawText.indexOf("|");
+                    const pipeIdx = rawText.indexOf("||");
                     let rawLabel = pipeIdx !== -1 ? rawText.slice(0, pipeIdx).trim() : rawText.trim();
                     let fullLabel = rawLabel;
                     if (rawLabel.startsWith("/")) fullLabel = parentLabel + rawLabel;
@@ -327,7 +327,7 @@ export const embedKeymap: KeyBinding[] = [
                     const isLabelExisted = !!store.blocks.find(b => b.label === fullLabel);
                     
                     if (!isLabelExisted) {
-                        let newTitle = pipeIdx !== -1 ? rawText.slice(pipeIdx + 1).trim() : rawLabel;
+                        let newTitle = pipeIdx !== -1 ? rawText.slice(pipeIdx + 2).trim() : rawLabel;
                         
                         store.addBlock(-1, { title: newTitle, label: fullLabel, content: "" }).then((newBlock) => {
                             let inner = link.text;
@@ -420,7 +420,7 @@ export const embedKeymap: KeyBinding[] = [
                 let rawText = targetLink.text;
                 if (rawText.startsWith("@")) rawText = rawText.slice(1);
                 if (rawText.endsWith("∨")) rawText = rawText.slice(0, -1);
-                const pipeIdx = rawText.indexOf("|");
+                const pipeIdx = rawText.indexOf("||");
                 let rawLabel = pipeIdx !== -1 ? rawText.slice(0, pipeIdx).trim() : rawText.trim();
                 let fullLabel = rawLabel.startsWith("/") ? parentLabel + rawLabel : rawLabel;
                 
@@ -468,7 +468,7 @@ export const embedKeymap: KeyBinding[] = [
                 let rawText = targetLink.text;
                 if (rawText.startsWith("@")) rawText = rawText.slice(1);
                 if (rawText.endsWith("∨")) rawText = rawText.slice(0, -1);
-                const pipeIdx = rawText.indexOf("|");
+                const pipeIdx = rawText.indexOf("||");
                 let rawLabel = pipeIdx !== -1 ? rawText.slice(0, pipeIdx).trim() : rawText.trim();
                 let fullLabel = rawLabel.startsWith("/") ? parentLabel + rawLabel : rawLabel;
                 

@@ -23,7 +23,7 @@ export interface ParsedRange {
     from: number;
     to: number;
     text: string;
-    type: "blockMath" | "inlineMath" | "bold" | "italic";
+    type: "blockMath" | "inlineMath" | "bold" | "italic" | "underline" | "list";
 }
 
 function parseRanges(doc: string): ParsedRange[] {
@@ -74,7 +74,7 @@ function parseRanges(doc: string): ParsedRange[] {
         i++;
     }
 
-    const boldRegex = /\*\*([^*\n]+)\*\*/g;
+    const boldRegex = /\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*/g;
     let match;
     while ((match = boldRegex.exec(doc)) !== null) {
         const start = match.index;
@@ -90,11 +90,11 @@ function parseRanges(doc: string): ParsedRange[] {
         }
     }
 
-    const italicRegex = /(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)/g;
+    const italicRegex = /(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)/g;
     while ((match = italicRegex.exec(doc)) !== null) {
         const start = match.index;
         const end = match.index + match[0].length;
-        const text = match[1] || match[2];
+        const text = match[1];
         const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
         if (!overlapping) {
             ranges.push({
@@ -102,6 +102,37 @@ function parseRanges(doc: string): ParsedRange[] {
                 to: end,
                 text: text,
                 type: "italic"
+            });
+        }
+    }
+
+    const underlineRegex = /(?<!_)_(?!\s)([^_\n]+?)(?<!\s)_(?!_)/g;
+    while ((match = underlineRegex.exec(doc)) !== null) {
+        const start = match.index;
+        const end = match.index + match[0].length;
+        const text = match[1];
+        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
+        if (!overlapping) {
+            ranges.push({
+                from: start,
+                to: end,
+                text: text,
+                type: "underline"
+            });
+        }
+    }
+
+    const listRegex = /^[ \t]*(\*)(?=\s)/gm;
+    while ((match = listRegex.exec(doc)) !== null) {
+        const start = match.index + match[0].length - 1;
+        const end = start + 1;
+        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
+        if (!overlapping) {
+            ranges.push({
+                from: start,
+                to: end,
+                text: "*",
+                type: "list"
             });
         }
     }
@@ -181,6 +212,16 @@ class BlockMathEditingPreviewWidget extends WidgetType {
 }
 
 
+class ListWidget extends WidgetType {
+    eq() { return true; }
+    toDOM() {
+        const span = document.createElement("span");
+        span.className = "text-accent mx-2 rounded-full w-1.5 h-1.5 bg-accent inline-block transform -translate-y-[2px]";
+        return span;
+    }
+    ignoreEvent() { return false; }
+}
+
 function buildLiveDecorations(state: EditorState) {
     const builder = new RangeSetBuilder<Decoration>();
     const doc = state.doc.toString();
@@ -198,8 +239,10 @@ function buildLiveDecorations(state: EditorState) {
         
         if (overlapping) {
             let editClass = "cm-math-editing";
-            if (r.type === "bold" || r.type === "italic") {
+            if (r.type === "bold" || r.type === "italic" || r.type === "underline") {
                 editClass = "bg-neutral-800/80 text-blue-300 rounded px-1";
+            } else if (r.type === "list") {
+                editClass = "text-blue-400 font-bold";
             }
             
             // 1. The outer background wrapping
@@ -289,6 +332,14 @@ function buildLiveDecorations(state: EditorState) {
                 decos.push({from: r.from, to: r.from + 1, deco: Decoration.replace({})});
                 decos.push({from: r.from + 1, to: r.to - 1, deco: Decoration.mark({ class: "italic text-primary" })});
                 decos.push({from: r.to - 1, to: r.to, deco: Decoration.replace({})});
+            } else if (r.type === "underline") {
+                decos.push({from: r.from, to: r.from + 1, deco: Decoration.replace({})});
+                decos.push({from: r.from + 1, to: r.to - 1, deco: Decoration.mark({ class: "underline underline-offset-2 text-primary" })});
+                decos.push({from: r.to - 1, to: r.to, deco: Decoration.replace({})});
+            } else if (r.type === "list") {
+                decos.push({from: r.from, to: r.to, deco: Decoration.replace({
+                    widget: new ListWidget()
+                })});
             } else {
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
                     widget: new MathWidget(r.text, r.type === "blockMath", macros)
