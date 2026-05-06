@@ -6,6 +6,7 @@ export interface BlockData {
   title: string;
   label: string;
   content?: string;
+  hasContent?: boolean;
   _fileMeta?: any;
 }
 

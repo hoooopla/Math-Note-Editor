@@ -132,7 +132,8 @@ app.get("/api/blocks", async (req, res) => {
         const blocks = Array.from(blocksMap.values()).map(b => ({
             id: b.id,
             title: b.title,
-            label: b.label
+            label: b.label,
+            hasContent: b.content !== undefined && b.content.trim().length > 0
             // we do NOT send content to make it fast for 10000+ blocks!
             // wait, if we don't send content, the frontend must be updated to load it on demand.
             // to avoid instantly breaking the app, let's include it for now, 

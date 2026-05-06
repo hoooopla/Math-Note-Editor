@@ -150,7 +150,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                                     value={labelInput}
                                     onChange={e => {
                                         setError(null);
-                                        setLabelInput(e.target.value.replace(/\s+/g, '-').replace(/[\[\]\|]/g, ''))
+                                        setLabelInput(e.target.value.replace(/[\[\]\|]/g, ''))
                                     }}
                                     onKeyDown={handleMetaKeyDown}
                                     placeholder="Label"
