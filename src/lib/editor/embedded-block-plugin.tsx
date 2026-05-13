@@ -327,7 +327,7 @@ export const embedKeymap: KeyBinding[] = [
                     const isLabelExisted = !!store.blocks.find(b => b.label === fullLabel);
                     
                     if (!isLabelExisted) {
-                        let newTitle = pipeIdx !== -1 ? rawText.slice(pipeIdx + 2).trim() : rawLabel;
+                        let newTitle = pipeIdx !== -1 ? rawText.slice(pipeIdx + 2).trim() : (rawLabel.startsWith("/") ? rawLabel.slice(1) : rawLabel);
                         
                         store.addBlock(-1, { title: newTitle, label: fullLabel, content: "" }).then((newBlock) => {
                             let inner = link.text;

@@ -69,6 +69,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
 
     const parentLabelCompartmentRef = useRef(new Compartment());
     const visitedLabelsCompartmentRef = useRef(new Compartment());
+    const macrosCompartmentRef = useRef(new Compartment());
 
     useEffect(() => {
         if (!containerRef.current) return;
@@ -97,7 +98,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 keymap.of([...defaultKeymap, ...historyKeymap]),
                 markdown(),
                 EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["(", "[", "{", "'", '"', "$"] } }]),
-                livePreviewMacros.of(macros),
+                macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
                 parentLabelCompartmentRef.current.of(parentLabelFacet.of(parentLabelRef.current || "")),
                 visitedLabelsCompartmentRef.current.of(visitedLabelsFacet.of(visitedLabelsRef.current || [])),
                 editorFocusField,
@@ -233,7 +234,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
         }
     }, [content]);
 
-    // Parent label and visited labels dynamic update
+    // Parent label, visited labels, and macros dynamic update
     useEffect(() => {
         let effects = [];
         if (viewRef.current) {
@@ -245,11 +246,13 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 visitedLabelsRef.current = visitedLabels;
                 effects.push(visitedLabelsCompartmentRef.current.reconfigure(visitedLabelsFacet.of(visitedLabels || [])));
             }
+            // reconfigure macros when they change
+            effects.push(macrosCompartmentRef.current.reconfigure(livePreviewMacros.of(macros)));
             if (effects.length > 0) {
                 viewRef.current.dispatch({ effects });
             }
         }
-    }, [parentLabel, visitedLabels]);
+    }, [parentLabel, visitedLabels, macros]);
 
     return <div ref={containerRef} className="w-full" />;
 }

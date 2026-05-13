@@ -168,7 +168,7 @@ class MathWidget extends WidgetType {
             katex.render(this.text, span, {
                 displayMode: this.isBlock,
                 throwOnError: true,
-                macros: this.macros
+                macros: {...this.macros}
             });
         } catch (e: any) {
             span.innerText = this.text;
@@ -199,7 +199,7 @@ class BlockMathEditingPreviewWidget extends WidgetType {
             katex.render(this.text, dom, {
                 displayMode: true,
                 throwOnError: true,
-                macros: this.macros
+                macros: {...this.macros}
             });
         } catch (e: any) {
             dom.innerText = this.text;
@@ -363,7 +363,8 @@ export const mathPlugin = StateField.define<DecorationSet>({
         return buildLiveDecorations(state);
     },
     update(decorations, tr) {
-        if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(setEditorFocus))) {
+        const macrosChanged = tr.state.facet(livePreviewMacros) !== tr.startState.facet(livePreviewMacros);
+        if (tr.docChanged || tr.selection || macrosChanged || tr.effects.some(e => e.is(setEditorFocus))) {
             return buildLiveDecorations(tr.state);
         }
         return decorations;
@@ -396,7 +397,7 @@ function getMathTooltip(state: EditorState): Tooltip | null {
                                 katex.render(text, dom, {
                                     displayMode: false,
                                     throwOnError: true,
-                                    macros: macros
+                                    macros: {...macros}
                                 });
                                 dom.className = "p-3 bg-surface border border-outline shadow-lg rounded-xl text-primary z-50 pointer-events-none mb-3 max-w-[90vw]";
                             } catch (e: any) {

@@ -58,31 +58,36 @@ export function MacroSettingsModal({ isOpen, onClose }: MacroSettingsModalProps)
                     {localMacros.length === 0 ? (
                         <p className="text-sm text-secondary text-center py-4">No macros configured. Add one below.</p>
                     ) : (
-                        localMacros.map((macro, i) => (
-                            <div key={i} className="flex gap-2 items-center">
-                                <input
-                                    type="text"
-                                    placeholder="\macro"
-                                    value={macro.key}
-                                    onChange={(e) => updateMacro(i, 'key', e.target.value)}
-                                    className="flex-1 bg-base border border-outline rounded px-2 py-1.5 text-sm font-mono text-primary focus:outline-none focus:border-accent"
-                                />
-                                <span>=</span>
-                                <input
-                                    type="text"
-                                    placeholder="\mathbb{R}"
-                                    value={macro.value}
-                                    onChange={(e) => updateMacro(i, 'value', e.target.value)}
-                                    className="flex-1 bg-base border border-outline rounded px-2 py-1.5 text-sm font-mono text-primary focus:outline-none focus:border-accent"
-                                />
-                                <button
-                                    onClick={() => removeMacro(i)}
-                                    className="p-1.5 text-secondary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
-                                >
-                                    <Trash2 size={16} />
-                                </button>
-                            </div>
-                        ))
+                        <div className="space-y-4">
+                            <p className="text-xs text-secondary mt-1 mb-3">
+                                Tip: You can use arguments like <code>#1</code>, <code>#2</code> in the value. For example, key <code>{"\\E"}</code> and value <code>{"\\mathbb{E}\\left[ #1 \\right]"}</code> lets you type <code>{"\\E{X}"}</code>.
+                            </p>
+                            {localMacros.map((macro, i) => (
+                                <div key={i} className="flex gap-2 items-center">
+                                    <input
+                                        type="text"
+                                        placeholder="\macro"
+                                        value={macro.key}
+                                        onChange={(e) => updateMacro(i, 'key', e.target.value)}
+                                        className="flex-1 bg-base border border-outline rounded px-2 py-1.5 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                    />
+                                    <span>=</span>
+                                    <input
+                                        type="text"
+                                        placeholder="\mathbb{R}"
+                                        value={macro.value}
+                                        onChange={(e) => updateMacro(i, 'value', e.target.value)}
+                                        className="flex-1 bg-base border border-outline rounded px-2 py-1.5 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                    />
+                                    <button
+                                        onClick={() => removeMacro(i)}
+                                        className="p-1.5 text-secondary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
+                                    >
+                                        <Trash2 size={16} />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
                     )}
                     <button
                         onClick={addMacro}

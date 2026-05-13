@@ -195,9 +195,9 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
         const colorClass = hasContent ? "text-secondary hover:text-primary border-secondary" : "text-[#FF997D] hover:text-[#ffab94] border-[#FF997D]";
         return (
-            <span className="inline-flex flex-col w-full align-top my-1">
+            <span className="inline align-top">
                 <span 
-                    className={`inline-block self-start border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors ${colorClass}`}
+                    className={`inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors ${colorClass}`}
                     onClick={handleClick}
                     title={`Close ${displayTitle}`}
                 >
