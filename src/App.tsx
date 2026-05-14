@@ -12,14 +12,15 @@ import "./index.css";
 
 export default function App() {
     const blocks = useStore(state => state.blocks);
-    const { addBlock, setActiveBlock, loadBlocks, loadMacros, openTabs, activeTab, setOpenTabs, setActiveTab } = useStore();
+    const { addBlock, setActiveBlock, loadBlocks, loadMacros, openTabs, activeTab, setOpenTabs, setActiveTab, initSync } = useStore();
     const [searchQuery, setSearchQuery] = useState("");
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
 
     useEffect(() => {
         loadBlocks();
         loadMacros();
-    }, [loadBlocks, loadMacros]);
+        initSync();
+    }, [loadBlocks, loadMacros, initSync]);
 
     useEffect(() => {
         const validTabs = openTabs.filter(t => blocks.some(b => b.id === t));

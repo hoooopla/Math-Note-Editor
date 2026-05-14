@@ -1,6 +1,7 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import fs from "fs/promises";
+import fsSync from "fs";
 import path from "path";
 import matter from "gray-matter";
 import { v4 as uuidv4 } from "uuid";
@@ -19,6 +20,15 @@ interface BlockData {
 }
 
 let blocksMap = new Map<string, BlockData>();
+let sseClients: express.Response[] = [];
+
+function notifyClients(message: any) {
+    sseClients.forEach(client => {
+        try {
+            client.write(`data: ${JSON.stringify(message)}\n\n`);
+        } catch (e) { }
+    });
+}
 
 async function ensureDir(dir: string) {
     try {
@@ -330,8 +340,70 @@ app.delete("/api/blocks/:id", async (req, res) => {
     }
 });
 
+app.get("/api/events", (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const keepAlive = setInterval(() => {
+        try {
+            res.write(':keepalive\n\n');
+        } catch (e) {
+            clearInterval(keepAlive);
+        }
+    }, 30000);
+
+    sseClients.push(res);
+
+    req.on('close', () => {
+        clearInterval(keepAlive);
+        sseClients = sseClients.filter(client => client !== res);
+    });
+});
+
 async function startServer() {
     await initBlocks();
+
+    if (fsSync.existsSync(BLOCKS_DIR)) {
+        fsSync.watch(BLOCKS_DIR, (eventType, filename) => {
+            if (!filename || !filename.endsWith('.md')) return;
+            
+            setTimeout(async () => {
+                const filePath = path.join(BLOCKS_DIR, filename);
+                let content;
+                try {
+                    content = await fs.readFile(filePath, "utf-8");
+                } catch (e) {
+                    const id = Array.from(blockIdToFileMap.entries()).find(([k, v]) => v === filename)?.[0];
+                    if (id && blocksMap.has(id)) {
+                        blocksMap.delete(id);
+                        blockIdToFileMap.delete(id);
+                        notifyClients({ type: 'delete', id });
+                    }
+                    return;
+                }
+
+                const parsed = matter(content);
+                const id = parsed.data.id || filename.replace(".md", "");
+                
+                const existing = blocksMap.get(id);
+                if (existing && existing.content === parsed.content && existing.title === parsed.data.title && existing.label === parsed.data.label) {
+                    return; // No change or our own update
+                }
+
+                const newBlock = {
+                    id,
+                    title: parsed.data.title || "",
+                    label: parsed.data.label || "",
+                    content: parsed.content
+                };
+                blocksMap.set(id, newBlock);
+                blockIdToFileMap.set(id, filename);
+                notifyClients({ type: 'update', block: newBlock });
+            }, 100);
+        });
+    }
 
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {

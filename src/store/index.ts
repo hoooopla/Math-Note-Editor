@@ -31,9 +31,12 @@ interface AppState {
   setOpenTabs: (tabs: string[]) => void;
   setActiveTab: (id: string | null) => void;
   openBlockInTab: (id: string, activate: boolean) => void;
+  initSync: () => void;
 }
 
 const syncTimeouts: Record<string, NodeJS.Timeout> = {};
+
+let eventSource: EventSource | null = null;
 
 export const useStore = create<AppState>((set, get) => ({
   blocks: [],
@@ -211,4 +214,50 @@ export const useStore = create<AppState>((set, get) => ({
       };
     });
   },
+  initSync: () => {
+    if (eventSource) return;
+    eventSource = new EventSource('/api/events');
+    eventSource.onmessage = (e) => {
+      if (e.data === ':keepalive') return;
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'update' && msg.block) {
+          set(state => {
+            const idx = state.blocks.findIndex(b => b.id === msg.block.id);
+            if (idx !== -1) {
+              const current = state.blocks[idx];
+              // Only update if something changed
+              if (current.content !== msg.block.content || current.title !== msg.block.title || current.label !== msg.block.label) {
+                const newBlocks = [...state.blocks];
+                newBlocks[idx] = { ...current, ...msg.block, content: current.content !== undefined ? msg.block.content : undefined };
+                // Also update content if it was loaded
+                return { blocks: newBlocks };
+              }
+            } else {
+              return { blocks: [...state.blocks, { ...msg.block, content: undefined }] };
+            }
+            return state;
+          });
+        } else if (msg.type === 'delete' && msg.id) {
+          set(state => {
+            const idx = state.blocks.findIndex(b => b.id === msg.id);
+            if (idx === -1) return state;
+            const newBlocks = state.blocks.filter(b => b.id !== msg.id);
+            let nextActive = state.activeBlockId;
+            let newTabs = state.openTabs.filter(t => t !== msg.id);
+            let newActiveTab = state.activeTab === msg.id ? (newTabs.length > 0 ? newTabs[newTabs.length - 1] : null) : state.activeTab;
+            
+            if (state.activeBlockId === msg.id) {
+                if (newBlocks.length > 0) {
+                    nextActive = newBlocks[Math.max(0, idx - 1)].id;
+                } else {
+                    nextActive = null;
+                }
+            }
+            return { blocks: newBlocks, activeBlockId: nextActive, openTabs: newTabs, activeTab: newActiveTab };
+          });
+        }
+      } catch (err) {}
+    };
+  }
 }));
