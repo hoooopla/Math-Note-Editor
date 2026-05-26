@@ -23,7 +23,7 @@ export interface ParsedRange {
     from: number;
     to: number;
     text: string;
-    type: "blockMath" | "inlineMath" | "bold" | "italic" | "underline" | "list";
+    type: "blockMath" | "inlineMath" | "bold" | "italic" | "underline" | "list" | "quote";
 }
 
 function parseRanges(doc: string): ParsedRange[] {
@@ -137,6 +137,22 @@ function parseRanges(doc: string): ParsedRange[] {
         }
     }
 
+    const quoteRegex = /^[ \t]*(> )(.*)$/gm;
+    while ((match = quoteRegex.exec(doc)) !== null) {
+        const start = match.index + match[0].indexOf('> ');
+        const end = match.index + match[0].length;
+        // Only check if the "> " itself overlaps with something, not the whole line
+        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(start + 2, r.to));
+        if (!overlapping) {
+            ranges.push({
+                from: start,
+                to: end,
+                text: match[0].substring(match[0].indexOf('> ')),
+                type: "quote"
+            });
+        }
+    }
+
     ranges.sort((a, b) => a.from - b.from);
     return ranges;
 }
@@ -223,7 +239,6 @@ class ListWidget extends WidgetType {
 }
 
 function buildLiveDecorations(state: EditorState) {
-    const builder = new RangeSetBuilder<Decoration>();
     const doc = state.doc.toString();
     const macros = state.facet(livePreviewMacros);
     const isFocused = state.field(editorFocusField, false);
@@ -233,9 +248,14 @@ function buildLiveDecorations(state: EditorState) {
     const decos: {from: number, to: number, deco: Decoration}[] = [];
 
     for (const r of ranges) {
-        // Only evaluate overlapping logic if the editor actually has DOM focus (isFocused).
-        // Otherwise, it should render the widgets because the user clicked away.
-        const overlapping = (isFocused !== false) && (selection.from <= r.to && selection.to >= r.from);
+        let overlapping = false;
+        if (isFocused !== false) {
+            if (r.type === "quote") {
+                overlapping = selection.from <= r.from + 2 && selection.to >= r.from;
+            } else {
+                overlapping = selection.from <= r.to && selection.to >= r.from;
+            }
+        }
         
         if (overlapping) {
             let editClass = "cm-math-editing";
@@ -243,6 +263,8 @@ function buildLiveDecorations(state: EditorState) {
                 editClass = "bg-neutral-800/80 text-blue-300 rounded px-1";
             } else if (r.type === "list") {
                 editClass = "text-blue-400 font-bold";
+            } else if (r.type === "quote") {
+                editClass = "text-[#CBF0FF] font-bold";
             }
             
             // 1. The outer background wrapping
@@ -340,6 +362,11 @@ function buildLiveDecorations(state: EditorState) {
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
                     widget: new ListWidget()
                 })});
+            } else if (r.type === "quote") {
+                decos.push({from: r.from, to: r.from + 2, deco: Decoration.replace({})});
+                if (r.to > r.from + 2) {
+                    decos.push({from: r.from + 2, to: r.to, deco: Decoration.mark({ class: "text-[#CBF0FF] font-bold" })});
+                }
             } else {
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
                     widget: new MathWidget(r.text, r.type === "blockMath", macros)
@@ -348,14 +375,7 @@ function buildLiveDecorations(state: EditorState) {
         }
     }
 
-    // Sort to satisfy RangeSetBuilder constraints: strictly increasing `from`, decreasing `to`.
-    decos.sort((a, b) => a.from - b.from || b.to - a.to);
-
-    for (const d of decos) {
-        builder.add(d.from, d.to, d.deco);
-    }
-
-    return builder.finish();
+    return Decoration.set(decos.map(d => d.deco.range(d.from, d.to)), true);
 }
 
 export const mathPlugin = StateField.define<DecorationSet>({
