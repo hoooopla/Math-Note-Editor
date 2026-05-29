@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
+import { api as backendApi } from './api';
 
 export interface BlockData {
   id: string;
@@ -19,6 +20,9 @@ interface AppState {
   macros: Record<string, string>;
   openTabs: string[];
   activeTab: string | null;
+  backendMode: "server" | "local" | "none";
+  initBackend: () => Promise<void>;
+  connectLocalFS: () => Promise<void>;
   loadBlocks: () => Promise<void>;
   loadMacros: () => Promise<void>;
   saveMacros: (macros: Record<string, string>) => Promise<void>;
@@ -46,14 +50,31 @@ export const useStore = create<AppState>((set, get) => ({
   focusDirection: null,
   openTabs: [],
   activeTab: null,
+  backendMode: "none",
   macros: {
     "\\R": "\\mathbb{R}",
     "\\N": "\\mathbb{N}"
   },
+  initBackend: async () => {
+    await backendApi.init();
+    set({ backendMode: backendApi.mode });
+    if (backendApi.mode !== "none") {
+      await get().loadBlocks();
+      await get().loadMacros();
+      get().initSync();
+    }
+  },
+  connectLocalFS: async () => {
+    const success = await backendApi.connectLocalFS();
+    if (success) {
+      set({ backendMode: backendApi.mode });
+      await get().loadBlocks();
+      await get().loadMacros();
+    }
+  },
   loadMacros: async () => {
     try {
-      const res = await fetch('/api/macros');
-      const data = await res.json();
+      const data = await backendApi.loadMacros();
       if (Object.keys(data).length > 0) {
         set({ macros: data });
       }
@@ -64,19 +85,14 @@ export const useStore = create<AppState>((set, get) => ({
   saveMacros: async (macros) => {
     try {
       set({ macros });
-      await fetch('/api/macros', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(macros),
-      });
+      await backendApi.saveMacros(macros);
     } catch (e) {
       console.error("Failed to save macros", e);
     }
   },
   loadBlocks: async () => {
     try {
-      const res = await fetch('/api/blocks?metaOnly=true');
-      const blocks = await res.json();
+      const blocks = await backendApi.loadBlocks();
       set({ blocks });
     } catch (e) {
       console.error("Failed to load blocks", e);
@@ -87,9 +103,8 @@ export const useStore = create<AppState>((set, get) => ({
       const block = get().blocks.find(b => b.id === id);
       if (block && block.content !== undefined) return; // already loaded
       
-      const res = await fetch(`/api/blocks/${id}`);
-      if (!res.ok) return;
-      const fullBlock = await res.json();
+      const fullBlock = await backendApi.loadBlockContent(id, get().blocks);
+      if (!fullBlock) return;
       set(state => ({
         blocks: state.blocks.map(b => b.id === id ? { ...b, content: fullBlock.content } : b)
       }));
@@ -112,12 +127,7 @@ export const useStore = create<AppState>((set, get) => ({
 
     const newBlockData = { title: 'New Block', label, content: '', ...data };
     try {
-      const res = await fetch('/api/blocks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newBlockData)
-      });
-      const newBlock = await res.json();
+      const newBlock = await backendApi.addBlock(newBlockData, get().blocks);
       
       set((state) => {
         if (index !== undefined && index !== -1) {
@@ -146,34 +156,27 @@ export const useStore = create<AppState>((set, get) => ({
       if (!block) return;
 
       try {
-        const res = await fetch(`/api/blocks/${id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(block)
-        });
-        if (res.ok) {
-            const result = await res.json();
-            if (result.updatedBlocks && result.updatedBlocks.length > 0) {
-                // Apply server-side cascades (label renames & reference updates)
-                set(s => {
-                    const newBlocks = [...s.blocks];
-                    result.updatedBlocks.forEach((ub: any) => {
-                        const idx = newBlocks.findIndex(b => b.id === ub.id);
-                        if (idx !== -1) {
-                            // Only update content if we already have it loaded, 
-                            // or if the server gave us updated content.
-                            const current = newBlocks[idx];
-                            newBlocks[idx] = { 
-                                ...current, 
-                                label: ub.label,
-                                title: ub.title,
-                                ...(current.content !== undefined ? { content: ub.content } : {})
-                            };
-                        }
-                    });
-                    return { blocks: newBlocks };
+        const result = await backendApi.updateBlock(id, block as BlockData, get().blocks);
+        if (result.updatedBlocks && result.updatedBlocks.length > 0) {
+            // Apply server-side cascades (label renames & reference updates)
+            set(s => {
+                const newBlocks = [...s.blocks];
+                result.updatedBlocks!.forEach((ub: any) => {
+                    const idx = newBlocks.findIndex(b => b.id === ub.id);
+                    if (idx !== -1) {
+                        // Only update content if we already have it loaded, 
+                        // or if the server gave us updated content.
+                        const current = newBlocks[idx];
+                        newBlocks[idx] = { 
+                            ...current, 
+                            label: ub.label,
+                            title: ub.title,
+                            ...(current.content !== undefined ? { content: ub.content } : {})
+                        };
+                    }
                 });
-            }
+                return { blocks: newBlocks };
+            });
         }
       } catch (e) {
           console.error(e);
@@ -182,7 +185,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
   deleteBlock: async (id) => {
     try {
-      await fetch(`/api/blocks/${id}`, { method: 'DELETE' });
+      await backendApi.deleteBlock(id, get().blocks);
       set((state) => {
         const idx = state.blocks.findIndex(b => b.id === id);
         if (idx === -1) return state;
@@ -215,6 +218,7 @@ export const useStore = create<AppState>((set, get) => ({
     });
   },
   initSync: () => {
+    if (backendApi.mode !== "server") return;
     if (eventSource) return;
     eventSource = new EventSource('/api/events');
     eventSource.onmessage = (e) => {
