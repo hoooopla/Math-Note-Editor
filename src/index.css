@@ -52,3 +52,31 @@ body {
   font-family: var(--font-mono) !important;
   font-size: 14.5px;
 }
+
+.cm-tooltip-autocomplete {
+  z-index: 9999 !important;
+}
+
+.cm-completionIcon-create:after {
+  content: "+";
+  color: var(--color-accent);
+  font-weight: bold;
+}
+
+@layer components {
+  .cm-tooltip-autocomplete > ul > li {
+    font-family: var(--font-sans);
+    font-size: 15px;
+  }
+  .cm-completionDetail {
+    color: var(--color-secondary) !important;
+    font-size: 0.85em !important;
+    font-style: italic;
+    opacity: 0.8;
+  }
+  .cm-completionMatchedText {
+    color: var(--color-accent) !important;
+    font-weight: bold;
+    text-decoration: none;
+  }
+}

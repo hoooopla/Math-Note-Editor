@@ -237,8 +237,7 @@ function getEmbedTooltip(state: import("@codemirror/state").EditorState): Toolti
     const parentLabel = state.facet(parentLabelFacet);
 
     for (const link of links) {
-        const overlapping = selection.from <= link.to && selection.to >= link.from;
-        if (overlapping) {
+        if (selection.head >= link.from + 2 && selection.head <= link.to - 2) {
             let rawText = link.text;
             if (rawText.startsWith("@")) rawText = rawText.slice(1);
             if (rawText.endsWith("∨")) rawText = rawText.slice(0, -1);
@@ -251,35 +250,14 @@ function getEmbedTooltip(state: import("@codemirror/state").EditorState): Toolti
                 fullLabel = parentLabel + rawLabel;
             }
 
-            const blocks = useStore.getState().blocks;
-            const isLabelExisted = !!blocks.find(b => b.label === fullLabel);
+            const store = useStore.getState();
+            const isLabelExisted = !!store.blocks.find(b => b.label === fullLabel);
 
-            if (!isLabelExisted) {
+            if (isLabelExisted) {
                 return {
                     pos: link.from,
                     above: true,
-                    create(view: EditorView) {
-                        const dom = document.createElement("div");
-                        dom.className = "flex items-center gap-2 p-2 bg-surface text-[15px] border border-outline shadow-lg rounded-xl text-primary z-50 mb-3 mx-2 pointer-events-none";
-                        
-                        const icon = document.createElement("span");
-                        icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plus-circle text-accent"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>`;
-                        
-                        const textObj = document.createElement("span");
-                        textObj.className = "text-sm text-secondary font-medium";
-                        textObj.innerHTML = `Press <kbd class="px-[5px] py-[2px] bg-neutral-800 rounded mx-1 text-xs text-primary border border-neutral-700 shadow-sm font-sans mx-1">Enter</kbd> to create <b class="text-accent underline decoration-dotted underline-offset-4 ml-1">${fullLabel}</b>`;
-                        
-                        dom.appendChild(icon);
-                        dom.appendChild(textObj);
-
-                        return { dom };
-                    }
-                };
-            } else {
-                return {
-                    pos: link.from,
-                    above: true,
-                    create(view: EditorView) {
+                    create() {
                         const dom = document.createElement("div");
                         dom.className = "flex items-center gap-2 p-2 bg-surface text-[15px] border border-outline shadow-lg rounded-xl text-primary z-50 mb-3 mx-2 pointer-events-none px-3";
                         
@@ -314,7 +292,7 @@ export const embedKeymap: KeyBinding[] = [
             const parentLabel = view.state.facet(parentLabelFacet);
             
             for (const link of links) {
-                if (selection.from <= link.to && selection.to >= link.from) {
+                if (selection.head >= link.from + 2 && selection.head <= link.to - 2) {
                     let rawText = link.text;
                     if (rawText.startsWith("@")) rawText = rawText.slice(1);
                     if (rawText.endsWith("∨")) rawText = rawText.slice(0, -1);
@@ -327,23 +305,8 @@ export const embedKeymap: KeyBinding[] = [
                     const isLabelExisted = !!store.blocks.find(b => b.label === fullLabel);
                     
                     if (!isLabelExisted) {
-                        let newTitle = pipeIdx !== -1 ? rawText.slice(pipeIdx + 2).trim() : (rawLabel.startsWith("/") ? rawLabel.slice(1) : rawLabel);
-                        
-                        store.addBlock(-1, { title: newTitle, label: fullLabel, content: "" }).then((newBlock) => {
-                            let inner = link.text;
-                            if (!inner.endsWith("∨")) {
-                                view.dispatch({
-                                    changes: { from: link.from, to: link.to, insert: `[[${inner}∨]]` }
-                                });
-                            }
-                            
-                            if (newBlock) {
-                                const visited = view.state.facet(visitedLabelsFacet);
-                                useStore.getState().setActiveBlock(newBlock.id, "start", [...visited, fullLabel]);
-                                view.contentDOM.blur();
-                            }
-                        });
-                        return true;
+                        // Do not create missing blocks automatically via Enter anymore.
+                        return false;
                     } else {
                         // Toggle open/close if it exists
                         let inner = link.text;

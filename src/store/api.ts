@@ -122,14 +122,14 @@ export const api: BackendApi = {
             return await res.json();
         }
         if (api.mode === "local" && dirHandle) {
-            const blocks: BlockData[] = [];
+            const blocksMap = new Map<string, BlockData>();
             for await (const entry of dirHandle.values()) {
                 if (entry.kind === 'file' && entry.name.endsWith('.md')) {
                     const file = await entry.getFile();
                     const text = await file.text();
                     const { data, content } = parseFrontmatter(text);
                     const id = data.id || entry.name.replace('.md', '');
-                    blocks.push({
+                    blocksMap.set(id, {
                         id,
                         title: data.title || '',
                         label: data.label || '',
@@ -137,6 +137,7 @@ export const api: BackendApi = {
                     });
                 }
             }
+            const blocks = Array.from(blocksMap.values());
             blocks.sort((a,b) => a.title.localeCompare(b.title));
             return blocks;
         }

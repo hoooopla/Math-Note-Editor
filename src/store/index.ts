@@ -130,12 +130,14 @@ export const useStore = create<AppState>((set, get) => ({
       const newBlock = await backendApi.addBlock(newBlockData, get().blocks);
       
       set((state) => {
+        const withoutNew = state.blocks.filter(b => b.id !== newBlock.id);
         if (index !== undefined && index !== -1) {
-          const newBlocks = [...state.blocks];
-          newBlocks.splice(index + 1, 0, newBlock);
+          const newBlocks = [...withoutNew];
+          const insertIdx = index >= withoutNew.length ? withoutNew.length : index + 1;
+          newBlocks.splice(insertIdx, 0, newBlock);
           return { blocks: newBlocks, activeBlockId: newBlock.id, focusDirection: "start" };
         }
-        return { blocks: [...state.blocks, newBlock], activeBlockId: newBlock.id, focusDirection: "start" };
+        return { blocks: [...withoutNew, newBlock], activeBlockId: newBlock.id, focusDirection: "start" };
       });
       return newBlock;
     } catch (e) {

@@ -6,8 +6,9 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField } from "../lib/editor/katex-plugin";
 import { blockNavigation } from "../lib/editor/navigation";
-import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
+import { autocompletion, closeBrackets, acceptCompletion } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
+import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { embeddedBlockPlugin, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, embedKeymap } from "../lib/editor/embedded-block-plugin";
 
 let isGlobalMousePressed = false;
@@ -109,7 +110,28 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 embeddedBlockPlugin,
                 embedTooltipField,
                 closeBrackets(),
-                autocompletion({ override: [latexCompletion] }),
+                keymap.of([{ 
+                    key: "Tab", 
+                    run: (view) => {
+                        const head = view.state.selection.main.head;
+                        const match = view.state.doc.slice(Math.max(0, head - 100), head).toString().match(/\[\[([^\]]*)$/);
+                        if (match) {
+                            const parentLabel = view.state.facet(parentLabelFacet);
+                            if (parentLabel) {
+                                view.dispatch({
+                                    changes: { from: head - match[1].length, to: head, insert: parentLabel }
+                                });
+                                // also close autocomplete if open
+                                import("@codemirror/autocomplete").then(({ closeCompletion }) => {
+                                    closeCompletion(view);
+                                });
+                                return true;
+                            }
+                        }
+                        return false;
+                    } 
+                }]),
+                autocompletion({ override: [latexCompletion, linkCompletion] }),
                 blockNavigation(() => onUpRef.current(), () => onDownRef.current()),
                 EditorView.domEventHandlers({
                     focus: (e, view) => {
@@ -136,6 +158,17 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                     const isUserEvent = update.transactions.some(tr => Boolean(tr.annotation(Transaction.userEvent)));
                     if (update.docChanged && onChangeRef.current && isUserEvent) {
                         onChangeRef.current(update.state.doc.toString());
+                        
+                        // the menu should pop up when editing (including deleting text)
+                        const head = update.state.selection.main.head;
+                        const match = update.state.doc.slice(Math.max(0, head - 100), head).toString().match(/\[\[[^\]]*$/);
+                        if (match) {
+                            setTimeout(() => {
+                                import("@codemirror/autocomplete").then(({ startCompletion }) => {
+                                    startCompletion(update.view);
+                                });
+                            }, 10);
+                        }
                     }
                     // Sync only when focus is lost to prevent React from re-rendering the app rapidly
                     if (update.focusChanged && !update.view.hasFocus) {

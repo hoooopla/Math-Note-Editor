@@ -159,7 +159,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                     </div>
                     <span className="text-xs text-secondary px-1 rounded border border-outline">{fullLabel}</span>
                 </div>
-                <div className="p-3 bg-surface/50 rounded-b-lg font-sans text-primary relative z-50 overflow-visible" 
+                <div className="p-3 bg-surface/50 rounded-b-lg font-sans text-primary relative overflow-visible" 
                      onClick={e => {
                          // Prevents clicking inside widget from blurring the view/widget inappropriately?
                          // e.stopPropagation() is already somewhat implicit for embedded elements, but let's be safe.
@@ -203,7 +203,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 >
                     {displayTitle}
                 </span>
-                <span className="block w-full pl-4 py-2 border-l-2 border-accent/30 my-2 select-text bg-surface/30 rounded-r-lg relative z-50 overflow-visible" 
+                <span className="block w-full pl-4 py-2 border-l-2 border-accent/30 my-2 select-text bg-surface/30 rounded-r-lg relative overflow-visible" 
                      onClick={e => e.stopPropagation()}>
                     <CodeMirrorEditor 
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
