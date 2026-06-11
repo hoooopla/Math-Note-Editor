@@ -10,6 +10,7 @@ import { autocompletion, closeBrackets, acceptCompletion } from "@codemirror/aut
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { embeddedBlockPlugin, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, embedKeymap } from "../lib/editor/embedded-block-plugin";
+import { ligaturePlugin } from "../lib/editor/ligature-plugin";
 
 let isGlobalMousePressed = false;
 if (typeof window !== "undefined") {
@@ -109,17 +110,27 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 parsedLinksField,
                 embeddedBlockPlugin,
                 embedTooltipField,
+                ligaturePlugin,
                 closeBrackets(),
                 keymap.of([{ 
                     key: "Tab", 
                     run: (view) => {
                         const head = view.state.selection.main.head;
-                        const match = view.state.doc.slice(Math.max(0, head - 100), head).toString().match(/\[\[([^\]]*)$/);
-                        if (match) {
+                        const line = view.state.doc.lineAt(head);
+                        const textBefore = line.text.slice(0, head - line.from);
+                        const textAfter = line.text.slice(head - line.from);
+                        
+                        const matchBefore = textBefore.match(/\[\[([^\]\|]*)$/);
+                        if (matchBefore) {
+                            const matchAfter = textAfter.match(/^([^\]\|]*)/);
+                            const replaceFrom = head - matchBefore[1].length;
+                            const replaceTo = head + (matchAfter ? matchAfter[1].length : 0);
+                            
                             const parentLabel = view.state.facet(parentLabelFacet);
                             if (parentLabel) {
                                 view.dispatch({
-                                    changes: { from: head - match[1].length, to: head, insert: parentLabel }
+                                    changes: { from: replaceFrom, to: replaceTo, insert: parentLabel },
+                                    selection: { anchor: replaceFrom + parentLabel.length }
                                 });
                                 // also close autocomplete if open
                                 import("@codemirror/autocomplete").then(({ closeCompletion }) => {

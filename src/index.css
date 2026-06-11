@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -8,8 +9,8 @@
   --color-primary: #ffffff;
   --color-secondary: #8b949e;
   --color-outline: #30363d;
-  --font-mono: 'Droid Sans Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  --font-sans: 'Palatino', 'Palatino Linotype', 'Book Antiqua', serif;
+  --font-mono: 'Fira Code', 'PingFang SC', 'Microsoft YaHei', 'WenQuanYi Micro Hei', 'Droid Sans Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  --font-sans: 'Palatino', 'Palatino Linotype', 'Book Antiqua', 'PingFang SC', 'Microsoft YaHei', serif;
 }
 
 body {
@@ -78,5 +79,9 @@ body {
     color: var(--color-accent) !important;
     font-weight: bold;
     text-decoration: none;
+  }
+  .cm-ligature {
+    font-family: var(--font-mono) !important;
+    font-variant-ligatures: contextual;
   }
 }
