@@ -195,7 +195,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                         overflow: "visible"
                     },
                     "&.cm-focused": { outline: "none" },
-                    ".cm-content": { caretColor: "var(--color-accent)", padding: "0", color: "var(--color-primary) !important", fontFamily: "var(--font-sans) !important" },
+                    ".cm-content": { caretColor: "var(--color-accent)", padding: "0", color: "var(--color-primary) !important", fontFamily: "var(--font-sans) !important", fontVariantLigatures: "contextual !important", fontFeatureSettings: '"calt" 1 !important' },
                     ".cm-line": { padding: "0", lineHeight: "1.6" },
                     ".cm-gutters": { backgroundColor: "transparent !important", color: "var(--color-secondary)", border: "none" },
                     ".cm-selectionBackground, .cm-content ::selection": {
