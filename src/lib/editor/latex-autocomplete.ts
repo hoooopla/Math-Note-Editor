@@ -1,5 +1,6 @@
 import { CompletionContext, snippetCompletion } from "@codemirror/autocomplete";
 import { useStore } from "../../store";
+import { latexCompletions } from "codemirror-lang-latex";
 
 // Standard Overleaf-style rich snippets that auto-place your cursor inside brackets
 const latexSnippets = [
@@ -13,13 +14,11 @@ const latexSnippets = [
     snippetCompletion("\\begin{${matrix}}\n\t${}\n\\end{${matrix}}", { label: "\\begin", detail: "environment" })
 ];
 
-// Standard keywords
-const latexKeywords = [
-    "alpha", "beta", "gamma", "delta", "epsilon", "theta", "lambda", "pi", "sigma", "omega",
-    "leftarrow", "rightarrow", "uparrow", "downarrow",
-    "approx", "neq", "leq", "geq", "cdot", "times",
-    "sin", "cos", "tan", "log", "ln"
-].map(cmd => ({ label: "\\" + cmd, type: "keyword" }));
+const builtInCommands = [
+    ...latexCompletions.mathCommands.map(cmd => ({ label: cmd, type: "keyword", detail: "math" })),
+    ...latexCompletions.commands.map(cmd => ({ label: cmd, type: "keyword", detail: "command" })),
+    ...latexCompletions.environments.map(env => ({ label: `\\begin{${env}}`, type: "keyword", detail: "environment" }))
+];
 
 export function latexCompletion(context: CompletionContext) {
     const word = context.matchBefore(/\\[a-zA-Z]*$/);
@@ -34,9 +33,18 @@ export function latexCompletion(context: CompletionContext) {
         type: "keyword"
     }));
 
+    // Deduplicate options by label, preferring snippets
+    const allOptions = [...latexSnippets, ...macroOptions, ...builtInCommands];
+    const seen = new Set<string>();
+    const uniqueOptions = allOptions.filter(opt => {
+        if (seen.has(opt.label)) return false;
+        seen.add(opt.label);
+        return true;
+    });
+
     return {
         from: word.from,
-        options: [...latexSnippets, ...latexKeywords, ...macroOptions],
+        options: uniqueOptions,
         validFor: /^\\[a-zA-Z]*$/
     };
 }
