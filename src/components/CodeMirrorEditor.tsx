@@ -6,7 +6,7 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField } from "../lib/editor/katex-plugin";
 import { blockNavigation } from "../lib/editor/navigation";
-import { autocompletion, closeBrackets, acceptCompletion } from "@codemirror/autocomplete";
+import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { embeddedBlockPlugin, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, embedKeymap } from "../lib/editor/embedded-block-plugin";
@@ -97,7 +97,27 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 history(),
                 customKeymap,
                 keymap.of(embedKeymap),
-                keymap.of([...defaultKeymap, ...historyKeymap]),
+                keymap.of([{
+                    key: "Backspace",
+                    run: (view) => {
+                        const head = view.state.selection.main.head;
+                        if (view.state.selection.main.empty) {
+                            const doc = view.state.doc;
+                            if (head >= 2 && head + 2 <= doc.length) {
+                                const before = doc.sliceString(head - 2, head);
+                                const after = doc.sliceString(head, head + 2);
+                                if ((before === "$$" && after === "$$") || (before === "[[" && after === "]]")) {
+                                    view.dispatch({
+                                        changes: { from: head - 2, to: head + 2, insert: "" }
+                                    });
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                }]),
+                keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),
                 markdown(),
                 EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["(", "[", "{", "'", '"', "$"] } }]),
                 macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
