@@ -124,7 +124,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     }
 
     // if_toggled = open
-    const macros = useStore.getState().macros;
+    const macros = useStore.getState().settings?.macros || {};
 
     const handleUp = () => {
         if (view && pos !== undefined) {

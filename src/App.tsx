@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useStore } from "./store";
 import { BlockContainer } from "./components/Block";
-import { MacroSettingsModal } from "./components/MacroSettingsModal";
+import { SettingsModal } from "./components/SettingsModal";
 import { Search, Plus, X, Settings, FolderOpen } from "lucide-react";
 import "./index.css";
 
@@ -208,7 +208,7 @@ export default function App() {
                     </div>
                 </div>
             </div>
-            <MacroSettingsModal isOpen={isMacroModalOpen} onClose={() => setIsMacroModalOpen(false)} />
+            <SettingsModal isOpen={isMacroModalOpen} onClose={() => setIsMacroModalOpen(false)} />
         </div>
     );
 }

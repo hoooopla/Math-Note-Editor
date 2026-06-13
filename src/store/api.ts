@@ -1,12 +1,18 @@
 import { BlockData } from './index';
 import { v4 as uuidv4 } from 'uuid';
 
+export interface EditorSettings {
+    macros: Record<string, string>;
+    customCommands: string[];
+    textCommands: string[];
+}
+
 export interface BackendApi {
     mode: "server" | "local" | "none";
     init: () => Promise<boolean>;
     connectLocalFS: () => Promise<boolean>;
-    loadMacros: () => Promise<Record<string, string>>;
-    saveMacros: (macros: Record<string, string>) => Promise<void>;
+    loadSettings: () => Promise<EditorSettings>;
+    saveSettings: (settings: EditorSettings) => Promise<void>;
     loadBlocks: () => Promise<BlockData[]>;
     loadBlockContent: (id: string, blocks: BlockData[]) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>, existingBlocks: BlockData[]) => Promise<BlockData>;
@@ -91,33 +97,36 @@ export const api: BackendApi = {
             return false;
         }
     },
-    loadMacros: async () => {
+    loadSettings: async () => {
+        const defaultSettings: EditorSettings = { macros: {}, customCommands: [], textCommands: [] };
         if (useServer) {
-            const res = await fetch('/api/macros');
-            return res.ok ? await res.json() : {};
+            const res = await fetch('/api/settings');
+            return res.ok ? await res.json() : defaultSettings;
         }
         if (api.mode === "local" && dirHandle) {
             try {
-                const fileHandle = await dirHandle.getFileHandle('macros.json');
+                const settingDirHandle = await dirHandle.getDirectoryHandle('setting');
+                const fileHandle = await settingDirHandle.getFileHandle('settings.json');
                 const file = await fileHandle.getFile();
                 return JSON.parse(await file.text());
             } catch(e) {
-                return {};
+                return defaultSettings;
             }
         }
-        return {};
+        return defaultSettings;
     },
-    saveMacros: async (macros) => {
+    saveSettings: async (settings) => {
         if (useServer) {
-            await fetch('/api/macros', {
+            await fetch('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(macros),
+                body: JSON.stringify(settings),
             });
         } else if (api.mode === "local" && dirHandle) {
-            const fileHandle = await dirHandle.getFileHandle('macros.json', { create: true });
+            const settingDirHandle = await dirHandle.getDirectoryHandle('setting', { create: true });
+            const fileHandle = await settingDirHandle.getFileHandle('settings.json', { create: true });
             const writable = await fileHandle.createWritable();
-            await writable.write(JSON.stringify(macros, null, 2));
+            await writable.write(JSON.stringify(settings, null, 2));
             await writable.close();
         }
     },

@@ -185,20 +185,24 @@ app.get("/api/blocks/:id", async (req, res) => {
     }
 });
 
-app.get("/api/macros", async (req, res) => {
+app.get("/api/settings", async (req, res) => {
     try {
-        const macrosPath = path.join(process.cwd(), "macros.json");
-        const content = await fs.readFile(macrosPath, "utf-8").catch(() => "{}");
+        const settingDir = path.join(process.cwd(), "blocks", "setting");
+        await ensureDir(settingDir);
+        const settingsPath = path.join(settingDir, "settings.json");
+        const content = await fs.readFile(settingsPath, "utf-8").catch(() => "{\"macros\":{},\"customCommands\":[],\"textCommands\":[]}");
         res.json(JSON.parse(content));
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
 });
 
-app.post("/api/macros", async (req, res) => {
+app.post("/api/settings", async (req, res) => {
     try {
-        const macrosPath = path.join(process.cwd(), "macros.json");
-        await fs.writeFile(macrosPath, JSON.stringify(req.body || {}, null, 2), "utf-8");
+        const settingDir = path.join(process.cwd(), "blocks", "setting");
+        await ensureDir(settingDir);
+        const settingsPath = path.join(settingDir, "settings.json");
+        await fs.writeFile(settingsPath, JSON.stringify(req.body || {}, null, 2), "utf-8");
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: String(e) });

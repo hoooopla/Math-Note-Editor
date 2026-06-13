@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import { api as backendApi } from './api';
+import { api as backendApi, EditorSettings } from './api';
 
 export interface BlockData {
   id: string;
@@ -17,21 +17,21 @@ interface AppState {
   activePath: string[] | null;
   activeFocusPos: number | null;
   focusDirection: "start" | "end" | null;
-  macros: Record<string, string>;
+  settings: EditorSettings;
   openTabs: string[];
   activeTab: string | null;
   backendMode: "server" | "local" | "none";
   initBackend: () => Promise<void>;
   connectLocalFS: () => Promise<void>;
   loadBlocks: () => Promise<void>;
-  loadMacros: () => Promise<void>;
-  saveMacros: (macros: Record<string, string>) => Promise<void>;
+  loadSettings: () => Promise<void>;
+  saveSettings: (settings: EditorSettings) => Promise<void>;
   loadBlockContent: (id: string) => Promise<void>;
   addBlock: (index?: number, data?: Partial<BlockData>) => Promise<BlockData | void>;
   updateBlock: (id: string, data: Partial<BlockData>) => void;
   deleteBlock: (id: string) => Promise<void>;
   setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null) => void;
-  setMacros: (macros: Record<string, string>) => void;
+  setSettings: (settings: EditorSettings) => void;
   setOpenTabs: (tabs: string[]) => void;
   setActiveTab: (id: string | null) => void;
   openBlockInTab: (id: string, activate: boolean) => void;
@@ -51,16 +51,20 @@ export const useStore = create<AppState>((set, get) => ({
   openTabs: [],
   activeTab: null,
   backendMode: "none",
-  macros: {
-    "\\R": "\\mathbb{R}",
-    "\\N": "\\mathbb{N}"
+  settings: {
+    macros: {
+      "\\R": "\\mathbb{R}",
+      "\\N": "\\mathbb{N}"
+    },
+    customCommands: [],
+    textCommands: []
   },
   initBackend: async () => {
     await backendApi.init();
     set({ backendMode: backendApi.mode });
     if (backendApi.mode !== "none") {
       await get().loadBlocks();
-      await get().loadMacros();
+      await get().loadSettings();
       get().initSync();
     }
   },
@@ -69,25 +73,25 @@ export const useStore = create<AppState>((set, get) => ({
     if (success) {
       set({ backendMode: backendApi.mode });
       await get().loadBlocks();
-      await get().loadMacros();
+      await get().loadSettings();
     }
   },
-  loadMacros: async () => {
+  loadSettings: async () => {
     try {
-      const data = await backendApi.loadMacros();
-      if (Object.keys(data).length > 0) {
-        set({ macros: data });
+      const data = await backendApi.loadSettings();
+      if (data) {
+        set({ settings: data });
       }
     } catch (e) {
-      console.error("Failed to load macros", e);
+      console.error("Failed to load settings", e);
     }
   },
-  saveMacros: async (macros) => {
+  saveSettings: async (settings) => {
     try {
-      set({ macros });
-      await backendApi.saveMacros(macros);
+      set({ settings });
+      await backendApi.saveSettings(settings);
     } catch (e) {
-      console.error("Failed to save macros", e);
+      console.error("Failed to save settings", e);
     }
   },
   loadBlocks: async () => {
@@ -207,7 +211,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
   setActiveBlock: (id, dir, path, pos) => set({ activeBlockId: id, focusDirection: dir || null, activePath: path || null, activeFocusPos: pos ?? null }),
-  setMacros: (macros) => set({ macros }),
+  setSettings: (settings) => set({ settings }),
   setOpenTabs: (tabs) => set({ openTabs: tabs }),
   setActiveTab: (id) => set({ activeTab: id }),
   openBlockInTab: (id, activate) => {

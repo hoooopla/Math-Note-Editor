@@ -32,16 +32,25 @@ export function latexCompletion(context: CompletionContext) {
     if (!word) return null;
     if (word.from === word.to && !context.explicit) return null;
 
-    // Get custom macros from store
-    const macros = useStore.getState().macros;
+    // Get settings from store
+    const settings = useStore.getState().settings;
+    const macros = settings.macros || {};
+    const customCommands = settings.customCommands || [];
+
     const macroOptions = Object.keys(macros).map(mac => ({
         label: mac,
         detail: "macro",
         type: "keyword"
     }));
 
+    const customCommandOptions = customCommands.map(cmd => ({
+        label: cmd,
+        detail: "custom",
+        type: "keyword"
+    }));
+
     // Deduplicate options by label, preferring snippets
-    const allOptions = [...latexSnippets, ...macroOptions, ...builtInCommands];
+    const allOptions = [...latexSnippets, ...macroOptions, ...customCommandOptions, ...builtInCommands];
     const seen = new Set<string>();
     const uniqueOptions = allOptions.filter(opt => {
         if (seen.has(opt.label)) return false;

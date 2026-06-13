@@ -9,6 +9,7 @@ import { blockNavigation } from "../lib/editor/navigation";
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
+import { textCompletion } from "../lib/editor/text-autocomplete";
 import { embeddedBlockPlugin, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, embedKeymap } from "../lib/editor/embedded-block-plugin";
 import { ligaturePlugin } from "../lib/editor/ligature-plugin";
 
@@ -157,7 +158,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                         return false;
                     } 
                 }]),
-                autocompletion({ override: [latexCompletion, linkCompletion] }),
+                autocompletion({ override: [latexCompletion, linkCompletion, textCompletion] }),
                 blockNavigation(() => onUpRef.current(), () => onDownRef.current()),
                 EditorView.domEventHandlers({
                     focus: (e, view) => {

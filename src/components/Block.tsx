@@ -11,7 +11,7 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
     const activePath = useStore(state => state.activePath);
     const isFocused = activeBlockId === id && (!activePath || (activePath.length === 1 && activePath[0] === block?.label));
     const focusDirection = useStore(state => state.focusDirection);
-    const macros = useStore(state => state.macros);
+    const macros = useStore(state => state.settings?.macros || {});
 
     const { setActiveBlock, updateBlock, deleteBlock, loadBlockContent } = useStore();
 
