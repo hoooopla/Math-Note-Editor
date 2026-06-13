@@ -43,7 +43,8 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
                 view.dispatch({
                     changes: { from, to, insert: applyText },
                 });
-                store.addBlock(undefined, { title: fullQueryLabel, label: fullQueryLabel });
+                const newTitle = fullQueryLabel.includes("/") ? fullQueryLabel.slice(fullQueryLabel.lastIndexOf("/") + 1) : fullQueryLabel;
+                store.addBlock(undefined, { title: newTitle, label: fullQueryLabel });
             }
         });
     }

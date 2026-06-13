@@ -31,8 +31,8 @@ function parseRanges(doc: string): ParsedRange[] {
     
     let i = 0;
     while (i < doc.length) {
-        if (doc.startsWith("$$", i)) {
-            let end = doc.indexOf("$$", i + 2);
+        if (doc.startsWith("\\[", i)) {
+            let end = doc.indexOf("\\]", i + 2);
             if (end !== -1) {
                 ranges.push({
                     from: i, 
@@ -322,7 +322,7 @@ function buildLiveDecorations(state: EditorState) {
                     });
                 }
 
-                // Math Delimiters ($ and $$) overleaf-green
+                // Math Delimiters ($ and \[\]) overleaf-green
                 if (r.type === "blockMath") {
                     decos.push({ from: r.from, to: r.from + 2, deco: Decoration.mark({ class: "text-[#98c379] font-bold" }) });
                     decos.push({ from: r.to - 2, to: r.to, deco: Decoration.mark({ class: "text-[#98c379] font-bold" }) });

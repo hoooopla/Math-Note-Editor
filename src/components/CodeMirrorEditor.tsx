@@ -98,21 +98,16 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 customKeymap,
                 keymap.of(embedKeymap),
                 keymap.of([{
-                    key: "Backspace",
+                    key: "[",
                     run: (view) => {
                         const head = view.state.selection.main.head;
-                        if (view.state.selection.main.empty) {
-                            const doc = view.state.doc;
-                            if (head >= 2 && head + 2 <= doc.length) {
-                                const before = doc.sliceString(head - 2, head);
-                                const after = doc.sliceString(head, head + 2);
-                                if ((before === "$$" && after === "$$") || (before === "[[" && after === "]]")) {
-                                    view.dispatch({
-                                        changes: { from: head - 2, to: head + 2, insert: "" }
-                                    });
-                                    return true;
-                                }
-                            }
+                        const doc = view.state.doc;
+                        if (head > 0 && doc.sliceString(head - 1, head) === "\\") {
+                            view.dispatch({
+                                changes: { from: head, insert: "[\\]" },
+                                selection: { anchor: head + 1 }
+                            });
+                            return true;
                         }
                         return false;
                     }

@@ -42,17 +42,22 @@ const stringifyFrontmatter = (data: Record<string, string>, content: string) => 
     return fm + content;
 };
 
-const getFileByBlockId = async (id: string): Promise<FileSystemFileHandle | null> => {
-    if (!dirHandle) return null;
+const getFileByBlockId = async (id: string, currentHandle: FileSystemDirectoryHandle | null = dirHandle): Promise<FileSystemFileHandle | null> => {
+    if (!currentHandle) return null;
     try {
-        for await (const entry of dirHandle.values()) {
+        for await (const entry of currentHandle.values()) {
             if (entry.kind === 'file' && entry.name.endsWith('.md')) {
                 const file = await entry.getFile();
                 const text = await file.text();
                 const { data } = parseFrontmatter(text);
+                // In recursive search, if we check by file name alone and there are duplicate names in diff folders, it might give the first.
+                // It is better to rely on data.id first, or name replacing.
                 if (data.id === id || entry.name.replace('.md', '') === id) {
                     return entry;
                 }
+            } else if (entry.kind === 'directory') {
+                const found = await getFileByBlockId(id, entry);
+                if (found) return found;
             }
         }
     } catch(e) { }
@@ -123,20 +128,31 @@ export const api: BackendApi = {
         }
         if (api.mode === "local" && dirHandle) {
             const blocksMap = new Map<string, BlockData>();
-            for await (const entry of dirHandle.values()) {
-                if (entry.kind === 'file' && entry.name.endsWith('.md')) {
-                    const file = await entry.getFile();
-                    const text = await file.text();
-                    const { data, content } = parseFrontmatter(text);
-                    const id = data.id || entry.name.replace('.md', '');
-                    blocksMap.set(id, {
-                        id,
-                        title: data.title || '',
-                        label: data.label || '',
-                        hasContent: content.trim().length > 0
-                    });
+            
+            async function scanDir(handle: FileSystemDirectoryHandle, currentPath = '') {
+                for await (const entry of handle.values()) {
+                    if (entry.kind === 'file' && entry.name.endsWith('.md')) {
+                        const file = await entry.getFile();
+                        const text = await file.text();
+                        const { data, content } = parseFrontmatter(text);
+                        // Store the relative path instead of just the name in the map, or use data.id
+                        const fileId = currentPath ? `${currentPath}/${entry.name}`.replace('.md', '') : entry.name.replace('.md', '');
+                        const id = data.id || fileId;
+                        blocksMap.set(id, {
+                            id,
+                            title: data.title || '',
+                            label: data.label || '',
+                            hasContent: content.trim().length > 0
+                        });
+                    } else if (entry.kind === 'directory') {
+                        const newPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+                        await scanDir(entry, newPath);
+                    }
                 }
             }
+            
+            await scanDir(dirHandle);
+
             const blocks = Array.from(blocksMap.values());
             blocks.sort((a,b) => a.title.localeCompare(b.title));
             return blocks;

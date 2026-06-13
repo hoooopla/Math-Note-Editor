@@ -65,7 +65,7 @@ const INITIAL_BLOCKS = [
         id: uuidv4(),
         title: '1. Mathematical Capabilities 🧮',
         label: 'showcase:math',
-        content: "Math Notes uses **KaTeX** to provide blazingly fast live previews of your math.\n\nFor block math, write your equations wrapped in `$$`:\n$$\n\\mathcal{F}\\{f(t)\\} = \\int_{-\\infty}^{\\infty} f(t) e^{-i\\omega t} dt\n$$\n\nFor inline math, use single `$`. Try clicking into this equation to see the interactive math tooltip: $\\sum_{v \\in V} \\text{deg}(v) = 2|E|$. It lets you safely edit the raw LaTeX while previewing the outcome immediately above your cursor!",
+        content: "Math Notes uses **KaTeX** to provide blazingly fast live previews of your math.\n\nFor block math, write your equations wrapped in `\\[` and `\\]`:\n\\[\n\\mathcal{F}\\{f(t)\\} = \\int_{-\\infty}^{\\infty} f(t) e^{-i\\omega t} dt\n\\]\n\nFor inline math, use single `$`. Try clicking into this equation to see the interactive math tooltip: $\\sum_{v \\in V} \\text{deg}(v) = 2|E|$. It lets you safely edit the raw LaTeX while previewing the outcome immediately above your cursor!",
     },
     {
         id: uuidv4(),
@@ -77,7 +77,7 @@ const INITIAL_BLOCKS = [
         id: uuidv4(),
         title: '3. All Features Showcase 🌟',
         label: 'showcase:features',
-        content: "Here is a quick showcase of **all the formatting** you can use in Math Notes!\n\n**Markdown Styling**\n* You can use **bold text** for emphasis.\n* You can also use *italic text* if you prefer.\n* Or perhaps some _underline text_ to highlight things.\n\n**Mathematics**\nMath features make it easy to write equations, like $e^{i\\pi} + 1 = 0$ inline!\n\nFor more complex formulas, use block math:\n$$\n\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}\n$$\n\n**Embedded Blocks**\nYou can easily embed other blocks inline to build up complex thoughts.\nHere is the math page again: [[showcase:math || Math Features∨]]"
+        content: "Here is a quick showcase of **all the formatting** you can use in Math Notes!\n\n**Markdown Styling**\n* You can use **bold text** for emphasis.\n* You can also use *italic text* if you prefer.\n* Or perhaps some _underline text_ to highlight things.\n\n**Mathematics**\nMath features make it easy to write equations, like $e^{i\\pi} + 1 = 0$ inline!\n\nFor more complex formulas, use block math:\n\\[\n\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}\n\\]\n\n**Embedded Blocks**\nYou can easily embed other blocks inline to build up complex thoughts.\nHere is the math page again: [[showcase:math || Math Features∨]]"
     }
 ];
 
@@ -86,11 +86,14 @@ const blockIdToFileMap = new Map<string, string>();
 async function writeBlockToFile(block: any) {
     const safeTitle = (block.title || "Untitled").replace(/[/\\?%*:|"<>]/g, '-').trim() || "Untitled";
     let oldFilename = blockIdToFileMap.get(block.id);
-    let newFilename = `${safeTitle}.md`;
+    let baseDir = oldFilename ? path.dirname(oldFilename) : "";
+    if (baseDir === ".") baseDir = "";
+
+    let newFilename = baseDir ? path.join(baseDir, `${safeTitle}.md`) : `${safeTitle}.md`;
 
     const isConflict = Array.from(blockIdToFileMap.entries()).some(([i, f]) => f === newFilename && i !== block.id);
     if (isConflict) {
-        newFilename = `${safeTitle} - ${block.id.slice(0, 8)}.md`;
+        newFilename = baseDir ? path.join(baseDir, `${safeTitle} - ${block.id.slice(0, 8)}.md`) : `${safeTitle} - ${block.id.slice(0, 8)}.md`;
     }
 
     const filePath = path.join(BLOCKS_DIR, newFilename);
@@ -99,6 +102,10 @@ async function writeBlockToFile(block: any) {
         title: block.title,
         label: block.label
     });
+    
+    if (baseDir) {
+        await ensureDir(path.join(BLOCKS_DIR, baseDir));
+    }
     await fs.writeFile(filePath, fileContent, "utf-8");
 
     if (oldFilename && oldFilename !== newFilename) {
@@ -113,26 +120,27 @@ async function writeBlockToFile(block: any) {
 
 async function initBlocks() {
     await ensureDir(BLOCKS_DIR);
-    const files = await fs.readdir(BLOCKS_DIR);
-    if (files.filter(f => f.endsWith(".md")).length === 0) {
+    const files = await fs.readdir(BLOCKS_DIR, { recursive: true });
+    if (files.filter(f => typeof f === 'string' && f.endsWith(".md")).length === 0) {
         for (const block of INITIAL_BLOCKS) {
             await writeBlockToFile(block);
             blocksMap.set(block.id, block);
         }
     } else {
-        const mdFiles = files.filter(f => f.endsWith(".md"));
+        const mdFiles = files.filter(f => typeof f === 'string' && f.endsWith(".md")) as string[];
         for (const file of mdFiles) {
             const filePath = path.join(BLOCKS_DIR, file);
             const content = await fs.readFile(filePath, "utf-8");
             const parsed = matter(content);
-            const id = parsed.data.id || file.replace(".md", "");
+            const id = parsed.data.id || path.basename(file, ".md");
             blocksMap.set(id, {
                 id,
                 title: parsed.data.title || "",
                 label: parsed.data.label || "",
                 content: parsed.content
             });
-            blockIdToFileMap.set(id, file);
+            // Normalize path slashes for consistency across platforms (use forward slash in map)
+            blockIdToFileMap.set(id, file.replace(/\\/g, '/'));
         }
     }
 }

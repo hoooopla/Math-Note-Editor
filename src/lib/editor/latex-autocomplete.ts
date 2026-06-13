@@ -1,6 +1,7 @@
 import { CompletionContext, snippetCompletion } from "@codemirror/autocomplete";
 import { useStore } from "../../store";
 import { latexCompletions } from "codemirror-lang-latex";
+import { parsedRangesField } from "./katex-plugin";
 
 // Standard Overleaf-style rich snippets that auto-place your cursor inside brackets
 const latexSnippets = [
@@ -15,13 +16,19 @@ const latexSnippets = [
 ];
 
 const builtInCommands = [
+    ...latexCompletions.environments.map(env => snippetCompletion(`\\begin{${env}}\n\t\${}\n\\end{${env}}`, { label: `\\begin{${env}}`, type: "keyword", detail: "environment" })),
     ...latexCompletions.mathCommands.map(cmd => ({ label: cmd, type: "keyword", detail: "math" })),
-    ...latexCompletions.commands.map(cmd => ({ label: cmd, type: "keyword", detail: "command" })),
-    ...latexCompletions.environments.map(env => ({ label: `\\begin{${env}}`, type: "keyword", detail: "environment" }))
+    ...latexCompletions.commands.map(cmd => ({ label: cmd, type: "keyword", detail: "command" }))
 ];
 
 export function latexCompletion(context: CompletionContext) {
-    const word = context.matchBefore(/\\[a-zA-Z]*$/);
+    const ranges = context.state.field(parsedRangesField, false);
+    if (ranges) {
+        const isInMath = ranges.some(r => (r.type === "inlineMath" || r.type === "blockMath") && context.pos >= r.from && context.pos <= r.to);
+        if (!isInMath) return null;
+    }
+
+    const word = context.matchBefore(/\\[a-zA-Z]*(?:\{[a-zA-Z*]*)?$/);
     if (!word) return null;
     if (word.from === word.to && !context.explicit) return null;
 
@@ -45,6 +52,6 @@ export function latexCompletion(context: CompletionContext) {
     return {
         from: word.from,
         options: uniqueOptions,
-        validFor: /^\\[a-zA-Z]*$/
+        validFor: /^\\[a-zA-Z]*(?:\{[a-zA-Z*]*)?$/
     };
 }
