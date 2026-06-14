@@ -38,6 +38,7 @@ interface AppState {
   initSync: () => void;
   saveAsset: (file: File, filename: string) => Promise<string>;
   listAssets: () => Promise<string[]>;
+  getAssetUrl: (path: string) => Promise<string>;
   imageUploadParams: { file: File, onInsert: (text: string) => void } | null;
   setImageUploadParams: (params: { file: File, onInsert: (text: string) => void } | null) => void;
 }
@@ -70,6 +71,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
   listAssets: async () => {
     return await backendApi.listAssets();
+  },
+  getAssetUrl: async (path: string) => {
+    return await backendApi.getAssetUrl(path);
   },
   initBackend: async () => {
     await backendApi.init();

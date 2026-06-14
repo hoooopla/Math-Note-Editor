@@ -1,5 +1,6 @@
 import { ViewPlugin, DecorationSet, EditorView, WidgetType, ViewUpdate, Decoration } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
+import { useStore } from "../../store";
 
 class ImageWidget extends WidgetType {
     constructor(readonly src: string, readonly width: string) {
@@ -18,7 +19,15 @@ class ImageWidget extends WidgetType {
         span.style.maxWidth = "100%";
         
         const img = document.createElement("img");
-        img.src = this.src;
+        
+        if (this.src.startsWith("http://") || this.src.startsWith("https://") || this.src.startsWith("data:") || this.src.startsWith("/api/")) {
+            img.src = this.src;
+        } else {
+            useStore.getState().getAssetUrl(this.src).then(url => {
+                img.src = url;
+            });
+        }
+
         if (this.width) {
             if (this.width.endsWith('%') || this.width.endsWith('px')) {
                 img.style.width = this.width;

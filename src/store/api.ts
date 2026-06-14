@@ -15,6 +15,7 @@ export interface BackendApi {
     saveSettings: (settings: EditorSettings) => Promise<void>;
     saveAsset: (file: File, filename: string) => Promise<string>;
     listAssets: () => Promise<string[]>;
+    getAssetUrl: (path: string) => Promise<string>;
     loadBlocks: () => Promise<BlockData[]>;
     loadBlockContent: (id: string, blocks: BlockData[]) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>, existingBlocks: BlockData[]) => Promise<BlockData>;
@@ -191,6 +192,34 @@ export const api: BackendApi = {
             return files;
         }
         return [];
+    },
+    getAssetUrl: async (path) => {
+        if (/^https?:\/\//.test(path)) return path;
+        if (useServer) {
+            if (path.startsWith('assets/')) {
+                return `/api/${path}`;
+            }
+            if (path.startsWith('/api/assets/')) return path;
+            return path; // fallback
+        }
+        if (api.mode === "local" && dirHandle) {
+            if (path.startsWith('assets/')) {
+                try {
+                    const assetsDir = await dirHandle.getDirectoryHandle('assets', { create: false });
+                    const pathParts = path.replace('assets/', '').split('/');
+                    let currentDir = assetsDir;
+                    for (let i = 0; i < pathParts.length - 1; i++) {
+                        currentDir = await currentDir.getDirectoryHandle(pathParts[i], { create: false });
+                    }
+                    const fileHandle = await currentDir.getFileHandle(pathParts[pathParts.length - 1], { create: false });
+                    const file = await fileHandle.getFile();
+                    return URL.createObjectURL(file);
+                } catch (e) {
+                    return path;
+                }
+            }
+        }
+        return path;
     },
     loadBlocks: async () => {
         if (useServer) {
