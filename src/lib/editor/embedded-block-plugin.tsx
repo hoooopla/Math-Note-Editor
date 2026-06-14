@@ -89,15 +89,25 @@ class EmbeddedBlockWidget extends WidgetType {
                     const slice = doc.slice(this.from, this.to);
                     if (slice.startsWith("[[") && slice.endsWith("]]")) {
                         let inner = slice.slice(2, -2);
-                        if (inner.endsWith("∨")) {
+                        const isClosing = inner.endsWith("∨");
+                        if (isClosing) {
                             inner = inner.slice(0, -1);
                         } else {
                             inner = inner + "∨";
                         }
                         const newText = `[[${inner}]]`;
-                        view.dispatch({
-                            changes: { from: this.from, to: this.to, insert: newText },
-                        });
+                        
+                        if (isClosing && !e) {
+                            view.dispatch({
+                                changes: { from: this.from, to: this.to, insert: newText },
+                                selection: { anchor: this.from + newText.length }
+                            });
+                            view.focus();
+                        } else {
+                            view.dispatch({
+                                changes: { from: this.from, to: this.to, insert: newText },
+                            });
+                        }
 
                         requestAnimationFrame(() => {
                             const newCoords = view.coordsAtPos(this.from);
@@ -133,15 +143,25 @@ class EmbeddedBlockWidget extends WidgetType {
                         const slice = doc.slice(this.from, this.to);
                         if (slice.startsWith("[[") && slice.endsWith("]]")) {
                             let inner = slice.slice(2, -2);
-                            if (inner.endsWith("∨")) {
+                            const isClosing = inner.endsWith("∨");
+                            if (isClosing) {
                                 inner = inner.slice(0, -1);
                             } else {
                                 inner = inner + "∨";
                             }
                             const newText = `[[${inner}]]`;
-                            view.dispatch({
-                                changes: { from: this.from, to: this.to, insert: newText },
-                            });
+                            
+                            if (isClosing && !e) {
+                                view.dispatch({
+                                    changes: { from: this.from, to: this.to, insert: newText },
+                                    selection: { anchor: this.from + newText.length }
+                                });
+                                view.focus();
+                            } else {
+                                view.dispatch({
+                                    changes: { from: this.from, to: this.to, insert: newText },
+                                });
+                            }
 
                             requestAnimationFrame(() => {
                                 const newCoords = view.coordsAtPos(this.from);

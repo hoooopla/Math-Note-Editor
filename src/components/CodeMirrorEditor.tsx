@@ -13,6 +13,7 @@ import { textCompletion } from "../lib/editor/text-autocomplete";
 import { embeddedBlockPlugin, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, embedKeymap } from "../lib/editor/embedded-block-plugin";
 import { ligaturePlugin } from "../lib/editor/ligature-plugin";
 import { imagePlugin } from "../lib/editor/image-plugin";
+import { urlPlugin } from "../lib/editor/url-plugin";
 
 let isGlobalMousePressed = false;
 if (typeof window !== "undefined") {
@@ -135,6 +136,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 embedTooltipField,
                 ligaturePlugin,
                 imagePlugin,
+                urlPlugin,
                 closeBrackets(),
                 keymap.of([{ 
                     key: "Tab", 
@@ -170,6 +172,24 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 blockNavigation(() => onUpRef.current(), () => onDownRef.current()),
                 EditorView.domEventHandlers({
                     paste: (e, view) => {
+                        const textData = e.clipboardData?.getData("text/plain");
+                        if (textData) {
+                            const isUrl = /^https?:\/\/\S+$/.test(textData.trim());
+                            if (isUrl) {
+                                const selection = view.state.selection.main;
+                                const selectedText = view.state.sliceDoc(selection.from, selection.to);
+                                if (selectedText) {
+                                    e.preventDefault();
+                                    const replaceText = `[${selectedText}](${textData.trim()})`;
+                                    view.dispatch({
+                                        changes: { from: selection.from, to: selection.to, insert: replaceText },
+                                        selection: { anchor: selection.from + replaceText.length }
+                                    });
+                                    return true;
+                                }
+                            }
+                        }
+
                         if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
                             for (let i = 0; i < e.clipboardData.files.length; i++) {
                                 const file = e.clipboardData.files[i];
@@ -188,6 +208,15 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                                     }
                                 }
                             }
+                        }
+                        return false;
+                    },
+                    mousedown: (e, view) => {
+                        const a = (e.target as Element)?.closest('a');
+                        if (a && a.href) {
+                            window.open(a.href, '_blank', 'noopener,noreferrer');
+                            e.preventDefault();
+                            return true;
                         }
                         return false;
                     },
