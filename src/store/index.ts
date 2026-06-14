@@ -36,6 +36,9 @@ interface AppState {
   setActiveTab: (id: string | null) => void;
   openBlockInTab: (id: string, activate: boolean) => void;
   initSync: () => void;
+  saveAsset: (file: File, filename: string) => Promise<string>;
+  imageUploadParams: { file: File, onInsert: (text: string) => void } | null;
+  setImageUploadParams: (params: { file: File, onInsert: (text: string) => void } | null) => void;
 }
 
 const syncTimeouts: Record<string, NodeJS.Timeout> = {};
@@ -51,6 +54,8 @@ export const useStore = create<AppState>((set, get) => ({
   openTabs: [],
   activeTab: null,
   backendMode: "none",
+  imageUploadParams: null,
+  setImageUploadParams: (params) => set({ imageUploadParams: params }),
   settings: {
     macros: {
       "\\R": "\\mathbb{R}",
@@ -58,6 +63,9 @@ export const useStore = create<AppState>((set, get) => ({
     },
     customCommands: [],
     textCommands: []
+  },
+  saveAsset: async (file: File, filename: string) => {
+    return await backendApi.saveAsset(file, filename);
   },
   initBackend: async () => {
     await backendApi.init();

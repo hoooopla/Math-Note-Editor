@@ -7,6 +7,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { useStore } from "./store";
 import { BlockContainer } from "./components/Block";
 import { SettingsModal } from "./components/SettingsModal";
+import { ImageUploadModal } from "./components/ImageUploadModal";
 import { Search, Plus, X, Settings, FolderOpen } from "lucide-react";
 import "./index.css";
 
@@ -209,6 +210,7 @@ export default function App() {
                 </div>
             </div>
             <SettingsModal isOpen={isMacroModalOpen} onClose={() => setIsMacroModalOpen(false)} />
+            <ImageUploadModal />
         </div>
     );
 }

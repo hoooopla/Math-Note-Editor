@@ -13,7 +13,7 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
     const focusDirection = useStore(state => state.focusDirection);
     const macros = useStore(state => state.settings?.macros || {});
 
-    const { setActiveBlock, updateBlock, deleteBlock, loadBlockContent } = useStore();
+    const { setActiveBlock, updateBlock, deleteBlock, loadBlockContent, setImageUploadParams } = useStore();
 
     useEffect(() => {
         if (block && block.content === undefined) {
@@ -60,6 +60,7 @@ interface BlockProps {
 }
 
 export function Block({ block, blocks, isFocused, focusDirection, macros, setActive, onUp, onDown, updateBlock, deleteBlock }: BlockProps) {
+    const setImageUploadParams = useStore(state => state.setImageUploadParams);
     const [isEditingMeta, setIsEditingMeta] = useState(false);
     const [titleInput, setTitleInput] = useState(block.title);
     const [labelInput, setLabelInput] = useState(block.label);
@@ -216,6 +217,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                     onFocus={handleFocus}
                     parentLabel={block.label}
                     visitedLabels={[block.label]}
+                    onImagePaste={(file, insertContent) => setImageUploadParams({ file, onInsert: insertContent })}
                 />
             </div>
         </div>

@@ -12,6 +12,7 @@ import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { textCompletion } from "../lib/editor/text-autocomplete";
 import { embeddedBlockPlugin, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, embedKeymap } from "../lib/editor/embedded-block-plugin";
 import { ligaturePlugin } from "../lib/editor/ligature-plugin";
+import { imagePlugin } from "../lib/editor/image-plugin";
 
 let isGlobalMousePressed = false;
 if (typeof window !== "undefined") {
@@ -32,9 +33,10 @@ export interface CodeMirrorEditorProps {
     parentLabel?: string;
     visitedLabels?: string[];
     onEsc?: () => void;
+    onImagePaste?: (file: File, insertContent: (text: string) => void) => void;
 }
 
-export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, onFocus, parentLabel, visitedLabels, onEsc }: CodeMirrorEditorProps) {
+export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, onFocus, parentLabel, visitedLabels, onEsc, onImagePaste }: CodeMirrorEditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const onBlurRef = useRef(onBlur);
@@ -45,6 +47,11 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
     const parentLabelRef = useRef(parentLabel);
     const visitedLabelsRef = useRef(visitedLabels);
     const onEscRef = useRef(onEsc);
+    const onImagePasteRef = useRef(onImagePaste);
+
+    useEffect(() => {
+        onImagePasteRef.current = onImagePaste;
+    }, [onImagePaste]);
 
     useEffect(() => {
         onBlurRef.current = onBlur;
@@ -127,6 +134,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 embeddedBlockPlugin,
                 embedTooltipField,
                 ligaturePlugin,
+                imagePlugin,
                 closeBrackets(),
                 keymap.of([{ 
                     key: "Tab", 
@@ -161,6 +169,28 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 autocompletion({ override: [latexCompletion, linkCompletion, textCompletion] }),
                 blockNavigation(() => onUpRef.current(), () => onDownRef.current()),
                 EditorView.domEventHandlers({
+                    paste: (e, view) => {
+                        if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
+                            for (let i = 0; i < e.clipboardData.files.length; i++) {
+                                const file = e.clipboardData.files[i];
+                                if (file.type.startsWith("image/")) {
+                                    if (onImagePasteRef.current) {
+                                        const cursorPos = view.state.selection.main.head;
+                                        e.preventDefault();
+                                        onImagePasteRef.current(file, (text) => {
+                                            view.dispatch({
+                                                changes: { from: cursorPos, insert: text },
+                                                selection: { anchor: cursorPos + text.length }
+                                            });
+                                            view.focus();
+                                        });
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        return false;
+                    },
                     focus: (e, view) => {
                         if (onFocusRef.current) {
                             if (isGlobalMousePressed) {

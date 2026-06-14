@@ -13,6 +13,7 @@ export interface BackendApi {
     connectLocalFS: () => Promise<boolean>;
     loadSettings: () => Promise<EditorSettings>;
     saveSettings: (settings: EditorSettings) => Promise<void>;
+    saveAsset: (file: File, filename: string) => Promise<string>;
     loadBlocks: () => Promise<BlockData[]>;
     loadBlockContent: (id: string, blocks: BlockData[]) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>, existingBlocks: BlockData[]) => Promise<BlockData>;
@@ -129,6 +130,36 @@ export const api: BackendApi = {
             await writable.write(JSON.stringify(settings, null, 2));
             await writable.close();
         }
+    },
+    saveAsset: async (file, filename) => {
+        if (useServer) {
+            const base64: string = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+            const res = await fetch('/api/assets', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filePath: 'assets/' + filename, content: base64 }),
+            });
+            const json = await res.json();
+            return json.url;
+        } else if (api.mode === "local" && dirHandle) {
+            const assetsDir = await dirHandle.getDirectoryHandle('assets', { create: true });
+            const pathParts = filename.split('/');
+            let currentDir = assetsDir;
+            for (let i = 0; i < pathParts.length - 1; i++) {
+                currentDir = await currentDir.getDirectoryHandle(pathParts[i], { create: true });
+            }
+            const fileHandle = await currentDir.getFileHandle(pathParts[pathParts.length - 1], { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(file);
+            await writable.close();
+            return 'assets/' + filename; 
+        }
+        return '';
     },
     loadBlocks: async () => {
         if (useServer) {

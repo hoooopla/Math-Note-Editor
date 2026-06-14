@@ -182,6 +182,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         focusDirection={globalFocusDirection}
                         parentLabel={fullLabel}
                         visitedLabels={[...visitedLabels, fullLabel]}
+                        onImagePaste={(file, insertContent) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent })}
                         onEsc={() => toggleOpen()}
                         onFocus={() => {
                             setIsLocalFocused(true);
@@ -221,6 +222,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         focusDirection={globalFocusDirection}
                         parentLabel={fullLabel}
                         visitedLabels={[...visitedLabels, fullLabel]}
+                        onImagePaste={(file, insertContent) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent })}
                         onEsc={() => toggleOpen()}
                         onFocus={() => {
                             setIsLocalFocused(true);

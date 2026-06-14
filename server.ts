@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 const PORT = 3000;
-app.use(express.json());
+app.use(express.json({ limit: '20mb' }));
 
 const BLOCKS_DIR = path.join(process.cwd(), "blocks");
 
@@ -144,6 +144,33 @@ async function initBlocks() {
         }
     }
 }
+
+app.post("/api/assets", express.json({limit: '20mb'}), async (req, res) => {
+    try {
+        const { filePath, content } = req.body;
+        const absolutePath = path.join(BLOCKS_DIR, filePath);
+        if (!absolutePath.startsWith(path.join(BLOCKS_DIR, 'assets'))) {
+            return res.status(400).json({error: "Invalid path"});
+        }
+        await ensureDir(path.dirname(absolutePath));
+        const base64Data = content.replace(/^data:image\/\w+;base64,/, "");
+        const buffer = Buffer.from(base64Data, 'base64');
+        await fs.writeFile(absolutePath, buffer);
+        res.json({ success: true, url: `/api/assets/${filePath.replace(/^assets\//, '')}` }); 
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get("/api/assets/*", async (req, res) => {
+    try {
+        const assetPath = req.params[0];
+        const absolutePath = path.join(BLOCKS_DIR, "assets", assetPath);
+        res.sendFile(absolutePath);
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
 
 app.get("/api/blocks", async (req, res) => {
     try {
