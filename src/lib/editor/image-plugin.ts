@@ -13,6 +13,10 @@ class ImageWidget extends WidgetType {
     toDOM(view: EditorView) {
         const span = document.createElement("span");
         span.className = "cm-image-widget";
+        span.style.display = "inline-block";
+        span.style.verticalAlign = "top";
+        span.style.maxWidth = "100%";
+        
         const img = document.createElement("img");
         img.src = this.src;
         if (this.width) {
@@ -23,18 +27,14 @@ class ImageWidget extends WidgetType {
             }
         }
         img.style.maxWidth = "100%";
-        img.style.display = "block";
+        img.style.maxHeight = "600px";
+        img.style.objectFit = "contain";
         img.style.marginTop = "0.5rem";
         img.style.marginBottom = "0.5rem";
         img.style.borderRadius = "0.5rem";
+        img.style.display = "block"; // img can be block inside inline-block
 
-        const hasFocus = view.hasFocus;
-        if (!hasFocus) {
-            span.appendChild(img);
-        } else {
-            span.appendChild(img); // wait, if focus is inside? 
-            // In CodeMirror, normally if we want to replace the text with widget, we do it. But users need to be able to edit the html tag text as well.
-        }
+        span.appendChild(img);
         return span;
     }
 
@@ -42,34 +42,33 @@ class ImageWidget extends WidgetType {
 }
 
 function buildImageDecorations(view: EditorView) {
-    const builder = new RangeSetBuilder<Decoration>();
+    const decos: {from: number, to: number, deco: Decoration}[] = [];
     const doc = view.state.doc.toString();
-    const regex = /<img\s+[^>]*src="([^"]+)"(?:[^>]*width="([^"]+)")?[^>]*\s*\/?>/g;
+    const regex = /<img\s+[^>]*src="([^"]+)"(?:[^>]*width="([^"]+)")?[^>]*\s*\/?>|!\[.*?\]\((.*?)\)/g;
     
     let match;
     while ((match = regex.exec(doc)) !== null) {
         const start = match.index;
         const end = start + match[0].length;
-        const src = match[1];
+        const src = match[1] || match[3];
         const width = match[2] || "";
 
         const selection = view.state.selection.main;
         const hasSelectionInside = selection.from <= end && selection.to >= start;
 
-        if (!hasSelectionInside && !view.hasFocus) {
-            builder.add(start, end, Decoration.replace({
-                widget: new ImageWidget(src, width)
-            }));
-        } else if (!hasSelectionInside && view.hasFocus) {
-            // Depending on preference, we could replace it or show as a line widget below.
-            // But let's keep it simple: if editor is focused, we don't replace or we do it as block decorator?
-            // Usually, if selection is not inside, it's nice to replace it even if editor is focused.
-            builder.add(start, end, Decoration.replace({
-                widget: new ImageWidget(src, width)
-            }));
+        if (!hasSelectionInside) {
+            decos.push({
+                from: start,
+                to: end,
+                deco: Decoration.replace({
+                    widget: new ImageWidget(src, width)
+                })
+            });
         }
     }
-    return builder.finish();
+    
+    decos.sort((a,b) => a.from - b.from);
+    return Decoration.set(decos.map(d => d.deco.range(d.from, d.to)), true);
 }
 
 export const imagePlugin = ViewPlugin.fromClass(class {

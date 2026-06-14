@@ -37,6 +37,7 @@ interface AppState {
   openBlockInTab: (id: string, activate: boolean) => void;
   initSync: () => void;
   saveAsset: (file: File, filename: string) => Promise<string>;
+  listAssets: () => Promise<string[]>;
   imageUploadParams: { file: File, onInsert: (text: string) => void } | null;
   setImageUploadParams: (params: { file: File, onInsert: (text: string) => void } | null) => void;
 }
@@ -66,6 +67,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
   saveAsset: async (file: File, filename: string) => {
     return await backendApi.saveAsset(file, filename);
+  },
+  listAssets: async () => {
+    return await backendApi.listAssets();
   },
   initBackend: async () => {
     await backendApi.init();

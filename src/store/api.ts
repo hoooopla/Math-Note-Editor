@@ -14,6 +14,7 @@ export interface BackendApi {
     loadSettings: () => Promise<EditorSettings>;
     saveSettings: (settings: EditorSettings) => Promise<void>;
     saveAsset: (file: File, filename: string) => Promise<string>;
+    listAssets: () => Promise<string[]>;
     loadBlocks: () => Promise<BlockData[]>;
     loadBlockContent: (id: string, blocks: BlockData[]) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>, existingBlocks: BlockData[]) => Promise<BlockData>;
@@ -160,6 +161,36 @@ export const api: BackendApi = {
             return 'assets/' + filename; 
         }
         return '';
+    },
+    listAssets: async () => {
+        if (useServer) {
+            try {
+                const res = await fetch('/api/assets-list');
+                return await res.json();
+            } catch {
+                return [];
+            }
+        }
+        if (api.mode === "local" && dirHandle) {
+            const files: string[] = [];
+            try {
+                const assetsDir = await dirHandle.getDirectoryHandle('assets', { create: false });
+                async function scanDir(handle: FileSystemDirectoryHandle, currentPath = '') {
+                    for await (const entry of handle.values()) {
+                        if (entry.kind === 'file') {
+                            files.push(currentPath ? `${currentPath}/${entry.name}` : entry.name);
+                        } else if (entry.kind === 'directory') {
+                            await scanDir(entry, currentPath ? `${currentPath}/${entry.name}` : entry.name);
+                        }
+                    }
+                }
+                await scanDir(assetsDir);
+            } catch(e) {
+                // assets dir might not exist
+            }
+            return files;
+        }
+        return [];
     },
     loadBlocks: async () => {
         if (useServer) {

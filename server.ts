@@ -162,6 +162,28 @@ app.post("/api/assets", express.json({limit: '20mb'}), async (req, res) => {
     }
 });
 
+app.get("/api/assets-list", async (req, res) => {
+    try {
+        const assetsPath = path.join(BLOCKS_DIR, "assets");
+        await ensureDir(assetsPath);
+        const files: string[] = [];
+        async function scanDir(dir: string, base: string) {
+            const entries = await fs.readdir(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory()) {
+                    await scanDir(path.join(dir, entry.name), path.join(base, entry.name));
+                } else {
+                    files.push(path.join(base, entry.name).replace(/\\/g, '/'));
+                }
+            }
+        }
+        await scanDir(assetsPath, "");
+        res.json(files);
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 app.get("/api/assets/*", async (req, res) => {
     try {
         const assetPath = req.params[0];
