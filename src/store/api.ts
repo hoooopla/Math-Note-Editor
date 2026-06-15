@@ -5,6 +5,17 @@ export interface EditorSettings {
     macros: Record<string, string>;
     customCommands: string[];
     textCommands: string[];
+    searchShortcut?: string;
+    mathHighlightColor?: string;
+    mathColors?: {
+        command: string;
+        brace: string;
+        script: string;
+        comment: string;
+        delimiter: string;
+        align: string;
+        escaped: string;
+    };
 }
 
 export interface BackendApi {
@@ -101,7 +112,14 @@ export const api: BackendApi = {
         }
     },
     loadSettings: async () => {
-        const defaultSettings: EditorSettings = { macros: {}, customCommands: [], textCommands: [] };
+        const defaultSettings: EditorSettings = { 
+            macros: {}, 
+            customCommands: [], 
+            textCommands: [], 
+            searchShortcut: "meta+k",
+            mathHighlightColor: "#d19a66",
+            mathColors: { command: "#61afef", brace: "#e5c07b", script: "#c678dd", comment: "#8b949e", delimiter: "#98c379", align: "#e06c75", escaped: "#56b6c2" }
+        };
         if (useServer) {
             const res = await fetch('/api/settings');
             return res.ok ? await res.json() : defaultSettings;

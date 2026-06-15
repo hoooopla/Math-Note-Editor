@@ -47,12 +47,20 @@ body {
 }
 
 .cm-math-editing {
-  color: #d19a66 !important;
+  color: var(--math-highlight-color, #d19a66) !important;
   background: transparent !important;
   font-weight: normal;
   font-family: var(--font-mono) !important;
   font-size: 14.5px;
 }
+
+.cm-math-comment { color: var(--math-color-comment, #8b949e) !important; }
+.cm-math-command { color: var(--math-color-command, #61afef) !important; }
+.cm-math-escaped { color: var(--math-color-escaped, #56b6c2) !important; }
+.cm-math-brace { color: var(--math-color-brace, #e5c07b) !important; }
+.cm-math-script { color: var(--math-color-script, #c678dd) !important; }
+.cm-math-align { color: var(--math-color-align, #e06c75) !important; }
+.cm-math-delimiter { color: var(--math-color-delimiter, #98c379) !important; font-weight: bold; }
 
 .cm-tooltip-autocomplete {
   z-index: 9999 !important;

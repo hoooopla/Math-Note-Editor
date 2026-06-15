@@ -64,7 +64,18 @@ export const useStore = create<AppState>((set, get) => ({
       "\\N": "\\mathbb{N}"
     },
     customCommands: [],
-    textCommands: []
+    textCommands: [],
+    searchShortcut: "meta+k",
+    mathHighlightColor: "#d19a66",
+    mathColors: {
+      command: "#61afef",
+      brace: "#e5c07b",
+      script: "#c678dd",
+      comment: "#8b949e",
+      delimiter: "#98c379",
+      align: "#e06c75",
+      escaped: "#56b6c2"
+    }
   },
   saveAsset: async (file: File, filename: string) => {
     return await backendApi.saveAsset(file, filename);

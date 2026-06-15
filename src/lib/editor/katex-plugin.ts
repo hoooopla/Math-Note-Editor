@@ -279,39 +279,39 @@ function buildLiveDecorations(state: EditorState) {
                 // Comments %
                 const commentRegex = /%.*/g;
                 while ((m = commentRegex.exec(mathText)) !== null) {
-                    tokens.push({ from: m.index, to: m.index + m[0].length, class: "text-gray-500 italic" });
+                    tokens.push({ from: m.index, to: m.index + m[0].length, class: "cm-math-comment italic" });
                 }
 
-                const inComment = (index: number) => tokens.some(t => t.class.includes('gray') && index >= t.from && index < t.to);
+                const inComment = (index: number) => tokens.some(t => t.class.includes('comment') && index >= t.from && index < t.to);
 
                 // Commands \something
                 const cmdRegex = /\\[a-zA-Z]+/g;
                 while ((m = cmdRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + m[0].length, class: "text-[#61afef]" });
+                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + m[0].length, class: "cm-math-command" });
                 }
 
                 // Escaped symbols (\%, \{, \_)
                 const escRegex = /\\([{}%$_\\])/g;
                 while ((m = escRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 2, class: "text-[#56b6c2]" });
+                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 2, class: "cm-math-escaped" });
                 }
 
                 // Braces {}
                 const braceRegex = /[{}]/g;
                 while ((m = braceRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "text-[#e5c07b]" });
+                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "cm-math-brace" });
                 }
 
                 // Sub/superscript _ ^
                 const scriptRegex = /[_^]/g;
                 while ((m = scriptRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "text-[#c678dd]" });
+                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "cm-math-script" });
                 }
 
                 // Alignment &
                 const ampRegex = /&/g;
                 while ((m = ampRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "text-[#e06c75]" });
+                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "cm-math-align" });
                 }
 
                 for (const t of tokens) {
@@ -322,13 +322,13 @@ function buildLiveDecorations(state: EditorState) {
                     });
                 }
 
-                // Math Delimiters ($ and \[\]) overleaf-green
+                // Math Delimiters ($ and \[\])
                 if (r.type === "blockMath") {
-                    decos.push({ from: r.from, to: r.from + 2, deco: Decoration.mark({ class: "text-[#98c379] font-bold" }) });
-                    decos.push({ from: r.to - 2, to: r.to, deco: Decoration.mark({ class: "text-[#98c379] font-bold" }) });
+                    decos.push({ from: r.from, to: r.from + 2, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
+                    decos.push({ from: r.to - 2, to: r.to, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
                 } else if (r.type === "inlineMath") {
-                    decos.push({ from: r.from, to: r.from + 1, deco: Decoration.mark({ class: "text-[#98c379] font-bold" }) });
-                    decos.push({ from: r.to - 1, to: r.to, deco: Decoration.mark({ class: "text-[#98c379] font-bold" }) });
+                    decos.push({ from: r.from, to: r.from + 1, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
+                    decos.push({ from: r.to - 1, to: r.to, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
                 }
             }
 
@@ -375,6 +375,16 @@ function buildLiveDecorations(state: EditorState) {
         }
     }
 
+    decos.sort((a, b) => {
+        if (a.from !== b.from) return a.from - b.from;
+        if (a.to !== b.to) return b.to - a.to; // For equal from, put larger 'to' encompassing ranges first
+        // If exact same range, editing wrapper should go first
+        const aClass = (a.deco.spec as any)?.class || "";
+        const bClass = (b.deco.spec as any)?.class || "";
+        if (aClass.includes("cm-math-editing")) return -1;
+        if (bClass.includes("cm-math-editing")) return 1;
+        return 0;
+    });
     return Decoration.set(decos.map(d => d.deco.range(d.from, d.to)), true);
 }
 

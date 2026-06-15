@@ -9,16 +9,32 @@ interface SettingsModalProps {
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const { settings, saveSettings } = useStore();
-    const [activeTab, setActiveTab] = useState<'macros' | 'commands' | 'text'>('macros');
+    const [activeTab, setActiveTab] = useState<'macros' | 'commands' | 'text' | 'general'>('macros');
     const [localMacros, setLocalMacros] = useState<Array<{key: string, value: string}>>([]);
     const [localCommands, setLocalCommands] = useState<string[]>([]);
     const [localTextCommands, setLocalTextCommands] = useState<string[]>([]);
+    const [localSearchShortcut, setLocalSearchShortcut] = useState<string>('meta+k');
+    const [localMathHighlightColor, setLocalMathHighlightColor] = useState<string>('#d19a66');
+    const [localMathColors, setLocalMathColors] = useState<Record<string, string>>({
+        command: "#61afef",
+        brace: "#e5c07b",
+        script: "#c678dd",
+        comment: "#8b949e",
+        delimiter: "#98c379",
+        align: "#e06c75",
+        escaped: "#56b6c2"
+    });
 
     useEffect(() => {
         if (isOpen) {
             setLocalMacros(Object.entries(settings.macros || {}).map(([key, value]) => ({ key, value })));
             setLocalCommands([...(settings.customCommands || [])]);
             setLocalTextCommands([...(settings.textCommands || [])]);
+            setLocalSearchShortcut(settings.searchShortcut || 'meta+k');
+            setLocalMathHighlightColor(settings.mathHighlightColor || '#d19a66');
+            if (settings.mathColors) {
+                setLocalMathColors({ ...settings.mathColors });
+            }
         }
     }, [isOpen, settings]);
 
@@ -46,7 +62,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             ...settings,
             macros: newMacros,
             customCommands: newCommands,
-            textCommands: newTextCommands
+            textCommands: newTextCommands,
+            searchShortcut: localSearchShortcut.trim() || 'meta+k',
+            mathHighlightColor: localMathHighlightColor.trim() || '#d19a66',
+            mathColors: { ...localMathColors } as any
         });
         onClose();
     };
@@ -121,6 +140,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             onClick={() => setActiveTab('text')}
                         >
                             Text Autocomplete
+                        </button>
+                        <button 
+                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'general' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
+                            onClick={() => setActiveTab('general')}
+                        >
+                            General Settings
                         </button>
                     </div>
 
@@ -286,6 +311,66 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <Plus size={16} />
                                     Add Text Command
                                 </button>
+                            </div>
+                        )}
+
+                        {activeTab === 'general' && (
+                            <div className="max-w-2xl">
+                                <h3 className="text-base font-semibold text-primary mb-1">General Settings</h3>
+                                <p className="text-sm text-secondary mb-6">
+                                    General application preferences and shortcuts.
+                                </p>
+                                
+                                <div className="space-y-4">
+                                    <div className="flex flex-col gap-2">
+                                        <label className="text-sm font-medium text-primary">Global Search Shortcut</label>
+                                        <div className="flex gap-2 items-center">
+                                            <input
+                                                type="text"
+                                                value={localSearchShortcut}
+                                                onChange={(e) => setLocalSearchShortcut(e.target.value)}
+                                                placeholder="e.g. meta+k or ctrl+k"
+                                                className="w-full max-w-xs bg-base border border-outline rounded px-3 py-2 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                            />
+                                            <span className="text-xs text-secondary ml-2">Use 'meta' for Cmd (Mac) / Win key. Use 'ctrl' for Control. Format: modifier+key.</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex flex-col gap-2 mt-4">
+                                        <label className="text-sm font-medium text-primary">LaTeX Highlight Colors</label>
+                                        <p className="text-xs text-secondary mb-2">Configure syntax highlighting colors for raw LaTeX in the editor.</p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            {[
+                                                { key: 'mathHighlightColor', label: 'Default Text', value: localMathHighlightColor, setter: setLocalMathHighlightColor },
+                                                { key: 'command', label: 'Commands (\\cmd)', value: localMathColors.command, setter: (val: string) => setLocalMathColors({...localMathColors, command: val}) },
+                                                { key: 'brace', label: 'Braces ({})', value: localMathColors.brace, setter: (val: string) => setLocalMathColors({...localMathColors, brace: val}) },
+                                                { key: 'script', label: 'Sub/Superscript (_^)', value: localMathColors.script, setter: (val: string) => setLocalMathColors({...localMathColors, script: val}) },
+                                                { key: 'comment', label: 'Comments (%)', value: localMathColors.comment, setter: (val: string) => setLocalMathColors({...localMathColors, comment: val}) },
+                                                { key: 'delimiter', label: 'Delimiters ($$ \\[)', value: localMathColors.delimiter, setter: (val: string) => setLocalMathColors({...localMathColors, delimiter: val}) },
+                                                { key: 'align', label: 'Alignment (&)', value: localMathColors.align, setter: (val: string) => setLocalMathColors({...localMathColors, align: val}) },
+                                                { key: 'escaped', label: 'Escaped (\\%)', value: localMathColors.escaped, setter: (val: string) => setLocalMathColors({...localMathColors, escaped: val}) }
+                                            ].map(item => (
+                                                <div key={item.key} className="flex gap-2 items-center">
+                                                    <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden" style={{ backgroundColor: item.value }}>
+                                                        <input
+                                                            type="color"
+                                                            value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#000000'}
+                                                            onChange={(e) => item.setter(e.target.value)}
+                                                            className="opacity-0 cursor-pointer w-10 h-10 absolute"
+                                                        />
+                                                    </div>
+                                                    <input
+                                                        type="text"
+                                                        value={item.value || ''}
+                                                        onChange={(e) => item.setter(e.target.value)}
+                                                        className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                    />
+                                                    <span className="text-xs text-secondary ml-1">{item.label}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         )}
                     </div>
