@@ -3,8 +3,32 @@ import { createServer as createViteServer } from "vite";
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
-import matter from "gray-matter";
 import { v4 as uuidv4 } from "uuid";
+
+const parseFrontmatter = (text: string) => {
+    const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)/);
+    if (!match) return { data: {} as any, content: text };
+    
+    const data: any = {};
+    match[1].split('\n').forEach(line => {
+        const idx = line.indexOf(':');
+        if (idx > -1) {
+            const key = line.substring(0, idx).trim();
+            const val = line.substring(idx + 1).trim();
+            data[key] = val;
+        }
+    });
+    return { data, content: match[2] };
+};
+
+const stringifyFrontmatter = (data: Record<string, string>, content: string) => {
+    let fm = '---\n';
+    for (const [k, v] of Object.entries(data)) {
+        fm += `${k}: ${v}\n`;
+    }
+    fm += '---\n';
+    return fm + content;
+};
 
 const app = express();
 const PORT = 3000;
@@ -97,11 +121,11 @@ async function writeBlockToFile(block: any) {
     }
 
     const filePath = path.join(BLOCKS_DIR, newFilename);
-    const fileContent = matter.stringify(block.content || "", {
+    const fileContent = stringifyFrontmatter({
         id: block.id,
-        title: block.title,
-        label: block.label
-    });
+        title: block.title || "",
+        label: block.label || ""
+    }, block.content || "");
     
     if (baseDir) {
         await ensureDir(path.join(BLOCKS_DIR, baseDir));
@@ -131,7 +155,7 @@ async function initBlocks() {
         for (const file of mdFiles) {
             const filePath = path.join(BLOCKS_DIR, file);
             const content = await fs.readFile(filePath, "utf-8");
-            const parsed = matter(content);
+            const parsed = parseFrontmatter(content);
             const id = parsed.data.id || path.basename(file, ".md");
             blocksMap.set(id, {
                 id,
@@ -445,7 +469,7 @@ async function startServer() {
                     return;
                 }
 
-                const parsed = matter(content);
+                const parsed = parseFrontmatter(content);
                 const id = parsed.data.id || filename.replace(".md", "");
                 
                 const existing = blocksMap.get(id);

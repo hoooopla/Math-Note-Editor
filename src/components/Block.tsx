@@ -3,6 +3,7 @@ import type { PointerEvent } from "react";
 import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import { GripVertical, Trash2, FileText, Check, X } from "lucide-react";
+import { MathTitle } from "./MathTitle";
 
 export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, index }) => {
     const block = useStore(state => state.blocks.find(b => b.id === id));
@@ -165,7 +166,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                         </div>
                     ) : (
                         <div className="flex items-center gap-3 font-sans text-[11px] text-secondary transition-colors">
-                            <span className="font-sans text-[16px] font-bold text-primary group-hover:text-accent transition-colors">{block.title || 'Untitled'}</span>
+                            <MathTitle text={block.title} className="font-sans text-[16px] font-bold text-primary group-hover:text-accent transition-colors" />
                             <span className="font-sans text-[11px] bg-transparent border border-outline px-1.5 py-0.5 rounded text-secondary tracking-widest">
                                 {block.label || 'label'}
                             </span>

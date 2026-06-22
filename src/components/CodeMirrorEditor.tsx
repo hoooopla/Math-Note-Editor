@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { EditorState, StateEffect, Compartment, Transaction } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView, keymap, drawSelection, dropCursor } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
@@ -14,6 +14,7 @@ import { embeddedBlockPlugin, parentLabelFacet, visitedLabelsFacet, parsedLinksF
 import { ligaturePlugin } from "../lib/editor/ligature-plugin";
 import { imagePlugin } from "../lib/editor/image-plugin";
 import { urlPlugin } from "../lib/editor/url-plugin";
+import { autoReplaceFilter } from "../lib/editor/auto-replace";
 
 let isGlobalMousePressed = false;
 if (typeof window !== "undefined") {
@@ -102,6 +103,8 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
             doc: content,
             extensions: [
                 oneDark,
+                drawSelection(),
+                dropCursor(),
                 EditorView.lineWrapping,
                 history(),
                 customKeymap,
@@ -137,6 +140,8 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 ligaturePlugin,
                 imagePlugin,
                 urlPlugin,
+                autoReplaceFilter,
+                EditorView.contentAttributes.of({ spellcheck: "true" }),
                 closeBrackets(),
                 keymap.of([{ 
                     key: "Tab", 
@@ -271,6 +276,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                     },
                     "&.cm-focused": { outline: "none" },
                     ".cm-content": { caretColor: "var(--color-accent)", padding: "0", color: "var(--color-primary) !important", fontFamily: "var(--font-sans) !important", fontVariantLigatures: "contextual !important", fontFeatureSettings: '"calt" 1 !important' },
+                    ".cm-cursor, .cm-dropCursor": { borderLeftWidth: "2px !important", borderLeftColor: "var(--color-accent) !important" },
                     ".cm-line": { padding: "0", lineHeight: "1.6" },
                     ".cm-gutters": { backgroundColor: "transparent !important", color: "var(--color-secondary)", border: "none" },
                     ".cm-selectionBackground, .cm-content ::selection": {

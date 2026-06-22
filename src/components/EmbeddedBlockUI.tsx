@@ -3,6 +3,7 @@ import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import type { EditorView } from "@codemirror/view";
 import { setEditorFocus } from "../lib/editor/katex-plugin";
+import { MathTitle } from "./MathTitle";
 
 export interface EmbeddedBlockUIProps {
     text: string;
@@ -104,7 +105,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 >
                     <div className="flex items-center gap-2">
                         <span className="text-accent">▶</span>
-                        <span className="font-bold text-primary">{displayTitle}</span>
+                        <MathTitle text={displayTitle} className="font-bold text-primary" />
                         <span className="text-xs text-secondary bg-surface px-1 rounded">{fullLabel}</span>
                     </div>
                 </div>
@@ -117,7 +118,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                     className={`inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors ${colorClass}`}
                     onClick={handleClick}
                 >
-                    {displayTitle}
+                    <MathTitle text={displayTitle} />
                 </span>
             );
         }
@@ -155,7 +156,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 >
                     <div className="flex items-center gap-2">
                         <span className="text-accent transform rotate-90">▶</span>
-                        <span className="font-bold text-primary">{displayTitle}</span>
+                        <MathTitle text={displayTitle} className="font-bold text-primary" />
                     </div>
                     <span className="text-xs text-secondary px-1 rounded border border-outline">{fullLabel}</span>
                 </div>
@@ -202,7 +203,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                     onClick={handleClick}
                     title={`Close ${displayTitle}`}
                 >
-                    {displayTitle}
+                    <MathTitle text={displayTitle} />
                 </span>
                 <span className="block w-full pl-4 py-2 border-l-2 border-accent/30 my-2 select-text bg-surface/30 rounded-r-lg relative overflow-visible" 
                      onClick={e => e.stopPropagation()}>

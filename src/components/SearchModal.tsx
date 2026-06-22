@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../store';
 import { Search, FolderOpen, Plus } from 'lucide-react';
+import { MathTitle } from './MathTitle';
 
 export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
     const { blocks, addBlock, setOpenTabs, openTabs, setActiveTab, settings } = useStore();
@@ -94,7 +95,7 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                             onClick={() => handleSelect(b.id)}
                             className={`px-3 py-2 cursor-pointer rounded flex flex-col ${i === selectedIndex ? 'bg-accent/20 text-accent' : 'hover:bg-outline/50'}`}
                         >
-                            <span className="font-semibold">{b.title || b.label || 'Untitled'}</span>
+                            <MathTitle text={b.title || b.label || 'Untitled'} className="font-semibold" />
                             <span className={`text-[11px] truncate ${i === selectedIndex ? 'text-accent/70' : 'text-secondary'}`}>{b.label}</span>
                         </div>
                     )) : (
