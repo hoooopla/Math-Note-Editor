@@ -1,8 +1,11 @@
 import React from 'react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
+import { useStore } from '../store';
 
 export function MathTitle({ text, className }: { text?: string | null; className?: string }) {
+    const macros = useStore(state => state.settings?.macros) || {};
+
     if (!text) {
         return <span className={className}>Untitled</span>;
     }
@@ -21,7 +24,8 @@ export function MathTitle({ text, className }: { text?: string | null; className
             const html = katex.renderToString(match[2], {
                 throwOnError: false,
                 displayMode: false,
-                strict: false
+                strict: false,
+                macros
             });
             segments.push({ type: 'math', html });
         } catch (e: any) {
