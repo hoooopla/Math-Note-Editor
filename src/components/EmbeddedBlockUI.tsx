@@ -116,7 +116,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             
             return (
                 <div 
-                    className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0' : 'mt-1'} ${isAtEndOfLine ? 'mb-0' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-hidden bg-surface/30 hover:bg-surface/50 group`}
+                    className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-hidden bg-surface/30 hover:bg-surface/50 group`}
                     style={{ 
                         borderStyle: 'solid',
                         borderWidth: `${borderWidth}px`,
@@ -219,7 +219,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         
         return (
             <div 
-                className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0' : 'mt-1'} ${isAtEndOfLine ? 'mb-0' : 'mb-3'} select-none overflow-hidden bg-surface shadow-sm focus-within:ring-1 transition-all`}
+                className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1.5' : 'mb-3'} select-none overflow-hidden bg-surface shadow-sm focus-within:ring-1 transition-all`}
                 style={{ 
                     borderStyle: 'solid',
                     borderWidth: `${borderWidth}px`,
