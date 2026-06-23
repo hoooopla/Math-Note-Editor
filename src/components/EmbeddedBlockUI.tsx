@@ -101,6 +101,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             return (
                 <div 
                     className="block w-full border border-outline rounded-lg my-2 px-3 py-2 cursor-pointer hover:border-accent transition-colors select-none"
+                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
                     <div className="flex items-center gap-2">
@@ -116,6 +117,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             return (
                 <span 
                     className={`inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors ${colorClass}`}
+                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
                     <MathTitle text={displayTitle} />
@@ -152,6 +154,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             <div className="block w-full border border-outline rounded-lg my-3 select-none">
                 <div 
                     className="flex justify-between items-center px-3 py-2 border-b border-outline bg-surface rounded-t-lg cursor-pointer hover:bg-accent/10 transition-colors"
+                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
                     <div className="flex items-center gap-2">
@@ -200,6 +203,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             <span className="inline align-top">
                 <span 
                     className={`inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors ${colorClass}`}
+                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                     title={`Close ${displayTitle}`}
                 >

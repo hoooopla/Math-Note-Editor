@@ -387,6 +387,11 @@ export const embedKeymap: KeyBinding[] = [
         run: (view) => {
             if (!view.hasFocus) return false;
             
+            // If autocomplete dropdown is actively open, let it handle the ArrowDown key to select the option
+            if (completionStatus(view.state) === "active") {
+                return false;
+            }
+
             const selection = view.state.selection.main;
             const links = view.state.field(parsedLinksField);
             const parentLabel = view.state.facet(parentLabelFacet);
@@ -433,6 +438,11 @@ export const embedKeymap: KeyBinding[] = [
         run: (view) => {
             if (!view.hasFocus) return false;
             
+            // If autocomplete dropdown is actively open, let it handle the ArrowUp key to select the option
+            if (completionStatus(view.state) === "active") {
+                return false;
+            }
+
             const selection = view.state.selection.main;
             const links = view.state.field(parsedLinksField);
             const parentLabel = view.state.facet(parentLabelFacet);
