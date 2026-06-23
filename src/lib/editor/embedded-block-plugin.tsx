@@ -55,7 +55,8 @@ class EmbeddedBlockWidget extends WidgetType {
         public parentLabel: string, 
         public visitedLabels: string[],
         public from: number, 
-        public to: number
+        public to: number,
+        public isAtEndOfLine: boolean = false
     ) {
         super();
     }
@@ -65,7 +66,8 @@ class EmbeddedBlockWidget extends WidgetType {
                this.parentLabel === other.parentLabel && 
                JSON.stringify(this.visitedLabels) === JSON.stringify(other.visitedLabels) &&
                this.from === other.from &&
-               this.to === other.to;
+               this.to === other.to &&
+               this.isAtEndOfLine === other.isAtEndOfLine;
     }
 
     toDOM(view: EditorView) {
@@ -82,6 +84,7 @@ class EmbeddedBlockWidget extends WidgetType {
                 view={view}
                 pos={this.from}
                 length={this.to - this.from}
+                isAtEndOfLine={this.isAtEndOfLine}
                 toggleOpen={(e?: React.MouseEvent) => {
                     const coords = view.coordsAtPos(this.from);
                     const initialY = coords ? coords.top : 0;
@@ -136,6 +139,7 @@ class EmbeddedBlockWidget extends WidgetType {
                     view={view}
                     pos={this.from}
                     length={this.to - this.from}
+                    isAtEndOfLine={this.isAtEndOfLine}
                     toggleOpen={(e?: React.MouseEvent) => {
                         const coords = view.coordsAtPos(this.from);
                         const initialY = coords ? coords.top : 0;
@@ -220,11 +224,15 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
                 deco: Decoration.mark({ class: "bg-accent/20 rounded px-1 text-accent" })
             });
         } else {
+            const line = state.doc.lineAt(link.to);
+            const textAfter = line.text.slice(link.to - line.from);
+            const isAtEndOfLine = textAfter.trim() === "";
+
             decos.push({
                 from: link.from,
                 to: link.to,
                 deco: Decoration.replace({
-                    widget: new EmbeddedBlockWidget(link.text, parentLabel, visitedLabels, link.from, link.to)
+                    widget: new EmbeddedBlockWidget(link.text, parentLabel, visitedLabels, link.from, link.to, isAtEndOfLine)
                 })
             });
         }

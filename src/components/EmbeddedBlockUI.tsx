@@ -4,6 +4,7 @@ import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import type { EditorView } from "@codemirror/view";
 import { setEditorFocus } from "../lib/editor/katex-plugin";
 import { MathTitle } from "./MathTitle";
+import { ChevronRight, ChevronDown, ExternalLink } from "lucide-react";
 
 export interface EmbeddedBlockUIProps {
     text: string;
@@ -13,9 +14,10 @@ export interface EmbeddedBlockUIProps {
     view?: EditorView;
     pos?: number;
     length?: number;
+    isAtEndOfLine?: boolean;
 }
 
-export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleOpen, view, pos, length }: EmbeddedBlockUIProps) {
+export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleOpen, view, pos, length, isAtEndOfLine = false }: EmbeddedBlockUIProps) {
     let displayStyle: "standout" | "inline" = "inline";
     let ifToggled: "open" | "closed" = "closed";
     
@@ -100,14 +102,21 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         if (displayStyle === "standout") {
             return (
                 <div 
-                    className="block w-full border border-outline rounded-lg my-2 px-3 py-2 cursor-pointer hover:border-accent transition-colors select-none"
+                    className="block w-full border border-outline rounded-xl my-2 cursor-pointer hover:border-accent hover:shadow-sm transition-all select-none overflow-hidden bg-surface/30 hover:bg-surface/50 group"
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
-                    <div className="flex items-center gap-2">
-                        <span className="text-accent">▶</span>
-                        <MathTitle text={displayTitle} className="font-bold text-primary" />
-                        <span className="text-xs text-secondary bg-surface px-1 rounded">{fullLabel}</span>
+                    <div className="flex items-center justify-between px-3 py-2.5">
+                        <div className="flex items-center gap-2.5">
+                            <span className="text-secondary group-hover:text-accent transition-colors flex items-center justify-center p-0.5">
+                                <ChevronRight size={16} />
+                            </span>
+                            <MathTitle text={displayTitle} className="font-semibold text-primary" />
+                            <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
+                        </div>
+                        <span className="text-secondary/40 group-hover:text-secondary opacity-0 group-hover:opacity-100 transition-opacity mr-1" title="Cmd/Ctrl + Click to open in new tab">
+                            <ExternalLink size={14} />
+                        </span>
                     </div>
                 </div>
             );
@@ -141,8 +150,16 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     
     const handleDown = () => {
         if (view && pos !== undefined && length !== undefined) {
+            let nextPos = pos + length;
+            if (isAtEndOfLine) {
+                const doc = view.state.doc;
+                const currentLine = doc.lineAt(nextPos);
+                if (currentLine.number < doc.lines) {
+                    nextPos = doc.line(currentLine.number + 1).from;
+                }
+            }
             view.dispatch({
-                selection: { anchor: pos + length },
+                selection: { anchor: nextPos },
                 effects: setEditorFocus.of(true)
             });
             view.focus();
@@ -151,19 +168,31 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
 
     if (displayStyle === "standout") {
         return (
-            <div className="block w-full border border-outline rounded-lg my-3 select-none">
+            <div className="block w-full border border-secondary/40 rounded-xl my-3 select-none overflow-hidden bg-surface shadow-sm focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/30 transition-all">
                 <div 
-                    className="flex justify-between items-center px-3 py-2 border-b border-outline bg-surface rounded-t-lg cursor-pointer hover:bg-accent/10 transition-colors"
+                    className="flex justify-between items-center px-4 py-2.5 border-b border-outline bg-surface/80 cursor-pointer hover:bg-surface transition-colors group"
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
-                    <div className="flex items-center gap-2">
-                        <span className="text-accent transform rotate-90">▶</span>
-                        <MathTitle text={displayTitle} className="font-bold text-primary" />
+                    <div className="flex items-center gap-2.5">
+                        <span className="text-accent flex items-center justify-center p-0.5">
+                            <ChevronDown size={16} />
+                        </span>
+                        <MathTitle text={displayTitle} className="font-semibold text-primary" />
                     </div>
-                    <span className="text-xs text-secondary px-1 rounded border border-outline">{fullLabel}</span>
+                    <div className="flex items-center gap-3">
+                        <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
+                        <span className="text-secondary/40 hover:text-secondary transition-colors" title="Cmd/Ctrl + Click to open in new tab"
+                              onClick={(e) => {
+                                  e.stopPropagation();
+                                  useStore.getState().openBlockInTab(targetBlock!.id, true);
+                              }}
+                        >
+                            <ExternalLink size={14} />
+                        </span>
+                    </div>
                 </div>
-                <div className="p-3 bg-surface/50 rounded-b-lg font-sans text-primary relative overflow-visible" 
+                <div className="p-3 bg-background/50 rounded-b-xl font-sans text-primary relative overflow-visible" 
                      onClick={e => {
                          // Prevents clicking inside widget from blurring the view/widget inappropriately?
                          // e.stopPropagation() is already somewhat implicit for embedded elements, but let's be safe.
@@ -209,7 +238,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 >
                     <MathTitle text={displayTitle} />
                 </span>
-                <span className="block w-full pl-4 py-2 border-l-2 border-accent/30 my-2 select-text bg-surface/30 rounded-r-lg relative overflow-visible" 
+                <span className={`${isAtEndOfLine ? 'inline-block w-[95%]' : 'block w-full'} pl-4 py-2 border-l-2 border-accent/30 select-text bg-surface/30 rounded-r-lg relative overflow-visible ${isAtEndOfLine ? 'mb-1 mt-0' : 'my-2'}`} 
                      onClick={e => e.stopPropagation()}>
                     <CodeMirrorEditor 
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
