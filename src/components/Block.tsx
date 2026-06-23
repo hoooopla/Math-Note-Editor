@@ -85,7 +85,6 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
             const isDuplicate = blocks.some(b => b.id !== block.id && b.label === finalLabel);
             if (isDuplicate) {
                 setError(`Label "${finalLabel}" already exists`);
-                setLabelInput(block.label);
                 return;
             }
         }
@@ -94,14 +93,16 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
         setIsEditingMeta(false);
     };
 
+    const cancelMeta = () => {
+        setTitleInput(block.title);
+        setLabelInput(block.label);
+        setError(null);
+        setIsEditingMeta(false);
+    };
+
     const handleMetaKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter') submitMeta();
-        if (e.key === 'Escape') {
-            setTitleInput(block.title);
-            setLabelInput(block.label);
-            setError(null);
-            setIsEditingMeta(false);
-        }
+        if (e.key === 'Escape') cancelMeta();
     };
 
     return (
@@ -134,7 +135,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                             className="flex space-x-2 items-center"
                             onBlur={(e) => {
                                 if (!e.currentTarget.contains(e.relatedTarget)) {
-                                    submitMeta();
+                                    cancelMeta();
                                 }
                             }}
                         >
@@ -146,7 +147,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                                 onKeyDown={handleMetaKeyDown}
                                 placeholder="Title"
                             />
-                            <div className="relative flex items-center">
+                            <div className="relative flex items-center gap-2">
                                 <input 
                                     className={`bg-base text-secondary px-2 py-1 rounded outline-none border ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} text-xs tracking-widest font-sans max-w-[150px]`}
                                     value={labelInput}
@@ -157,6 +158,18 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                                     onKeyDown={handleMetaKeyDown}
                                     placeholder="Label"
                                 />
+                                <button 
+                                    onMouseDown={e => { e.preventDefault(); submitMeta(); }}
+                                    className="p-1 hover:bg-surface/50 text-emerald-500 rounded transition-colors"
+                                >
+                                    <Check size={16} />
+                                </button>
+                                <button 
+                                    onMouseDown={e => { e.preventDefault(); cancelMeta(); }}
+                                    className="p-1 hover:bg-surface/50 text-secondary rounded transition-colors"
+                                >
+                                    <X size={16} />
+                                </button>
                                 {error && (
                                     <span className="absolute left-full ml-2 whitespace-nowrap text-xs text-red-500 font-sans">
                                         {error}

@@ -95,3 +95,11 @@ body {
     -webkit-font-feature-settings: "calt" 1 !important;
   }
 }
+
+.cm-content .underline, .cm-content .underline * {
+  font-style: normal !important;
+}
+
+.cm-content .not-italic, .cm-content .not-italic * {
+  font-style: normal !important;
+}

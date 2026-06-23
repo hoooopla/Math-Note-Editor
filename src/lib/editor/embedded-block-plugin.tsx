@@ -1,5 +1,6 @@
 import { Decoration, DecorationSet, EditorView, WidgetType, showTooltip, Tooltip, KeyBinding } from "@codemirror/view";
 import { RangeSetBuilder, StateField, Facet } from "@codemirror/state";
+import { completionStatus } from "@codemirror/autocomplete";
 import { editorFocusField, setEditorFocus } from "./katex-plugin";
 import { Root, createRoot } from "react-dom/client";
 import { EmbeddedBlockUI } from "../../components/EmbeddedBlockUI";
@@ -23,7 +24,7 @@ export const visitedLabelsFacet = Facet.define<string[], string[]>({
 
 function parseLinks(doc: string): ParsedLink[] {
     const links: ParsedLink[] = [];
-    const regex = /\[\[(.*?)\]\]/g;
+    const regex = /\[\[([^\[\]\n]*?)\]\]/g;
     let match;
     while ((match = regex.exec(doc)) !== null) {
         links.push({
@@ -189,8 +190,10 @@ class EmbeddedBlockWidget extends WidgetType {
 
     ignoreEvent(e: Event) {
         if (e.target instanceof HTMLElement) {
-            if (e.target.closest(".cm-editor")) return true;
-            if (e.target.closest("button") || e.target.tagName === "BUTTON") return true;
+            const editor = e.target.closest(".cm-editor");
+            const wrapper = e.target.closest(".cm-embedded-block-wrapper");
+            if (editor && wrapper && wrapper.contains(editor)) return true;
+            if (wrapper && (e.target.closest("button") || e.target.tagName === "BUTTON")) return true;
         }
         return false;
     }
@@ -306,6 +309,11 @@ export const embedKeymap: KeyBinding[] = [
         key: "Enter",
         run: (view) => {
             if (!view.hasFocus) return false;
+            
+            // If autocomplete dropdown is actively open, let it handle the Enter key to select the option
+            if (completionStatus(view.state) === "active") {
+                return false;
+            }
             
             const links = view.state.field(parsedLinksField);
             const selection = view.state.selection.main;

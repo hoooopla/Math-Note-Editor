@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { EditorState, StateEffect, Compartment, Transaction } from "@codemirror/state";
+import { EditorState, StateEffect, Compartment, Transaction, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, dropCursor } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -108,7 +108,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 EditorView.lineWrapping,
                 history(),
                 customKeymap,
-                keymap.of(embedKeymap),
+                Prec.highest(keymap.of(embedKeymap)),
                 keymap.of([{
                     key: "[",
                     run: (view) => {
@@ -226,6 +226,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                         return false;
                     },
                     focus: (e, view) => {
+                        view.dispatch({ effects: setEditorFocus.of(true) });
                         if (onFocusRef.current) {
                             if (isGlobalMousePressed) {
                                 const handleMouseUp = () => {
@@ -243,22 +244,29 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                             }
                         }
                         return false;
+                    },
+                    blur: (e, view) => {
+                        view.dispatch({ effects: setEditorFocus.of(false) });
+                        return false;
                     }
                 }),
                 EditorView.updateListener.of((update) => {
-                    const isUserEvent = update.transactions.some(tr => Boolean(tr.annotation(Transaction.userEvent)));
-                    if (update.docChanged && onChangeRef.current && isUserEvent) {
+                    const userEvent = update.transactions.map(tr => tr.annotation(Transaction.userEvent)).find(e => Boolean(e));
+                    if (update.docChanged && onChangeRef.current && userEvent) {
                         onChangeRef.current(update.state.doc.toString());
                         
                         // the menu should pop up when editing (including deleting text)
-                        const head = update.state.selection.main.head;
-                        const match = update.state.doc.slice(Math.max(0, head - 100), head).toString().match(/\[\[[^\]]*$/);
-                        if (match) {
-                            setTimeout(() => {
-                                import("@codemirror/autocomplete").then(({ startCompletion }) => {
-                                    startCompletion(update.view);
-                                });
-                            }, 10);
+                        // specifically exclude "input.complete" since we don't want it popping back up right after selection!
+                        if (userEvent === "input.type" || userEvent?.startsWith("delete") || userEvent === "input.paste") {
+                            const head = update.state.selection.main.head;
+                            const match = update.state.doc.slice(Math.max(0, head - 100), head).toString().match(/\[\[[^\]]*$/);
+                            if (match) {
+                                setTimeout(() => {
+                                    import("@codemirror/autocomplete").then(({ startCompletion }) => {
+                                        startCompletion(update.view);
+                                    });
+                                }, 10);
+                            }
                         }
                     }
                     // Sync only when focus is lost to prevent React from re-rendering the app rapidly

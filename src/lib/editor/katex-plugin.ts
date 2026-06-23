@@ -10,7 +10,11 @@ export const livePreviewMacros = Facet.define<Record<string, string>, Record<str
 export const setEditorFocus = StateEffect.define<boolean>();
 
 export const editorFocusField = StateField.define<boolean>({
-    create() { return false; },
+    create(state) { 
+        // Initial value could be true if the DOM is already focused or we are just typing
+        // But let's just default to true if the editor is active or we don't want to prematurely widgetize
+        return true; 
+    },
     update(value, tr) {
         for (let e of tr.effects) {
             if (e.is(setEditorFocus)) return e.value;
@@ -356,7 +360,7 @@ function buildLiveDecorations(state: EditorState) {
                 decos.push({from: r.to - 1, to: r.to, deco: Decoration.replace({})});
             } else if (r.type === "underline") {
                 decos.push({from: r.from, to: r.from + 1, deco: Decoration.replace({})});
-                decos.push({from: r.from + 1, to: r.to - 1, deco: Decoration.mark({ class: "underline underline-offset-2 text-primary" })});
+                decos.push({from: r.from + 1, to: r.to - 1, deco: Decoration.mark({ class: "underline underline-offset-2 text-primary not-italic" })});
                 decos.push({from: r.to - 1, to: r.to, deco: Decoration.replace({})});
             } else if (r.type === "list") {
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({

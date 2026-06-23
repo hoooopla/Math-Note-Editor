@@ -1,24 +1,40 @@
 import { CompletionContext, CompletionResult, Completion } from "@codemirror/autocomplete";
+import { Transaction } from "@codemirror/state";
 import { useStore } from "../../store";
 import { parentLabelFacet } from "./embedded-block-plugin";
 
 export function linkCompletion(context: CompletionContext): CompletionResult | null {
     // Match anything after `[[` until the cursor (and only if we are typing inside `[[ ... `)
-    const match = context.matchBefore(/\[\[[^\]]*/);
-    if (!match) return null;
+    const beforeRegex = /\[\[([^\]]*)$/;
+    const beforeStr = context.state.doc.sliceString(Math.max(0, context.pos - 100), context.pos);
+    const beforeMatch = beforeStr.match(beforeRegex);
+    if (!beforeMatch) return null;
 
-    let rawQuery = match.text.slice(2);
-    const hasAt = rawQuery.startsWith("@");
+    const textBeforeCursor = beforeMatch[1];
+    
+    // If the cursor is past `||`, we are typing the alias formatting, so no block autocomplete
+    if (textBeforeCursor.includes("||")) {
+        return null;
+    }
+
+    const afterRegex = /^([^\]]*)/;
+    const afterStr = context.state.doc.sliceString(context.pos, Math.min(context.pos + 100, context.state.doc.length));
+    const afterMatch = afterStr.match(afterRegex);
+    const textAfterCursor = afterMatch ? afterMatch[1] : "";
+
+    // The alias divider might be in the text after the cursor
+    const pipeIdxAfter = textAfterCursor.indexOf("||");
+    const labelAfterCursor = pipeIdxAfter !== -1 ? textAfterCursor.slice(0, pipeIdxAfter) : textAfterCursor;
+
+    let queryLabel = textBeforeCursor;
+    const from = context.pos - textBeforeCursor.length;
+    const to = context.pos + labelAfterCursor.length;
+
+    const hasAt = queryLabel.startsWith("@");
     if (hasAt) {
-        rawQuery = rawQuery.slice(1);
+        queryLabel = queryLabel.slice(1);
     }
     
-    // If there is a `||`, cursor might be typing title, we can still autocomplete the whole block but 
-    // maybe we shouldn't trigger if they are past the `||`? 
-    // Let's just use the label part for matching
-    const pipeIdx = rawQuery.indexOf("||");
-    const queryLabel = pipeIdx !== -1 ? rawQuery.slice(0, pipeIdx) : rawQuery;
-
     const store = useStore.getState();
     const blocks = store.blocks;
     const parentLabel = context.state.facet(parentLabelFacet);
@@ -39,9 +55,10 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
             detail: "create",
             type: "create",
             boost: 998,
-            apply: (view, completion, from, to) => {
+            apply: (view, completion, applyFrom, applyTo) => {
                 view.dispatch({
-                    changes: { from, to, insert: applyText },
+                    changes: { from: applyFrom, to: applyTo, insert: applyText },
+                    annotations: Transaction.userEvent.of("input.complete")
                 });
                 const newTitle = fullQueryLabel.includes("/") ? fullQueryLabel.slice(fullQueryLabel.lastIndexOf("/") + 1) : fullQueryLabel;
                 store.addBlock(undefined, { title: newTitle, label: fullQueryLabel });
@@ -65,7 +82,12 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
             displayLabel: b.label,
             detail: b.title && b.title !== b.label ? b.title : "",
             type: "text",
-            apply: applyText
+            apply: (view, completion, applyFrom, applyTo) => {
+                view.dispatch({
+                    changes: { from: applyFrom, to: applyTo, insert: applyText },
+                    annotations: Transaction.userEvent.of("input.complete")
+                });
+            }
         });
 
         // "account for relative path"
@@ -82,15 +104,23 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
                     displayLabel: relText,
                     detail: b.title && b.title !== b.label ? b.title : "",
                     type: "text",
-                    apply: applyRelText
+                    apply: (view, completion, applyFrom, applyTo) => {
+                        view.dispatch({
+                            changes: { from: applyFrom, to: applyTo, insert: applyRelText },
+                            annotations: Transaction.userEvent.of("input.complete")
+                        });
+                    }
                 });
             }
         }
     }
 
+    // Make sure we apply based on the calculated full range inside brackets
     return {
-        from: match.from + 2,
+        from: from,
+        to: to,
         options: options,
-        validFor: /^[^\]]*$/
+        validFor: /^[^\]]*$/,
+        filter: false
     };
 }

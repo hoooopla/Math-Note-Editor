@@ -23,7 +23,13 @@ export function textCompletion(context: CompletionContext) {
         return {
             label: `\\${text}`,
             displayLabel: text,
-            apply: text,
+            apply: (view, completion, applyFrom, applyTo) => {
+                const { Transaction } = require("@codemirror/state");
+                view.dispatch({
+                    changes: { from: applyFrom, to: applyTo, insert: text },
+                    annotations: Transaction.userEvent.of("input.complete")
+                });
+            },
             detail: "text",
             type: "keyword",
             boost: -idx // keep the settings order
