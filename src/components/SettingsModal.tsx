@@ -9,12 +9,30 @@ interface SettingsModalProps {
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const { settings, saveSettings } = useStore();
-    const [activeTab, setActiveTab] = useState<'macros' | 'commands' | 'text' | 'general'>('macros');
+    const [activeTab, setActiveTab] = useState<'general' | 'macros' | 'commands' | 'text' | 'embedded' | 'colors'>('general');
     const [localMacros, setLocalMacros] = useState<Array<{key: string, value: string}>>([]);
     const [localCommands, setLocalCommands] = useState<string[]>([]);
     const [localTextCommands, setLocalTextCommands] = useState<string[]>([]);
     const [localSearchShortcut, setLocalSearchShortcut] = useState<string>('meta+k');
     const [localMathHighlightColor, setLocalMathHighlightColor] = useState<string>('#d19a66');
+    const [localInlineBlockColorFilled, setLocalInlineBlockColorFilled] = useState<string>('#a8b5c2');
+    const [localInlineBlockColorEmpty, setLocalInlineBlockColorEmpty] = useState<string>('#FF997D');
+    const [localInlineBlockIndentWidth, setLocalInlineBlockIndentWidth] = useState<number>(16);
+    const [localStandoutBlockColorFilled, setLocalStandoutBlockColorFilled] = useState<string>('#a8b5c2');
+    const [localStandoutBlockColorEmpty, setLocalStandoutBlockColorEmpty] = useState<string>('#FF997D');
+    const [localStandoutBlockIndentWidth, setLocalStandoutBlockIndentWidth] = useState<number>(0);
+    const [localStandoutTitlePaddingLeft, setLocalStandoutTitlePaddingLeft] = useState<number>(10);
+    const [localStandoutTitlePaddingRight, setLocalStandoutTitlePaddingRight] = useState<number>(6);
+    const [localStandoutTitlePaddingTop, setLocalStandoutTitlePaddingTop] = useState<number>(5);
+    const [localStandoutTitlePaddingBottom, setLocalStandoutTitlePaddingBottom] = useState<number>(5);
+    const [localStandoutContentPaddingLeft, setLocalStandoutContentPaddingLeft] = useState<number>(10);
+    const [localStandoutContentPaddingTop, setLocalStandoutContentPaddingTop] = useState<number>(8);
+    const [localStandoutContentPaddingRight, setLocalStandoutContentPaddingRight] = useState<number>(12);
+    const [localStandoutContentPaddingBottom, setLocalStandoutContentPaddingBottom] = useState<number>(12);
+    const [localStandoutBorderColor, setLocalStandoutBorderColor] = useState<string>('#ffffff');
+    const [localStandoutDividerColor, setLocalStandoutDividerColor] = useState<string>('#ffffff');
+    const [localStandoutBorderWidth, setLocalStandoutBorderWidth] = useState<number>(1);
+    const [localStandoutDividerWidth, setLocalStandoutDividerWidth] = useState<number>(1);
     const [localMathColors, setLocalMathColors] = useState<Record<string, string>>({
         command: "#61afef",
         brace: "#e5c07b",
@@ -31,6 +49,24 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalCommands([...(settings.customCommands || [])]);
             setLocalTextCommands([...(settings.textCommands || [])]);
             setLocalSearchShortcut(settings.searchShortcut || 'meta+k');
+            setLocalInlineBlockColorFilled(settings.inlineBlockTitleColorWithContent || '#a8b5c2');
+            setLocalInlineBlockColorEmpty(settings.inlineBlockTitleColorEmpty || '#FF997D');
+            setLocalInlineBlockIndentWidth(settings.inlineBlockIndentWidth ?? 16);
+            setLocalStandoutBlockColorFilled(settings.standoutBlockTitleColorWithContent || '#a8b5c2');
+            setLocalStandoutBlockColorEmpty(settings.standoutBlockTitleColorEmpty || '#FF997D');
+            setLocalStandoutBlockIndentWidth(settings.standoutBlockIndentWidth ?? 0);
+            setLocalStandoutTitlePaddingLeft(settings.standoutBlockTitlePaddingLeft ?? 10);
+            setLocalStandoutTitlePaddingRight(settings.standoutBlockTitlePaddingRight ?? 6);
+            setLocalStandoutTitlePaddingTop(settings.standoutBlockTitlePaddingTop ?? 5);
+            setLocalStandoutTitlePaddingBottom(settings.standoutBlockTitlePaddingBottom ?? 5);
+            setLocalStandoutContentPaddingLeft(settings.standoutBlockContentPaddingLeft ?? 10);
+            setLocalStandoutContentPaddingTop(settings.standoutBlockContentPaddingTop ?? 8);
+            setLocalStandoutContentPaddingRight(settings.standoutBlockContentPaddingRight ?? 12);
+            setLocalStandoutContentPaddingBottom(settings.standoutBlockContentPaddingBottom ?? 12);
+            setLocalStandoutBorderColor(settings.standoutBlockBorderColor || '#ffffff');
+            setLocalStandoutDividerColor(settings.standoutBlockDividerColor || '#ffffff');
+            setLocalStandoutBorderWidth(settings.standoutBlockBorderWidth ?? 1);
+            setLocalStandoutDividerWidth(settings.standoutBlockDividerWidth ?? 1);
             setLocalMathHighlightColor(settings.mathHighlightColor || '#d19a66');
             if (settings.mathColors) {
                 setLocalMathColors({ ...settings.mathColors });
@@ -64,6 +100,24 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             customCommands: newCommands,
             textCommands: newTextCommands,
             searchShortcut: localSearchShortcut.trim() || 'meta+k',
+            inlineBlockTitleColorWithContent: localInlineBlockColorFilled.trim() || '#a8b5c2',
+            inlineBlockTitleColorEmpty: localInlineBlockColorEmpty.trim() || '#FF997D',
+            inlineBlockIndentWidth: isNaN(localInlineBlockIndentWidth) ? 16 : localInlineBlockIndentWidth,
+            standoutBlockTitleColorWithContent: localStandoutBlockColorFilled.trim() || '#a8b5c2',
+            standoutBlockTitleColorEmpty: localStandoutBlockColorEmpty.trim() || '#FF997D',
+            standoutBlockIndentWidth: isNaN(localStandoutBlockIndentWidth) ? 0 : localStandoutBlockIndentWidth,
+            standoutBlockTitlePaddingLeft: isNaN(localStandoutTitlePaddingLeft) ? 10 : localStandoutTitlePaddingLeft,
+            standoutBlockTitlePaddingRight: isNaN(localStandoutTitlePaddingRight) ? 6 : localStandoutTitlePaddingRight,
+            standoutBlockTitlePaddingTop: isNaN(localStandoutTitlePaddingTop) ? 5 : localStandoutTitlePaddingTop,
+            standoutBlockTitlePaddingBottom: isNaN(localStandoutTitlePaddingBottom) ? 5 : localStandoutTitlePaddingBottom,
+            standoutBlockContentPaddingLeft: isNaN(localStandoutContentPaddingLeft) ? 10 : localStandoutContentPaddingLeft,
+            standoutBlockContentPaddingTop: isNaN(localStandoutContentPaddingTop) ? 8 : localStandoutContentPaddingTop,
+            standoutBlockContentPaddingRight: isNaN(localStandoutContentPaddingRight) ? 12 : localStandoutContentPaddingRight,
+            standoutBlockContentPaddingBottom: isNaN(localStandoutContentPaddingBottom) ? 12 : localStandoutContentPaddingBottom,
+            standoutBlockBorderColor: localStandoutBorderColor.trim() || '#ffffff',
+            standoutBlockDividerColor: localStandoutDividerColor.trim() || '#ffffff',
+            standoutBlockBorderWidth: isNaN(localStandoutBorderWidth) ? 1 : localStandoutBorderWidth,
+            standoutBlockDividerWidth: isNaN(localStandoutDividerWidth) ? 1 : localStandoutDividerWidth,
             mathHighlightColor: localMathHighlightColor.trim() || '#d19a66',
             mathColors: { ...localMathColors } as any
         });
@@ -124,6 +178,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     {/* Left Sidebar */}
                     <div className="w-48 md:w-64 border-r border-outline flex flex-col p-3 space-y-1 bg-base/30">
                         <button 
+                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'general' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
+                            onClick={() => setActiveTab('general')}
+                        >
+                            Keyboard Shortcuts
+                        </button>
+                        <button 
                             className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'macros' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
                             onClick={() => setActiveTab('macros')}
                         >
@@ -142,10 +202,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             Text Autocomplete
                         </button>
                         <button 
-                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'general' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
-                            onClick={() => setActiveTab('general')}
+                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'embedded' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
+                            onClick={() => setActiveTab('embedded')}
                         >
-                            General Settings
+                            Embedded Blocks
+                        </button>
+                        <button 
+                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'colors' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
+                            onClick={() => setActiveTab('colors')}
+                        >
+                            LaTeX Highlight Colors
                         </button>
                     </div>
 
@@ -316,9 +382,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                         {activeTab === 'general' && (
                             <div className="max-w-2xl">
-                                <h3 className="text-base font-semibold text-primary mb-1">General Settings</h3>
+                                <h3 className="text-base font-semibold text-primary mb-1">Keyboard Shortcuts</h3>
                                 <p className="text-sm text-secondary mb-6">
-                                    General application preferences and shortcuts.
+                                    Keyboard shortcuts for the application.
                                 </p>
                                 
                                 <div className="space-y-4">
@@ -335,10 +401,186 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <span className="text-xs text-secondary ml-2">Use 'meta' for Cmd (Mac) / Win key. Use 'ctrl' for Control. Format: modifier+key.</span>
                                         </div>
                                     </div>
+                                </div>
+                            </div>
+                        )}
 
-                                    <div className="flex flex-col gap-2 mt-4">
-                                        <label className="text-sm font-medium text-primary">LaTeX Highlight Colors</label>
-                                        <p className="text-xs text-secondary mb-2">Configure syntax highlighting colors for raw LaTeX in the editor.</p>
+                        {activeTab === 'embedded' && (
+                            <div className="max-w-2xl">
+                                <h3 className="text-base font-semibold text-primary mb-1">Inline Embedded Block Settings</h3>
+                                <p className="text-sm text-secondary mb-6">Configure how inline embedded blocks appear.</p>
+                                
+                                <div className="space-y-4">
+                                    <div className="flex flex-col gap-2">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            {[
+                                                { key: 'filledColor', label: 'Color (with content)', value: localInlineBlockColorFilled, setter: setLocalInlineBlockColorFilled },
+                                                { key: 'emptyColor', label: 'Color (empty)', value: localInlineBlockColorEmpty, setter: setLocalInlineBlockColorEmpty }
+                                            ].map(item => (
+                                                <div key={item.key} className="flex gap-2 items-center">
+                                                    <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden relative" style={{ backgroundColor: item.value }}>
+                                                        <input
+                                                            type="color"
+                                                            value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#000000'}
+                                                            onChange={(e) => item.setter(e.target.value)}
+                                                            className="opacity-0 cursor-pointer w-10 h-10 absolute"
+                                                        />
+                                                    </div>
+                                                    <input
+                                                        type="text"
+                                                        value={item.value || ''}
+                                                        onChange={(e) => item.setter(e.target.value)}
+                                                        className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                    />
+                                                    <span className="text-xs text-secondary ml-1">{item.label}</span>
+                                                </div>
+                                            ))}
+                                            <div className="flex gap-2 items-center">
+                                                <span className="w-6 h-6 shrink-0 flex items-center justify-center text-secondary">
+                                                    px
+                                                </span>
+                                                <input
+                                                    type="number"
+                                                    value={isNaN(localInlineBlockIndentWidth) ? '' : localInlineBlockIndentWidth}
+                                                    onChange={(e) => setLocalInlineBlockIndentWidth(parseInt(e.target.value))}
+                                                    className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                />
+                                                <span className="text-xs text-secondary ml-1">Left Padding/Indent</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="flex flex-col gap-2 mt-8">
+                                        <h3 className="text-base font-semibold text-primary mb-1">Standout Embedded Block Settings</h3>
+                                        <p className="text-sm text-secondary mb-4">Configure how standout embedded blocks appear.</p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            {[
+                                                { key: 'standoutFilledColor', label: 'Color (with content)', value: localStandoutBlockColorFilled, setter: setLocalStandoutBlockColorFilled },
+                                                { key: 'standoutEmptyColor', label: 'Color (empty)', value: localStandoutBlockColorEmpty, setter: setLocalStandoutBlockColorEmpty }
+                                            ].map(item => (
+                                                <div key={item.key} className="flex gap-2 items-center">
+                                                    <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden relative" style={{ backgroundColor: item.value }}>
+                                                        <input
+                                                            type="color"
+                                                            value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#000000'}
+                                                            onChange={(e) => item.setter(e.target.value)}
+                                                            className="opacity-0 cursor-pointer w-10 h-10 absolute"
+                                                        />
+                                                    </div>
+                                                    <input
+                                                        type="text"
+                                                        value={item.value || ''}
+                                                        onChange={(e) => item.setter(e.target.value)}
+                                                        className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                    />
+                                                    <span className="text-xs text-secondary ml-1">{item.label}</span>
+                                                </div>
+                                            ))}
+                                            <div className="flex gap-2 items-center">
+                                                <span className="w-6 h-6 shrink-0 flex items-center justify-center text-secondary">
+                                                    px
+                                                </span>
+                                                <input
+                                                    type="number"
+                                                    value={isNaN(localStandoutBlockIndentWidth) ? '' : localStandoutBlockIndentWidth}
+                                                    onChange={(e) => setLocalStandoutBlockIndentWidth(parseInt(e.target.value))}
+                                                    className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                />
+                                                <span className="text-xs text-secondary ml-1">Left Padding/Indent</span>
+                                            </div>
+                                            
+                                            <div className="col-span-1 md:col-span-2 border-t border-outline pt-4 mt-2">
+                                                <p className="text-sm font-semibold text-primary mb-2">Title Padding</p>
+                                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                                                    {[
+                                                        { key: 't-pl', label: 'Left', value: localStandoutTitlePaddingLeft, setter: setLocalStandoutTitlePaddingLeft },
+                                                        { key: 't-pr', label: 'Right', value: localStandoutTitlePaddingRight, setter: setLocalStandoutTitlePaddingRight },
+                                                        { key: 't-pt', label: 'Top', value: localStandoutTitlePaddingTop, setter: setLocalStandoutTitlePaddingTop },
+                                                        { key: 't-pb', label: 'Bottom', value: localStandoutTitlePaddingBottom, setter: setLocalStandoutTitlePaddingBottom },
+                                                    ].map(item => (
+                                                        <div key={item.key} className="flex gap-2 items-center">
+                                                            <input
+                                                                type="number"
+                                                                value={isNaN(item.value) ? '' : item.value}
+                                                                onChange={(e) => item.setter(parseInt(e.target.value))}
+                                                                className="w-16 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                            />
+                                                            <span className="text-xs text-secondary">{item.label} (px)</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <p className="text-sm font-semibold text-primary mt-4 mb-2">Content Padding</p>
+                                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                                                    {[
+                                                        { key: 'c-pl', label: 'Left', value: localStandoutContentPaddingLeft, setter: setLocalStandoutContentPaddingLeft },
+                                                        { key: 'c-pr', label: 'Right', value: localStandoutContentPaddingRight, setter: setLocalStandoutContentPaddingRight },
+                                                        { key: 'c-pt', label: 'Top', value: localStandoutContentPaddingTop, setter: setLocalStandoutContentPaddingTop },
+                                                        { key: 'c-pb', label: 'Bottom', value: localStandoutContentPaddingBottom, setter: setLocalStandoutContentPaddingBottom },
+                                                    ].map(item => (
+                                                        <div key={item.key} className="flex gap-2 items-center">
+                                                            <input
+                                                                type="number"
+                                                                value={isNaN(item.value) ? '' : item.value}
+                                                                onChange={(e) => item.setter(parseInt(e.target.value))}
+                                                                className="w-16 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                            />
+                                                            <span className="text-xs text-secondary">{item.label} (px)</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <p className="text-sm font-semibold text-primary mt-4 mb-2">Border & Divider Settings</p>
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 gap-y-4">
+                                                    {[
+                                                        { key: 'standoutBorderColor', label: 'Border Color', value: localStandoutBorderColor, setter: setLocalStandoutBorderColor },
+                                                        { key: 'standoutDividerColor', label: 'Divider Color', value: localStandoutDividerColor, setter: setLocalStandoutDividerColor }
+                                                    ].map(item => (
+                                                        <div key={item.key} className="flex gap-2 items-center">
+                                                            <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden relative" style={{ backgroundColor: item.value }}>
+                                                                <input
+                                                                    type="color"
+                                                                    value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#ffffff'}
+                                                                    onChange={(e) => item.setter(e.target.value)}
+                                                                    className="opacity-0 cursor-pointer w-10 h-10 absolute"
+                                                                />
+                                                            </div>
+                                                            <input
+                                                                type="text"
+                                                                value={item.value || ''}
+                                                                onChange={(e) => item.setter(e.target.value)}
+                                                                className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                            />
+                                                            <span className="text-xs text-secondary ml-1">{item.label}</span>
+                                                        </div>
+                                                    ))}
+                                                    {[
+                                                        { key: 'standoutBorderWidth', label: 'Border Width', value: localStandoutBorderWidth, setter: setLocalStandoutBorderWidth },
+                                                        { key: 'standoutDividerWidth', label: 'Divider Width', value: localStandoutDividerWidth, setter: setLocalStandoutDividerWidth }
+                                                    ].map(item => (
+                                                        <div key={item.key} className="flex gap-2 items-center">
+                                                            <input
+                                                                type="number"
+                                                                value={isNaN(item.value) ? '' : item.value}
+                                                                onChange={(e) => item.setter(parseInt(e.target.value))}
+                                                                className="w-16 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                            />
+                                                            <span className="text-xs text-secondary">{item.label} (px)</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'colors' && (
+                            <div className="max-w-2xl">
+                                <h3 className="text-base font-semibold text-primary mb-1">LaTeX Highlight Colors</h3>
+                                <p className="text-sm text-secondary mb-6">Configure syntax highlighting colors for raw LaTeX in the editor.</p>
+                                
+                                <div className="space-y-4">
+                                    <div className="flex flex-col gap-2">
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             {[
                                                 { key: 'mathHighlightColor', label: 'Default Text', value: localMathHighlightColor, setter: setLocalMathHighlightColor },
@@ -351,7 +593,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 { key: 'escaped', label: 'Escaped (\\%)', value: localMathColors.escaped, setter: (val: string) => setLocalMathColors({...localMathColors, escaped: val}) }
                                             ].map(item => (
                                                 <div key={item.key} className="flex gap-2 items-center">
-                                                    <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden" style={{ backgroundColor: item.value }}>
+                                                    <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden relative" style={{ backgroundColor: item.value }}>
                                                         <input
                                                             type="color"
                                                             value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#000000'}

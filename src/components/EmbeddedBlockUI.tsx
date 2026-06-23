@@ -4,7 +4,7 @@ import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import type { EditorView } from "@codemirror/view";
 import { setEditorFocus } from "../lib/editor/katex-plugin";
 import { MathTitle } from "./MathTitle";
-import { ChevronRight, ChevronDown, ExternalLink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 
 export interface EmbeddedBlockUIProps {
     text: string;
@@ -15,13 +15,14 @@ export interface EmbeddedBlockUIProps {
     pos?: number;
     length?: number;
     isAtEndOfLine?: boolean;
+    isAtStartOfLine?: boolean;
 }
 
-export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleOpen, view, pos, length, isAtEndOfLine = false }: EmbeddedBlockUIProps) {
+export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleOpen, view, pos, length, isAtEndOfLine = false, isAtStartOfLine = false }: EmbeddedBlockUIProps) {
     let displayStyle: "standout" | "inline" = "inline";
     let ifToggled: "open" | "closed" = "closed";
     
-    const { activePath, focusDirection, activeFocusPos, loadBlockContent } = useStore();
+    const { activePath, focusDirection, activeFocusPos, loadBlockContent, settings } = useStore();
     const [isLocalFocused, setIsLocalFocused] = useState(false);
 
     let rawText = text;
@@ -100,18 +101,43 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     // if_toggled = closed
     if (ifToggled === "closed") {
         if (displayStyle === "standout") {
+            const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
+            const filledColor = settings?.standoutBlockTitleColorWithContent || "#a8b5c2";
+            const emptyColor = settings?.standoutBlockTitleColorEmpty || "#FF997D";
+            const color = hasContent ? filledColor : emptyColor;
+            const indentWidth = settings?.standoutBlockIndentWidth ?? 0;
+            
+            const titlePl = settings?.standoutBlockTitlePaddingLeft ?? 10;
+            const titlePr = settings?.standoutBlockTitlePaddingRight ?? 6;
+            const titlePt = settings?.standoutBlockTitlePaddingTop ?? 5;
+            const titlePb = settings?.standoutBlockTitlePaddingBottom ?? 5;
+            const borderColor = settings?.standoutBlockBorderColor || '#ffffff';
+            const borderWidth = settings?.standoutBlockBorderWidth ?? 1;
+            
             return (
                 <div 
-                    className="block w-full border border-outline rounded-xl my-2 cursor-pointer hover:border-accent hover:shadow-sm transition-all select-none overflow-hidden bg-surface/30 hover:bg-surface/50 group"
+                    className={`block rounded-xl ${isAtStartOfLine ? 'mt-0' : 'mt-0.5'} mb-2 cursor-pointer hover:shadow-sm transition-all select-none overflow-hidden bg-surface/30 hover:bg-surface/50 group`}
+                    style={{ 
+                        borderStyle: 'solid',
+                        borderWidth: `${borderWidth}px`,
+                        borderColor: borderColor,
+                        marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
+                        width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%'
+                    }}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
-                    <div className="flex items-center justify-between px-3 py-2.5">
+                    <div className="flex items-center justify-between"
+                         style={{ 
+                             paddingLeft: `${titlePl}px`, 
+                             paddingRight: `${titlePr}px`, 
+                             paddingTop: `${titlePt}px`, 
+                             paddingBottom: `${titlePb}px` 
+                         }}>
                         <div className="flex items-center gap-2.5">
-                            <span className="text-secondary group-hover:text-accent transition-colors flex items-center justify-center p-0.5">
-                                <ChevronRight size={16} />
-                            </span>
-                            <MathTitle text={displayTitle} className="font-semibold text-primary" />
+                            <div style={{ color }}>
+                                <MathTitle text={displayTitle} className="font-semibold" />
+                            </div>
                             <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
                         </div>
                         <span className="text-secondary/40 group-hover:text-secondary opacity-0 group-hover:opacity-100 transition-opacity mr-1" title="Cmd/Ctrl + Click to open in new tab">
@@ -122,10 +148,13 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             );
         } else {
             const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
-            const colorClass = hasContent ? "text-secondary hover:text-primary border-secondary" : "text-[#FF997D] hover:text-[#ffab94] border-[#FF997D]";
+            const filledColor = settings?.inlineBlockTitleColorWithContent || "#a8b5c2";
+            const emptyColor = settings?.inlineBlockTitleColorEmpty || "#FF997D";
+            const color = hasContent ? filledColor : emptyColor;
             return (
                 <span 
-                    className={`inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors ${colorClass}`}
+                    className="inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors opacity-90 hover:opacity-100"
+                    style={{ color, borderColor: color }}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
@@ -167,18 +196,55 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     };
 
     if (displayStyle === "standout") {
+        const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
+        const filledColor = settings?.standoutBlockTitleColorWithContent || "#a8b5c2";
+        const emptyColor = settings?.standoutBlockTitleColorEmpty || "#FF997D";
+        const color = hasContent ? filledColor : emptyColor;
+        const indentWidth = settings?.standoutBlockIndentWidth ?? 0;
+        
+        const titlePl = settings?.standoutBlockTitlePaddingLeft ?? 10;
+        const titlePr = settings?.standoutBlockTitlePaddingRight ?? 6;
+        const titlePt = settings?.standoutBlockTitlePaddingTop ?? 5;
+        const titlePb = settings?.standoutBlockTitlePaddingBottom ?? 5;
+        
+        const contentPl = settings?.standoutBlockContentPaddingLeft ?? 10;
+        const contentPt = settings?.standoutBlockContentPaddingTop ?? 8;
+        const contentPr = settings?.standoutBlockContentPaddingRight ?? 12;
+        const contentPb = settings?.standoutBlockContentPaddingBottom ?? 12;
+        
+        const borderColor = settings?.standoutBlockBorderColor || '#ffffff';
+        const dividerColor = settings?.standoutBlockDividerColor || '#ffffff';
+        const borderWidth = settings?.standoutBlockBorderWidth ?? 1;
+        const dividerWidth = settings?.standoutBlockDividerWidth ?? 1;
+        
         return (
-            <div className="block w-full border border-secondary/40 rounded-xl my-3 select-none overflow-hidden bg-surface shadow-sm focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/30 transition-all">
+            <div 
+                className={`block rounded-xl ${isAtStartOfLine ? 'mt-0' : 'mt-0.5'} mb-3 select-none overflow-hidden bg-surface shadow-sm focus-within:ring-1 transition-all`}
+                style={{ 
+                    borderStyle: 'solid',
+                    borderWidth: `${borderWidth}px`,
+                    borderColor: borderColor,
+                    marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
+                    width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%',
+                    "--tw-ring-color": color + "33", // 33 for 20% opacity using tw ring var
+                } as React.CSSProperties}
+            >
                 <div 
-                    className="flex justify-between items-center px-4 py-2.5 border-b border-outline bg-surface/80 cursor-pointer hover:bg-surface transition-colors group"
+                    className="flex justify-between items-center bg-surface/80 cursor-pointer hover:bg-surface transition-colors group"
+                    style={{ 
+                        borderBottom: `${dividerWidth}px solid ${dividerColor}`, 
+                        paddingLeft: `${titlePl}px`, 
+                        paddingRight: `${titlePr}px`, 
+                        paddingTop: `${titlePt}px`, 
+                        paddingBottom: `${titlePb}px` 
+                    }}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
                     <div className="flex items-center gap-2.5">
-                        <span className="text-accent flex items-center justify-center p-0.5">
-                            <ChevronDown size={16} />
-                        </span>
-                        <MathTitle text={displayTitle} className="font-semibold text-primary" />
+                        <div style={{ color }}>
+                            <MathTitle text={displayTitle} className="font-semibold" />
+                        </div>
                     </div>
                     <div className="flex items-center gap-3">
                         <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
@@ -192,7 +258,13 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         </span>
                     </div>
                 </div>
-                <div className="p-3 bg-background/50 rounded-b-xl font-sans text-primary relative overflow-visible" 
+                <div className="bg-background/50 rounded-b-xl font-sans text-primary relative overflow-visible" 
+                     style={{ 
+                         paddingLeft: `${contentPl}px`, 
+                         paddingRight: `${contentPr}px`, 
+                         paddingTop: `${contentPt}px`, 
+                         paddingBottom: `${contentPb}px` 
+                     }}
                      onClick={e => {
                          // Prevents clicking inside widget from blurring the view/widget inappropriately?
                          // e.stopPropagation() is already somewhat implicit for embedded elements, but let's be safe.
@@ -227,18 +299,23 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         );
     } else {
         const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
-        const colorClass = hasContent ? "text-secondary hover:text-primary border-secondary" : "text-[#FF997D] hover:text-[#ffab94] border-[#FF997D]";
+        const filledColor = settings?.inlineBlockTitleColorWithContent || "#a8b5c2";
+        const emptyColor = settings?.inlineBlockTitleColorEmpty || "#FF997D";
+        const color = hasContent ? filledColor : emptyColor;
+        const indentWidth = settings?.inlineBlockIndentWidth ?? 16;
         return (
             <span className="inline align-top">
                 <span 
-                    className={`inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors ${colorClass}`}
+                    className="inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors opacity-90 hover:opacity-100"
+                    style={{ color, borderColor: color }}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                     title={`Close ${displayTitle}`}
                 >
                     <MathTitle text={displayTitle} />
                 </span>
-                <span className={`${isAtEndOfLine ? 'inline-block w-[95%]' : 'block w-full'} pl-4 py-2 border-l-2 border-accent/30 select-text bg-surface/30 rounded-r-lg relative overflow-visible ${isAtEndOfLine ? 'mb-1 mt-0' : 'my-2'}`} 
+                <span className={`inline-block w-full py-2 border-l-2 border-accent/30 select-text bg-surface/30 rounded-r-lg relative overflow-visible mt-1 mb-1`} 
+                     style={{ paddingLeft: `${indentWidth}px` }}
                      onClick={e => e.stopPropagation()}>
                     <CodeMirrorEditor 
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}

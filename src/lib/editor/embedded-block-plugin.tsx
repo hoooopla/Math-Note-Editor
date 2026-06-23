@@ -56,7 +56,8 @@ class EmbeddedBlockWidget extends WidgetType {
         public visitedLabels: string[],
         public from: number, 
         public to: number,
-        public isAtEndOfLine: boolean = false
+        public isAtEndOfLine: boolean = false,
+        public isAtStartOfLine: boolean = false
     ) {
         super();
     }
@@ -67,7 +68,8 @@ class EmbeddedBlockWidget extends WidgetType {
                JSON.stringify(this.visitedLabels) === JSON.stringify(other.visitedLabels) &&
                this.from === other.from &&
                this.to === other.to &&
-               this.isAtEndOfLine === other.isAtEndOfLine;
+               this.isAtEndOfLine === other.isAtEndOfLine &&
+               this.isAtStartOfLine === other.isAtStartOfLine;
     }
 
     toDOM(view: EditorView) {
@@ -85,6 +87,7 @@ class EmbeddedBlockWidget extends WidgetType {
                 pos={this.from}
                 length={this.to - this.from}
                 isAtEndOfLine={this.isAtEndOfLine}
+                isAtStartOfLine={this.isAtStartOfLine}
                 toggleOpen={(e?: React.MouseEvent) => {
                     const coords = view.coordsAtPos(this.from);
                     const initialY = coords ? coords.top : 0;
@@ -140,6 +143,7 @@ class EmbeddedBlockWidget extends WidgetType {
                     pos={this.from}
                     length={this.to - this.from}
                     isAtEndOfLine={this.isAtEndOfLine}
+                    isAtStartOfLine={this.isAtStartOfLine}
                     toggleOpen={(e?: React.MouseEvent) => {
                         const coords = view.coordsAtPos(this.from);
                         const initialY = coords ? coords.top : 0;
@@ -227,12 +231,14 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
             const line = state.doc.lineAt(link.to);
             const textAfter = line.text.slice(link.to - line.from);
             const isAtEndOfLine = textAfter.trim() === "";
+            const textBefore = line.text.slice(0, link.from - line.from);
+            const isAtStartOfLine = textBefore.trim() === "";
 
             decos.push({
                 from: link.from,
                 to: link.to,
                 deco: Decoration.replace({
-                    widget: new EmbeddedBlockWidget(link.text, parentLabel, visitedLabels, link.from, link.to, isAtEndOfLine)
+                    widget: new EmbeddedBlockWidget(link.text, parentLabel, visitedLabels, link.from, link.to, isAtEndOfLine, isAtStartOfLine)
                 })
             });
         }

@@ -6,6 +6,24 @@ export interface EditorSettings {
     customCommands: string[];
     textCommands: string[];
     searchShortcut?: string;
+    inlineBlockTitleColorWithContent?: string;
+    inlineBlockTitleColorEmpty?: string;
+    inlineBlockIndentWidth?: number;
+    standoutBlockTitleColorWithContent?: string;
+    standoutBlockTitleColorEmpty?: string;
+    standoutBlockIndentWidth?: number;
+    standoutBlockTitlePaddingLeft?: number;
+    standoutBlockTitlePaddingRight?: number;
+    standoutBlockTitlePaddingTop?: number;
+    standoutBlockTitlePaddingBottom?: number;
+    standoutBlockContentPaddingLeft?: number;
+    standoutBlockContentPaddingTop?: number;
+    standoutBlockContentPaddingRight?: number;
+    standoutBlockContentPaddingBottom?: number;
+    standoutBlockBorderColor?: string;
+    standoutBlockDividerColor?: string;
+    standoutBlockBorderWidth?: number;
+    standoutBlockDividerWidth?: number;
     mathHighlightColor?: string;
     mathColors?: {
         command: string;
@@ -117,6 +135,24 @@ export const api: BackendApi = {
             customCommands: [], 
             textCommands: [], 
             searchShortcut: "meta+k",
+            inlineBlockTitleColorWithContent: "#a8b5c2",
+            inlineBlockTitleColorEmpty: "#FF997D",
+            inlineBlockIndentWidth: 16,
+            standoutBlockTitleColorWithContent: "#a8b5c2",
+            standoutBlockTitleColorEmpty: "#FF997D",
+            standoutBlockIndentWidth: 0,
+            standoutBlockTitlePaddingLeft: 10,
+            standoutBlockTitlePaddingRight: 6,
+            standoutBlockTitlePaddingTop: 5,
+            standoutBlockTitlePaddingBottom: 5,
+            standoutBlockContentPaddingLeft: 10,
+            standoutBlockContentPaddingTop: 8,
+            standoutBlockContentPaddingRight: 12,
+            standoutBlockContentPaddingBottom: 12,
+            standoutBlockBorderColor: "#ffffff",
+            standoutBlockDividerColor: "#ffffff",
+            standoutBlockBorderWidth: 1,
+            standoutBlockDividerWidth: 1,
             mathHighlightColor: "#d19a66",
             mathColors: { command: "#61afef", brace: "#e5c07b", script: "#c678dd", comment: "#8b949e", delimiter: "#98c379", align: "#e06c75", escaped: "#56b6c2" }
         };
