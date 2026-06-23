@@ -14,6 +14,10 @@ export function textCompletion(context: CompletionContext) {
     if (!word) return null;
     if (word.from === word.to && !context.explicit) return null;
 
+    const afterStr = context.state.doc.sliceString(context.pos, Math.min(context.pos + 50, context.state.doc.length));
+    const wordAfterMatch = afterStr.match(/^[a-zA-Z]*/);
+    const to = context.pos + (wordAfterMatch ? wordAfterMatch[0].length : 0);
+
     const settings = useStore.getState().settings;
     const textCommands = settings.textCommands || [];
     if (textCommands.length === 0) return null;
@@ -23,7 +27,7 @@ export function textCompletion(context: CompletionContext) {
         return {
             label: `\\${text}`,
             displayLabel: text,
-            apply: (view, completion, applyFrom, applyTo) => {
+            apply: (view: any, completion: any, applyFrom: number, applyTo: number) => {
                 const { Transaction } = require("@codemirror/state");
                 view.dispatch({
                     changes: { from: applyFrom, to: applyTo, insert: text },
@@ -36,9 +40,17 @@ export function textCompletion(context: CompletionContext) {
         };
     });
 
+    const fullWord = context.state.doc.sliceString(word.from, to);
+    const filteredOptions = options.filter(opt => opt.label.toLowerCase().includes(fullWord.toLowerCase()));
+
     return {
         from: word.from,
-        options,
-        validFor: /^\\[a-zA-Z]*$/
+        to: to,
+        options: filteredOptions,
+        filter: false,
+        validFor: /^\\[a-zA-Z]*$/,
+        update: (current: any, from: number, to: number, context: CompletionContext) => {
+            return textCompletion(context);
+        }
     };
 }

@@ -26,7 +26,7 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
     const pipeIdxAfter = textAfterCursor.indexOf("||");
     const labelAfterCursor = pipeIdxAfter !== -1 ? textAfterCursor.slice(0, pipeIdxAfter) : textAfterCursor;
 
-    let queryLabel = textBeforeCursor;
+    let queryLabel = textBeforeCursor + labelAfterCursor;
     const from = context.pos - textBeforeCursor.length;
     const to = context.pos + labelAfterCursor.length;
 
@@ -120,7 +120,9 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
         from: from,
         to: to,
         options: options,
-        validFor: /^[^\]]*$/,
-        filter: false
+        filter: false,
+        update: (current: CompletionResult, from: number, to: number, context: CompletionContext) => {
+            return linkCompletion(context);
+        }
     };
 }

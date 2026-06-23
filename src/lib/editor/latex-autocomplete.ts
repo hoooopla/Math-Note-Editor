@@ -32,6 +32,12 @@ export function latexCompletion(context: CompletionContext) {
     if (!word) return null;
     if (word.from === word.to && !context.explicit) return null;
 
+    const afterStr = context.state.doc.sliceString(context.pos, Math.min(context.pos + 50, context.state.doc.length));
+    const matchAfter = afterStr.match(/^[a-zA-Z]*(?:\}?)/); // include optional closing brace for environments? Actually let's just stick to word chars. Wait, environments have `}`
+    // Let's just match word characters after the cursor.
+    const wordAfterMatch = afterStr.match(/^[a-zA-Z]*\}?/);
+    const to = context.pos + (wordAfterMatch ? wordAfterMatch[0].length : 0);
+
     // Get settings from store
     const settings = useStore.getState().settings;
     const macros = settings.macros || {};
@@ -58,9 +64,17 @@ export function latexCompletion(context: CompletionContext) {
         return true;
     });
 
+    const fullWord = context.state.doc.sliceString(word.from, to);
+    const filteredOptions = uniqueOptions.filter(opt => opt.label.toLowerCase().includes(fullWord.toLowerCase()));
+
     return {
         from: word.from,
-        options: uniqueOptions,
-        validFor: /^\\[a-zA-Z]*(?:\{[a-zA-Z*]*)?$/
+        to: to,
+        options: filteredOptions,
+        filter: false,
+        validFor: /^\\[a-zA-Z]*(?:\{[a-zA-Z*]*)?$/,
+        update: (current: any, from: number, to: number, context: CompletionContext) => {
+            return latexCompletion(context);
+        }
     };
 }
