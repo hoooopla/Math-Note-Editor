@@ -109,15 +109,17 @@ const blockIdToFileMap = new Map<string, string>();
 
 async function writeBlockToFile(block: any) {
     const safeTitle = (block.title || "Untitled").replace(/[/\\?%*:|"<>]/g, '-').trim() || "Untitled";
+    const safeLabel = (block.label || "block").replace(/[/\\?%*:|"<>]/g, '-').trim() || "block";
+    
     let oldFilename = blockIdToFileMap.get(block.id);
     let baseDir = oldFilename ? path.dirname(oldFilename) : "";
     if (baseDir === ".") baseDir = "";
 
-    let newFilename = baseDir ? path.join(baseDir, `${safeTitle}.md`) : `${safeTitle}.md`;
+    let newFilename = baseDir ? path.join(baseDir, `${safeTitle}--${safeLabel}.md`) : `${safeTitle}--${safeLabel}.md`;
 
     const isConflict = Array.from(blockIdToFileMap.entries()).some(([i, f]) => f === newFilename && i !== block.id);
     if (isConflict) {
-        newFilename = baseDir ? path.join(baseDir, `${safeTitle} - ${block.id.slice(0, 8)}.md`) : `${safeTitle} - ${block.id.slice(0, 8)}.md`;
+        newFilename = baseDir ? path.join(baseDir, `${safeTitle}--${safeLabel} - ${block.id.slice(0, 8)}.md`) : `${safeTitle}--${safeLabel} - ${block.id.slice(0, 8)}.md`;
     }
 
     const filePath = path.join(BLOCKS_DIR, newFilename);

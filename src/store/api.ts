@@ -347,12 +347,13 @@ export const api: BackendApi = {
             const block = { id, title: data.title || "New Block", label: data.label || "block", content: data.content || "" };
             
             const safeTitle = (block.title).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "Untitled";
-            let newFilename = `${safeTitle}.md`;
+            const safeLabel = (block.label).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "block";
+            let newFilename = `${safeTitle}--${safeLabel}.md`;
             let counter = 1;
             while(true) {
                 try {
                     await dirHandle.getFileHandle(newFilename);
-                    newFilename = `${safeTitle}-${counter}.md`;
+                    newFilename = `${safeTitle}--${safeLabel}-${counter}.md`;
                     counter++;
                 } catch(e) {
                     break;
@@ -383,12 +384,25 @@ export const api: BackendApi = {
             if (entry) {
                 let filename = entry.name;
                 const safeTitle = (block.title).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "Untitled";
+                const safeLabel = (block.label).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "block";
+                
+                const expectedPrefix = `${safeTitle}--${safeLabel}`;
                 
                 // If title changed, maybe rename the file?
                 // For simplicity, FS mode just keeps same filename or we can create new and delete old
-                if (!filename.startsWith(safeTitle)) {
+                if (!filename.startsWith(expectedPrefix)) {
                     // Try to rename
-                    let newFilename = `${safeTitle}.md`;
+                    let newFilename = `${expectedPrefix}.md`;
+                    let counter = 1;
+                    while(true) {
+                        try {
+                            await dirHandle.getFileHandle(newFilename);
+                            newFilename = `${expectedPrefix}-${counter}.md`;
+                            counter++;
+                        } catch(e) {
+                            break;
+                        }
+                    }
                     try {
                         const newHandle = await dirHandle.getFileHandle(newFilename, { create: true });
                         const writable = await newHandle.createWritable();

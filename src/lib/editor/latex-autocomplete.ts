@@ -64,17 +64,10 @@ export function latexCompletion(context: CompletionContext) {
         return true;
     });
 
-    const fullWord = context.state.doc.sliceString(word.from, to);
-    const filteredOptions = uniqueOptions.filter(opt => opt.label.toLowerCase().includes(fullWord.toLowerCase()));
-
     return {
         from: word.from,
         to: to,
-        options: filteredOptions,
-        filter: false,
-        validFor: /^\\[a-zA-Z]*(?:\{[a-zA-Z*]*)?$/,
-        update: (current: any, from: number, to: number, context: CompletionContext) => {
-            return latexCompletion(context);
-        }
+        options: uniqueOptions,
+        validFor: /^\\[a-zA-Z]*(?:\{[a-zA-Z*]*)?$/
     };
 }

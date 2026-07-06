@@ -52,5 +52,8 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
+  },
+  "overrides": {
+    "node-domexception": "file:/app/applet/packages/node-domexception"
   }
 }

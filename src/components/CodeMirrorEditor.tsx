@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { EditorState, StateEffect, Compartment, Transaction, Prec } from "@codemirror/state";
+import { EditorState, StateEffect, Compartment, Transaction, Prec, EditorSelection } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, dropCursor } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -122,6 +122,54 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                             return true;
                         }
                         return false;
+                    }
+                }]),
+                keymap.of([{
+                    key: "$",
+                    run: (view) => {
+                        const state = view.state;
+                        const changes = state.changeByRange(range => {
+                            if (!range.empty) {
+                                return {
+                                    changes: [
+                                        { insert: "$", from: range.from },
+                                        { insert: "$", from: range.to }
+                                    ],
+                                    range: EditorSelection.range(range.anchor + 1, range.head + 1)
+                                };
+                            }
+                            
+                            const pos = range.head;
+                            const nextChar = state.doc.sliceString(pos, pos + 1);
+                            const prevChar = state.doc.sliceString(pos - 1, pos);
+                            
+                            if (nextChar === "$") {
+                                return { range: EditorSelection.cursor(pos + 1) };
+                            }
+                            
+                            if (prevChar === "\\") {
+                                return {
+                                    changes: { insert: "$", from: pos },
+                                    range: EditorSelection.cursor(pos + 1)
+                                };
+                            }
+                            
+                            return {
+                                changes: { insert: "$$", from: pos },
+                                range: EditorSelection.cursor(pos + 1)
+                            };
+                        });
+                        
+                        if (changes.changes.empty) {
+                            view.dispatch(changes);
+                            return true;
+                        }
+                        
+                        view.dispatch(state.update(changes, {
+                            scrollIntoView: true,
+                            userEvent: "input.type"
+                        }));
+                        return true;
                     }
                 }]),
                 keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),

@@ -1,4 +1,5 @@
 import { CompletionContext } from "@codemirror/autocomplete";
+import { Transaction } from "@codemirror/state";
 import { useStore } from "../../store";
 import { parsedRangesField } from "./katex-plugin";
 
@@ -28,7 +29,6 @@ export function textCompletion(context: CompletionContext) {
             label: `\\${text}`,
             displayLabel: text,
             apply: (view: any, completion: any, applyFrom: number, applyTo: number) => {
-                const { Transaction } = require("@codemirror/state");
                 view.dispatch({
                     changes: { from: applyFrom, to: applyTo, insert: text },
                     annotations: Transaction.userEvent.of("input.complete")
@@ -40,17 +40,10 @@ export function textCompletion(context: CompletionContext) {
         };
     });
 
-    const fullWord = context.state.doc.sliceString(word.from, to);
-    const filteredOptions = options.filter(opt => opt.label.toLowerCase().includes(fullWord.toLowerCase()));
-
     return {
         from: word.from,
         to: to,
-        options: filteredOptions,
-        filter: false,
-        validFor: /^\\[a-zA-Z]*$/,
-        update: (current: any, from: number, to: number, context: CompletionContext) => {
-            return textCompletion(context);
-        }
+        options: options,
+        validFor: /^\\[a-zA-Z]*$/
     };
 }
