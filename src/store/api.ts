@@ -24,6 +24,9 @@ export interface EditorSettings {
     standoutBlockDividerColor?: string;
     standoutBlockBorderWidth?: number;
     standoutBlockDividerWidth?: number;
+    standoutBlockTitleFontSizeBase?: number;
+    standoutBlockTitleFontSizeStep?: number;
+    standoutBlockTitleFontSizeMin?: number;
     mathHighlightColor?: string;
     mathColors?: {
         command: string;
@@ -153,6 +156,9 @@ export const api: BackendApi = {
             standoutBlockDividerColor: "#ffffff",
             standoutBlockBorderWidth: 1,
             standoutBlockDividerWidth: 1,
+            standoutBlockTitleFontSizeBase: 24,
+            standoutBlockTitleFontSizeStep: 2,
+            standoutBlockTitleFontSizeMin: 18,
             mathHighlightColor: "#d19a66",
             mathColors: { command: "#61afef", brace: "#e5c07b", script: "#c678dd", comment: "#8b949e", delimiter: "#98c379", align: "#e06c75", escaped: "#56b6c2" }
         };

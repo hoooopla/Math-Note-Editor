@@ -33,6 +33,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localStandoutDividerColor, setLocalStandoutDividerColor] = useState<string>('#ffffff');
     const [localStandoutBorderWidth, setLocalStandoutBorderWidth] = useState<number>(1);
     const [localStandoutDividerWidth, setLocalStandoutDividerWidth] = useState<number>(1);
+    const [localStandoutTitleFontSizeBase, setLocalStandoutTitleFontSizeBase] = useState<number>(24);
+    const [localStandoutTitleFontSizeStep, setLocalStandoutTitleFontSizeStep] = useState<number>(2);
+    const [localStandoutTitleFontSizeMin, setLocalStandoutTitleFontSizeMin] = useState<number>(18);
     const [localMathColors, setLocalMathColors] = useState<Record<string, string>>({
         command: "#61afef",
         brace: "#e5c07b",
@@ -67,6 +70,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalStandoutDividerColor(settings.standoutBlockDividerColor || '#ffffff');
             setLocalStandoutBorderWidth(settings.standoutBlockBorderWidth ?? 1);
             setLocalStandoutDividerWidth(settings.standoutBlockDividerWidth ?? 1);
+            setLocalStandoutTitleFontSizeBase(settings.standoutBlockTitleFontSizeBase ?? 24);
+            setLocalStandoutTitleFontSizeStep(settings.standoutBlockTitleFontSizeStep ?? 2);
+            setLocalStandoutTitleFontSizeMin(settings.standoutBlockTitleFontSizeMin ?? 18);
             setLocalMathHighlightColor(settings.mathHighlightColor || '#d19a66');
             if (settings.mathColors) {
                 setLocalMathColors({ ...settings.mathColors });
@@ -118,6 +124,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             standoutBlockDividerColor: localStandoutDividerColor.trim() || '#ffffff',
             standoutBlockBorderWidth: isNaN(localStandoutBorderWidth) ? 1 : localStandoutBorderWidth,
             standoutBlockDividerWidth: isNaN(localStandoutDividerWidth) ? 1 : localStandoutDividerWidth,
+            standoutBlockTitleFontSizeBase: isNaN(localStandoutTitleFontSizeBase) ? 24 : localStandoutTitleFontSizeBase,
+            standoutBlockTitleFontSizeStep: isNaN(localStandoutTitleFontSizeStep) ? 2 : localStandoutTitleFontSizeStep,
+            standoutBlockTitleFontSizeMin: isNaN(localStandoutTitleFontSizeMin) ? 18 : localStandoutTitleFontSizeMin,
             mathHighlightColor: localMathHighlightColor.trim() || '#d19a66',
             mathColors: { ...localMathColors } as any
         });
@@ -554,7 +563,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     ))}
                                                     {[
                                                         { key: 'standoutBorderWidth', label: 'Border Width', value: localStandoutBorderWidth, setter: setLocalStandoutBorderWidth },
-                                                        { key: 'standoutDividerWidth', label: 'Divider Width', value: localStandoutDividerWidth, setter: setLocalStandoutDividerWidth }
+                                                        { key: 'standoutDividerWidth', label: 'Divider Width', value: localStandoutDividerWidth, setter: setLocalStandoutDividerWidth },
+                                                        { key: 'standoutTitleFontSizeBase', label: 'Title Font Size (Base)', value: localStandoutTitleFontSizeBase, setter: setLocalStandoutTitleFontSizeBase },
+                                                        { key: 'standoutTitleFontSizeStep', label: 'Title Font Size Step (per level)', value: localStandoutTitleFontSizeStep, setter: setLocalStandoutTitleFontSizeStep },
+                                                        { key: 'standoutTitleFontSizeMin', label: 'Title Font Size (Min)', value: localStandoutTitleFontSizeMin, setter: setLocalStandoutTitleFontSizeMin }
                                                     ].map(item => (
                                                         <div key={item.key} className="flex gap-2 items-center">
                                                             <input

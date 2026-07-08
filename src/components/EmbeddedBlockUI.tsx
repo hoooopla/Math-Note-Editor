@@ -114,9 +114,15 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             const borderColor = settings?.standoutBlockBorderColor || '#ffffff';
             const borderWidth = settings?.standoutBlockBorderWidth ?? 1;
             
+            const level = visitedLabels.length + 1;
+            const baseSize = settings?.standoutBlockTitleFontSizeBase ?? 24;
+            const step = settings?.standoutBlockTitleFontSizeStep ?? 2;
+            const minSize = settings?.standoutBlockTitleFontSizeMin ?? 18;
+            const fontSize = Math.max(minSize, baseSize - (level - 1) * step);
+            
             return (
                 <div 
-                    className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-visible bg-surface/30 hover:bg-surface/50 group`}
+                    className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-visible bg-surface/30 hover:bg-surface/50 group/embed`}
                     style={{ 
                         borderStyle: 'solid',
                         borderWidth: `${borderWidth}px`,
@@ -127,7 +133,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
-                    <div className="flex items-center justify-between"
+                    <div className="flex items-center justify-between" 
                          style={{ 
                              paddingLeft: `${titlePl}px`, 
                              paddingRight: `${titlePr}px`, 
@@ -135,12 +141,12 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                              paddingBottom: `${titlePb}px` 
                          }}>
                         <div className="flex items-center gap-2.5">
-                            <div style={{ color }}>
+                            <div style={{ color, fontSize: `${fontSize}px` }}>
                                 <MathTitle text={displayTitle} className="font-semibold" />
                             </div>
-                            <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
+                            <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50 opacity-0 group-hover/embed:opacity-100 transition-opacity">{fullLabel}</span>
                         </div>
-                        <span className="text-secondary/40 group-hover:text-secondary opacity-0 group-hover:opacity-100 transition-opacity mr-1" title="Cmd/Ctrl + Click to open in new tab">
+                        <span className="text-secondary/40 hover:text-secondary opacity-0 group-hover/embed:opacity-100 transition-all mr-1" title="Cmd/Ctrl + Click to open in new tab">
                             <ExternalLink size={14} />
                         </span>
                     </div>
@@ -217,6 +223,12 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         const borderWidth = settings?.standoutBlockBorderWidth ?? 1;
         const dividerWidth = settings?.standoutBlockDividerWidth ?? 1;
         
+        const level = visitedLabels.length + 1;
+        const baseSize = settings?.standoutBlockTitleFontSizeBase ?? 24;
+        const step = settings?.standoutBlockTitleFontSizeStep ?? 2;
+        const minSize = settings?.standoutBlockTitleFontSizeMin ?? 18;
+        const fontSize = Math.max(minSize, baseSize - (level - 1) * step);
+        
         return (
             <div 
                 className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1.5' : 'mb-3'} select-none overflow-visible bg-surface shadow-sm focus-within:ring-1 transition-all`}
@@ -230,7 +242,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 } as React.CSSProperties}
             >
                 <div 
-                    className="flex justify-between items-center bg-surface/80 cursor-pointer hover:bg-surface transition-colors group rounded-t-[11px]"
+                    className="flex justify-between items-center bg-surface/80 cursor-pointer hover:bg-surface transition-colors group/embed rounded-t-[11px]"
                     style={{ 
                         borderBottom: `${dividerWidth}px solid ${dividerColor}`, 
                         paddingLeft: `${titlePl}px`, 
@@ -242,11 +254,11 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                     onClick={handleClick}
                 >
                     <div className="flex items-center gap-2.5">
-                        <div style={{ color }}>
+                        <div style={{ color, fontSize: `${fontSize}px` }}>
                             <MathTitle text={displayTitle} className="font-semibold" />
                         </div>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 opacity-0 group-hover/embed:opacity-100 transition-opacity">
                         <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
                         <span className="text-secondary/40 hover:text-secondary transition-colors" title="Cmd/Ctrl + Click to open in new tab"
                               onClick={(e) => {
