@@ -119,7 +119,10 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             const step = settings?.standoutBlockTitleFontSizeStep ?? 2;
             const minSize = settings?.standoutBlockTitleFontSizeMin ?? 18;
             const fontSize = Math.max(minSize, baseSize - (level - 1) * step);
-            const bgLighten = (level - 1) * 2;
+            const lightenStep = settings?.standoutBlockBgLightenStep ?? 2;
+            const bgLighten = level * lightenStep;
+            const bgOpacityClosed = settings?.standoutBlockBgOpacityClosed ?? 30;
+            const bgOpacityClosedHover = settings?.standoutBlockBgOpacityClosedHover ?? 40;
             
             return (
                 <div 
@@ -130,8 +133,8 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         borderColor: borderColor,
                         marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
                         width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%',
-                        "--standout-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 30%, transparent)`,
-                        "--standout-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 40%, transparent)`
+                        "--standout-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) ${bgOpacityClosed}%, transparent)`,
+                        "--standout-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) ${bgOpacityClosedHover}%, transparent)`
                     } as React.CSSProperties}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
@@ -232,31 +235,27 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         const step = settings?.standoutBlockTitleFontSizeStep ?? 2;
         const minSize = settings?.standoutBlockTitleFontSizeMin ?? 18;
         const fontSize = Math.max(minSize, baseSize - (level - 1) * step);
-        const bgLighten = (level - 1) * 2;
+        const lightenStep = settings?.standoutBlockBgLightenStep ?? 2;
+        const bgLighten = level * lightenStep;
+        const bgOpacityOpen = settings?.standoutBlockBgOpacityOpen ?? 80;
+        const bgOpacityOpenHover = settings?.standoutBlockBgOpacityOpenHover ?? 90;
         
         return (
             <div 
-                className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1.5' : 'mb-3'} select-none overflow-visible bg-[var(--standout-bg)] shadow-sm focus-within:ring-1 transition-all`}
+                className={`inline-block align-top ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1.5' : 'mb-3'} select-none overflow-visible w-full`}
                 style={{ 
-                    borderStyle: 'solid',
-                    borderWidth: `${borderWidth}px`,
-                    borderColor: borderColor,
                     marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
-                    width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%',
-                    "--tw-ring-color": color + "33", // 33 for 20% opacity using tw ring var
-                    "--standout-bg": `color-mix(in srgb, var(--color-surface), white ${bgLighten}%)`
+                    width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%'
                 } as React.CSSProperties}
             >
                 <div 
-                    className="flex justify-between items-center bg-[var(--standout-inner-bg)] cursor-pointer hover:bg-[var(--standout-inner-bg-hover)] transition-colors group/embed rounded-t-[11px]"
+                    className="flex justify-between items-center cursor-pointer transition-colors group/embed rounded-t-lg"
                     style={{ 
-                        borderBottom: `${dividerWidth}px solid ${dividerColor}`, 
                         paddingLeft: `${titlePl}px`, 
                         paddingRight: `${titlePr}px`, 
                         paddingTop: `${titlePt}px`, 
                         paddingBottom: `${titlePb}px`,
-                        "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 80%, transparent)`,
-                        "--standout-inner-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 90%, transparent)`
+                        "--standout-inner-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) ${bgOpacityOpenHover}%, transparent)`
                     } as React.CSSProperties}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
@@ -278,13 +277,13 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         </span>
                     </div>
                 </div>
-                <div className="bg-[var(--standout-inner-bg)] rounded-b-xl font-sans text-primary relative overflow-visible" 
+                <div className="border-l-2 border-accent/30 bg-[var(--standout-inner-bg)] rounded-r-xl font-sans text-primary relative overflow-visible mt-1" 
                      style={{ 
                          paddingLeft: `${contentPl}px`, 
                          paddingRight: `${contentPr}px`, 
                          paddingTop: `${contentPt}px`, 
                          paddingBottom: `${contentPb}px`,
-                         "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 80%, transparent)`
+                         "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) ${bgOpacityOpen}%, transparent)`
                      } as React.CSSProperties}
                      onClick={e => {
                          // Prevents clicking inside widget from blurring the view/widget inappropriately?

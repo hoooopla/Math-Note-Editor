@@ -1,0 +1,8 @@
+                <div className="border-l-2 border-accent/30 bg-[var(--standout-inner-bg)] rounded-r-xl font-sans text-primary relative overflow-visible mt-1" 
+                     style={{ 
+                         paddingLeft: `${contentPl}px`, 
+                         paddingRight: `${contentPr}px`, 
+                         paddingTop: `${contentPt}px`, 
+                         paddingBottom: `${contentPb}px`,
+                         "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) ${bgOpacityOpen}%, transparent)`
+                     } as React.CSSProperties}

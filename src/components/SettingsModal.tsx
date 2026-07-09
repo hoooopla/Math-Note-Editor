@@ -36,6 +36,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localStandoutTitleFontSizeBase, setLocalStandoutTitleFontSizeBase] = useState<number>(24);
     const [localStandoutTitleFontSizeStep, setLocalStandoutTitleFontSizeStep] = useState<number>(2);
     const [localStandoutTitleFontSizeMin, setLocalStandoutTitleFontSizeMin] = useState<number>(18);
+    const [localStandoutBgLightenStep, setLocalStandoutBgLightenStep] = useState<number>(2);
+    const [localStandoutBgOpacityClosed, setLocalStandoutBgOpacityClosed] = useState<number>(30);
+    const [localStandoutBgOpacityClosedHover, setLocalStandoutBgOpacityClosedHover] = useState<number>(40);
+    const [localStandoutBgOpacityOpen, setLocalStandoutBgOpacityOpen] = useState<number>(80);
+    const [localStandoutBgOpacityOpenHover, setLocalStandoutBgOpacityOpenHover] = useState<number>(90);
     const [localMathColors, setLocalMathColors] = useState<Record<string, string>>({
         command: "#61afef",
         brace: "#e5c07b",
@@ -73,6 +78,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalStandoutTitleFontSizeBase(settings.standoutBlockTitleFontSizeBase ?? 24);
             setLocalStandoutTitleFontSizeStep(settings.standoutBlockTitleFontSizeStep ?? 2);
             setLocalStandoutTitleFontSizeMin(settings.standoutBlockTitleFontSizeMin ?? 18);
+            setLocalStandoutBgLightenStep(settings.standoutBlockBgLightenStep ?? 2);
+            setLocalStandoutBgOpacityClosed(settings.standoutBlockBgOpacityClosed ?? 30);
+            setLocalStandoutBgOpacityClosedHover(settings.standoutBlockBgOpacityClosedHover ?? 40);
+            setLocalStandoutBgOpacityOpen(settings.standoutBlockBgOpacityOpen ?? 80);
+            setLocalStandoutBgOpacityOpenHover(settings.standoutBlockBgOpacityOpenHover ?? 90);
             setLocalMathHighlightColor(settings.mathHighlightColor || '#d19a66');
             if (settings.mathColors) {
                 setLocalMathColors({ ...settings.mathColors });
@@ -127,6 +137,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             standoutBlockTitleFontSizeBase: isNaN(localStandoutTitleFontSizeBase) ? 24 : localStandoutTitleFontSizeBase,
             standoutBlockTitleFontSizeStep: isNaN(localStandoutTitleFontSizeStep) ? 2 : localStandoutTitleFontSizeStep,
             standoutBlockTitleFontSizeMin: isNaN(localStandoutTitleFontSizeMin) ? 18 : localStandoutTitleFontSizeMin,
+            standoutBlockBgLightenStep: isNaN(localStandoutBgLightenStep) ? 2 : localStandoutBgLightenStep,
+            standoutBlockBgOpacityClosed: isNaN(localStandoutBgOpacityClosed) ? 30 : localStandoutBgOpacityClosed,
+            standoutBlockBgOpacityClosedHover: isNaN(localStandoutBgOpacityClosedHover) ? 40 : localStandoutBgOpacityClosedHover,
+            standoutBlockBgOpacityOpen: isNaN(localStandoutBgOpacityOpen) ? 80 : localStandoutBgOpacityOpen,
+            standoutBlockBgOpacityOpenHover: isNaN(localStandoutBgOpacityOpenHover) ? 90 : localStandoutBgOpacityOpenHover,
             mathHighlightColor: localMathHighlightColor.trim() || '#d19a66',
             mathColors: { ...localMathColors } as any
         });
@@ -566,7 +581,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                         { key: 'standoutDividerWidth', label: 'Divider Width', value: localStandoutDividerWidth, setter: setLocalStandoutDividerWidth },
                                                         { key: 'standoutTitleFontSizeBase', label: 'Title Font Size (Base)', value: localStandoutTitleFontSizeBase, setter: setLocalStandoutTitleFontSizeBase },
                                                         { key: 'standoutTitleFontSizeStep', label: 'Title Font Size Step (per level)', value: localStandoutTitleFontSizeStep, setter: setLocalStandoutTitleFontSizeStep },
-                                                        { key: 'standoutTitleFontSizeMin', label: 'Title Font Size (Min)', value: localStandoutTitleFontSizeMin, setter: setLocalStandoutTitleFontSizeMin }
+                                                        { key: 'standoutTitleFontSizeMin', label: 'Title Font Size (Min)', value: localStandoutTitleFontSizeMin, setter: setLocalStandoutTitleFontSizeMin },
+                                                        { key: 'standoutBgLightenStep', label: 'Background Lighten Step (%)', value: localStandoutBgLightenStep, setter: setLocalStandoutBgLightenStep },
+                                                        { key: 'standoutBgOpacityClosed', label: 'Background Opacity (Closed) %', value: localStandoutBgOpacityClosed, setter: setLocalStandoutBgOpacityClosed },
+                                                        { key: 'standoutBgOpacityClosedHover', label: 'Background Opacity (Closed Hover) %', value: localStandoutBgOpacityClosedHover, setter: setLocalStandoutBgOpacityClosedHover },
+                                                        { key: 'standoutBgOpacityOpen', label: 'Background Opacity (Open) %', value: localStandoutBgOpacityOpen, setter: setLocalStandoutBgOpacityOpen },
+                                                        { key: 'standoutBgOpacityOpenHover', label: 'Background Opacity (Open Hover) %', value: localStandoutBgOpacityOpenHover, setter: setLocalStandoutBgOpacityOpenHover }
                                                     ].map(item => (
                                                         <div key={item.key} className="flex gap-2 items-center">
                                                             <input

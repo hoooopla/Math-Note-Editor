@@ -1,0 +1,44 @@
+                className={`inline-block align-top ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1.5' : 'mb-3'} select-none overflow-visible w-full`}
+                style={{ 
+                    marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
+                    width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%'
+                } as React.CSSProperties}
+            >
+                <div 
+                    className="flex justify-between items-center cursor-pointer transition-colors group/embed rounded-t-lg"
+                    style={{ 
+                        paddingLeft: `${titlePl}px`, 
+                        paddingRight: `${titlePr}px`, 
+                        paddingTop: `${titlePt}px`, 
+                        paddingBottom: `${titlePb}px`,
+                        "--standout-inner-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) ${bgOpacityOpenHover}%, transparent)`
+                    } as React.CSSProperties}
+                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
+                    onClick={handleClick}
+                >
+                    <div className="flex items-center gap-2.5">
+                        <div style={{ color, fontSize: `${fontSize}px` }}>
+                            <MathTitle text={displayTitle} className="font-semibold" />
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-3 opacity-0 group-hover/embed:opacity-100 transition-opacity">
+                        <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
+                        <span className="text-secondary/40 hover:text-secondary transition-colors" title="Cmd/Ctrl + Click to open in new tab"
+                              onClick={(e) => {
+                                  e.stopPropagation();
+                                  useStore.getState().openBlockInTab(targetBlock!.id, true);
+                              }}
+                        >
+                            <ExternalLink size={14} />
+                        </span>
+                    </div>
+                </div>
+                <div className="border-l-2 border-accent/30 font-sans text-primary relative overflow-visible mt-1" 
+                     style={{ 
+                         paddingLeft: `${contentPl}px`, 
+                         paddingRight: `${contentPr}px`, 
+                         paddingTop: `${contentPt}px`, 
+                         paddingBottom: `${contentPb}px`,
+                         "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) ${bgOpacityOpen}%, transparent)`
+                     } as React.CSSProperties}
+                     onClick={e => {
