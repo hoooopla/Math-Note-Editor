@@ -131,7 +131,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
                         width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%',
                         "--standout-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 30%, transparent)`,
-                        "--standout-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 50%, transparent)`
+                        "--standout-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 40%, transparent)`
                     } as React.CSSProperties}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
@@ -248,14 +248,15 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 } as React.CSSProperties}
             >
                 <div 
-                    className="flex justify-between items-center bg-[var(--standout-inner-bg)] cursor-pointer hover:bg-[var(--standout-bg)] transition-colors group/embed rounded-t-[11px]"
+                    className="flex justify-between items-center bg-[var(--standout-inner-bg)] cursor-pointer hover:bg-[var(--standout-inner-bg-hover)] transition-colors group/embed rounded-t-[11px]"
                     style={{ 
                         borderBottom: `${dividerWidth}px solid ${dividerColor}`, 
                         paddingLeft: `${titlePl}px`, 
                         paddingRight: `${titlePr}px`, 
                         paddingTop: `${titlePt}px`, 
                         paddingBottom: `${titlePb}px`,
-                        "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 80%, transparent)`
+                        "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 80%, transparent)`,
+                        "--standout-inner-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 90%, transparent)`
                     } as React.CSSProperties}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
