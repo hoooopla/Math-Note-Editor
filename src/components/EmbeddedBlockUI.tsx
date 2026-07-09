@@ -119,17 +119,20 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             const step = settings?.standoutBlockTitleFontSizeStep ?? 2;
             const minSize = settings?.standoutBlockTitleFontSizeMin ?? 18;
             const fontSize = Math.max(minSize, baseSize - (level - 1) * step);
+            const bgLighten = (level - 1) * 4;
             
             return (
                 <div 
-                    className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-visible bg-surface/30 hover:bg-surface/50 group/embed`}
+                    className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-visible bg-[var(--standout-bg)] hover:bg-[var(--standout-bg-hover)] group/embed`}
                     style={{ 
                         borderStyle: 'solid',
                         borderWidth: `${borderWidth}px`,
                         borderColor: borderColor,
                         marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
-                        width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%'
-                    }}
+                        width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%',
+                        "--standout-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 30%, transparent)`,
+                        "--standout-bg-hover": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 50%, transparent)`
+                    } as React.CSSProperties}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
@@ -228,10 +231,11 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         const step = settings?.standoutBlockTitleFontSizeStep ?? 2;
         const minSize = settings?.standoutBlockTitleFontSizeMin ?? 18;
         const fontSize = Math.max(minSize, baseSize - (level - 1) * step);
+        const bgLighten = (level - 1) * 4;
         
         return (
             <div 
-                className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1.5' : 'mb-3'} select-none overflow-visible bg-surface shadow-sm focus-within:ring-1 transition-all`}
+                className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1.5' : 'mb-3'} select-none overflow-visible bg-[var(--standout-bg)] shadow-sm focus-within:ring-1 transition-all`}
                 style={{ 
                     borderStyle: 'solid',
                     borderWidth: `${borderWidth}px`,
@@ -239,17 +243,19 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                     marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
                     width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%',
                     "--tw-ring-color": color + "33", // 33 for 20% opacity using tw ring var
+                    "--standout-bg": `color-mix(in srgb, var(--color-surface), white ${bgLighten}%)`
                 } as React.CSSProperties}
             >
                 <div 
-                    className="flex justify-between items-center bg-surface/80 cursor-pointer hover:bg-surface transition-colors group/embed rounded-t-[11px]"
+                    className="flex justify-between items-center bg-[var(--standout-header-bg)] cursor-pointer hover:bg-[var(--standout-bg)] transition-colors group/embed rounded-t-[11px]"
                     style={{ 
                         borderBottom: `${dividerWidth}px solid ${dividerColor}`, 
                         paddingLeft: `${titlePl}px`, 
                         paddingRight: `${titlePr}px`, 
                         paddingTop: `${titlePt}px`, 
-                        paddingBottom: `${titlePb}px` 
-                    }}
+                        paddingBottom: `${titlePb}px`,
+                        "--standout-header-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 80%, transparent)`
+                    } as React.CSSProperties}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
@@ -259,7 +265,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         </div>
                     </div>
                     <div className="flex items-center gap-3 opacity-0 group-hover/embed:opacity-100 transition-opacity">
-                        <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
+                        <span className="text-[11px] font-mono text-secondary/80 bg-[var(--standout-content-bg)] px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
                         <span className="text-secondary/40 hover:text-secondary transition-colors" title="Cmd/Ctrl + Click to open in new tab"
                               onClick={(e) => {
                                   e.stopPropagation();
@@ -270,13 +276,14 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         </span>
                     </div>
                 </div>
-                <div className="bg-background/50 rounded-b-xl font-sans text-primary relative overflow-visible" 
+                <div className="bg-[var(--standout-content-bg)] rounded-b-xl font-sans text-primary relative overflow-visible" 
                      style={{ 
                          paddingLeft: `${contentPl}px`, 
                          paddingRight: `${contentPr}px`, 
                          paddingTop: `${contentPt}px`, 
-                         paddingBottom: `${contentPb}px` 
-                     }}
+                         paddingBottom: `${contentPb}px`,
+                         "--standout-content-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-base), white ${bgLighten}%) 50%, transparent)`
+                     } as React.CSSProperties}
                      onClick={e => {
                          // Prevents clicking inside widget from blurring the view/widget inappropriately?
                          // e.stopPropagation() is already somewhat implicit for embedded elements, but let's be safe.
