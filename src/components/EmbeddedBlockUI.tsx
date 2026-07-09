@@ -4,7 +4,7 @@ import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import type { EditorView } from "@codemirror/view";
 import { setEditorFocus } from "../lib/editor/katex-plugin";
 import { MathTitle } from "./MathTitle";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, ChevronRight, ChevronDown } from "lucide-react";
 
 export interface EmbeddedBlockUIProps {
     text: string;
@@ -144,7 +144,8 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                              paddingBottom: `${titlePb}px` 
                          }}>
                         <div className="flex items-center gap-2.5">
-                            <div style={{ color, fontSize: `${fontSize}px` }}>
+                            <div className="flex items-center gap-1.5" style={{ color, fontSize: `${fontSize}px` }}>
+                                <ChevronRight size={fontSize * 0.8} className="opacity-70" />
                                 <MathTitle text={displayTitle} className="font-semibold" />
                             </div>
                             <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50 opacity-0 group-hover/embed:opacity-100 transition-opacity">{fullLabel}</span>
@@ -247,14 +248,14 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 } as React.CSSProperties}
             >
                 <div 
-                    className="flex justify-between items-center bg-[var(--standout-header-bg)] cursor-pointer hover:bg-[var(--standout-bg)] transition-colors group/embed rounded-t-[11px]"
+                    className="flex justify-between items-center bg-[var(--standout-inner-bg)] cursor-pointer hover:bg-[var(--standout-bg)] transition-colors group/embed rounded-t-[11px]"
                     style={{ 
                         borderBottom: `${dividerWidth}px solid ${dividerColor}`, 
                         paddingLeft: `${titlePl}px`, 
                         paddingRight: `${titlePr}px`, 
                         paddingTop: `${titlePt}px`, 
                         paddingBottom: `${titlePb}px`,
-                        "--standout-header-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 80%, transparent)`
+                        "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 80%, transparent)`
                     } as React.CSSProperties}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
@@ -265,7 +266,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         </div>
                     </div>
                     <div className="flex items-center gap-3 opacity-0 group-hover/embed:opacity-100 transition-opacity">
-                        <span className="text-[11px] font-mono text-secondary/80 bg-[var(--standout-content-bg)] px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
+                        <span className="text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50">{fullLabel}</span>
                         <span className="text-secondary/40 hover:text-secondary transition-colors" title="Cmd/Ctrl + Click to open in new tab"
                               onClick={(e) => {
                                   e.stopPropagation();
@@ -276,13 +277,13 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         </span>
                     </div>
                 </div>
-                <div className="bg-[var(--standout-content-bg)] rounded-b-xl font-sans text-primary relative overflow-visible" 
+                <div className="bg-[var(--standout-inner-bg)] rounded-b-xl font-sans text-primary relative overflow-visible" 
                      style={{ 
                          paddingLeft: `${contentPl}px`, 
                          paddingRight: `${contentPr}px`, 
                          paddingTop: `${contentPt}px`, 
                          paddingBottom: `${contentPb}px`,
-                         "--standout-content-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-base), white ${bgLighten}%) 50%, transparent)`
+                         "--standout-inner-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) 80%, transparent)`
                      } as React.CSSProperties}
                      onClick={e => {
                          // Prevents clicking inside widget from blurring the view/widget inappropriately?
