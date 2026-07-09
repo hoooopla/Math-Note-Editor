@@ -119,7 +119,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             const step = settings?.standoutBlockTitleFontSizeStep ?? 2;
             const minSize = settings?.standoutBlockTitleFontSizeMin ?? 18;
             const fontSize = Math.max(minSize, baseSize - (level - 1) * step);
-            const bgLighten = (level - 1) * 4;
+            const bgLighten = (level - 1) * 2;
             
             return (
                 <div 
@@ -231,7 +231,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         const step = settings?.standoutBlockTitleFontSizeStep ?? 2;
         const minSize = settings?.standoutBlockTitleFontSizeMin ?? 18;
         const fontSize = Math.max(minSize, baseSize - (level - 1) * step);
-        const bgLighten = (level - 1) * 4;
+        const bgLighten = (level - 1) * 2;
         
         return (
             <div 
