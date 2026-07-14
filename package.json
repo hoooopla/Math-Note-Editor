@@ -21,6 +21,7 @@
     "@codemirror/view": "^6.41.0",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@tanstack/react-virtual": "^3.14.6",
     "@types/lodash": "^4.17.24",
     "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",

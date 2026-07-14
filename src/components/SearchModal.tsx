@@ -2,23 +2,32 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../store';
 import { Search, FolderOpen, Plus } from 'lucide-react';
 import { MathTitle } from './MathTitle';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
     const { blocks, addBlock, setOpenTabs, openTabs, setActiveTab, settings } = useStore();
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
+    const parentRef = useRef<HTMLDivElement>(null);
 
     const searchResults = useMemo(() => {
         if (!searchQuery) {
-            return blocks.slice(0, 20); // show recent
+            return blocks;
         }
         const lower = searchQuery.toLowerCase();
         return blocks.filter(b => 
-            b.title.toLowerCase().includes(lower) || 
-            b.label.toLowerCase().includes(lower)
-        ).slice(0, 100);
+             b.title.toLowerCase().includes(lower) || 
+             b.label.toLowerCase().includes(lower)
+        );
     }, [blocks, searchQuery]);
+
+    const rowVirtualizer = useVirtualizer({
+        count: searchResults.length,
+        getScrollElement: () => parentRef.current,
+        estimateSize: () => 56, // approx height of each row
+        overscan: 5,
+    });
 
     useEffect(() => {
         if (isOpen) {
@@ -31,6 +40,12 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
     useEffect(() => {
         setSelectedIndex(0);
     }, [searchQuery]);
+
+    useEffect(() => {
+        if (searchResults.length > 0) {
+            rowVirtualizer.scrollToIndex(selectedIndex, { align: 'auto' });
+        }
+    }, [selectedIndex, rowVirtualizer, searchResults.length]);
 
     const handleSelect = async (id?: string) => {
         if (id) {
@@ -88,17 +103,42 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                         className="w-full bg-transparent border-none text-primary text-lg focus:outline-none"
                     />
                 </div>
-                <div className="max-h-[50vh] overflow-y-auto w-full p-2 space-y-1">
-                    {searchResults.length > 0 ? searchResults.map((b, i) => (
-                        <div 
-                            key={b.id}
-                            onClick={() => handleSelect(b.id)}
-                            className={`px-3 py-2 cursor-pointer rounded flex flex-col ${i === selectedIndex ? 'bg-accent/20 text-accent' : 'hover:bg-outline/50'}`}
+                <div 
+                    ref={parentRef}
+                    className="max-h-[50vh] overflow-y-auto w-full p-2"
+                >
+                    {searchResults.length > 0 ? (
+                        <div
+                            style={{
+                                height: `${rowVirtualizer.getTotalSize()}px`,
+                                width: '100%',
+                                position: 'relative',
+                            }}
                         >
-                            <MathTitle text={b.title || b.label || 'Untitled'} className="font-semibold" />
-                            <span className={`text-[11px] truncate ${i === selectedIndex ? 'text-accent/70' : 'text-secondary'}`}>{b.label}</span>
+                            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                                const b = searchResults[virtualRow.index];
+                                const i = virtualRow.index;
+                                return (
+                                    <div
+                                        key={virtualRow.key}
+                                        style={{
+                                            position: 'absolute',
+                                            top: 0,
+                                            left: 0,
+                                            width: '100%',
+                                            height: `${virtualRow.size - 4}px`,
+                                            transform: `translateY(${virtualRow.start}px)`,
+                                        }}
+                                        onClick={() => handleSelect(b.id)}
+                                        className={`px-3 py-2 cursor-pointer rounded flex flex-col ${i === selectedIndex ? 'bg-accent/20 text-accent' : 'hover:bg-outline/50'}`}
+                                    >
+                                        <MathTitle text={b.title || b.label || 'Untitled'} className="font-semibold" />
+                                        <span className={`text-[11px] truncate ${i === selectedIndex ? 'text-accent/70' : 'text-secondary'}`}>{b.label}</span>
+                                    </div>
+                                );
+                            })}
                         </div>
-                    )) : (
+                    ) : (
                         searchQuery ? (
                             <div 
                                 onClick={() => handleSelect()}
