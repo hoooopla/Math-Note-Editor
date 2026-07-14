@@ -138,7 +138,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                                 autoFocus
                                 className="bg-base text-primary px-2 py-1 rounded outline-none border border-outline text-[16px] font-sans font-semibold max-w-[200px] focus:border-accent"
                                 value={titleInput}
-                                onChange={e => setTitleInput(e.target.value.replace(/[\[\]]/g, '').replace(/\|\|/g, '|'))}
+                                onChange={e => setTitleInput(e.target.value.replace(/[\[\]]/g, ''))}
                                 onKeyDown={handleMetaKeyDown}
                                 placeholder="Title"
                             />
@@ -148,7 +148,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                                     value={labelInput}
                                     onChange={e => {
                                         setError(null);
-                                        setLabelInput(e.target.value.replace(/[\[\]]/g, '').replace(/\|\|/g, '|'))
+                                        setLabelInput(e.target.value.replace(/[\[\]]/g, ''))
                                     }}
                                     onKeyDown={handleMetaKeyDown}
                                     placeholder="Label"
