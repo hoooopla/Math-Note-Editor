@@ -15,6 +15,7 @@ import "./index.css";
 export default function App() {
     const blocks = useStore(state => state.blocks);
     const backendMode = useStore(state => state.backendMode);
+    const isLoaded = useStore(state => state.isLoaded);
     const { addBlock, setActiveBlock, initBackend, connectLocalFS, openTabs, activeTab, setOpenTabs, setActiveTab, settings } = useStore();
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
@@ -27,6 +28,7 @@ export default function App() {
     }, [initBackend]);
 
     useEffect(() => {
+        if (!isLoaded) return;
         const validTabs = openTabs.filter(t => blocks.some(b => b.id === t));
         if (validTabs.length !== openTabs.length) {
             setOpenTabs(validTabs);
@@ -34,7 +36,7 @@ export default function App() {
                 setActiveTab(validTabs.length > 0 ? validTabs[validTabs.length - 1] : null);
             }
         }
-    }, [blocks, openTabs, activeTab, setOpenTabs, setActiveTab]);
+    }, [isLoaded, blocks, openTabs, activeTab, setOpenTabs, setActiveTab]);
 
     useEffect(() => {
         if (openTabs.length === 0 && blocks.length > 0) {

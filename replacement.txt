@@ -1,4 +1,5 @@
     const backendMode = useStore(state => state.backendMode);
+    const isLoaded = useStore(state => state.isLoaded);
     const { addBlock, setActiveBlock, initBackend, connectLocalFS, openTabs, activeTab, setOpenTabs, setActiveTab, settings } = useStore();
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
@@ -11,6 +12,7 @@
     }, [initBackend]);
 
     useEffect(() => {
+        if (!isLoaded) return;
         const validTabs = openTabs.filter(t => blocks.some(b => b.id === t));
         if (validTabs.length !== openTabs.length) {
             setOpenTabs(validTabs);
@@ -18,4 +20,4 @@
                 setActiveTab(validTabs.length > 0 ? validTabs[validTabs.length - 1] : null);
             }
         }
-    }, [blocks, openTabs, activeTab, setOpenTabs, setActiveTab]);
+    }, [isLoaded, blocks, openTabs, activeTab, setOpenTabs, setActiveTab]);

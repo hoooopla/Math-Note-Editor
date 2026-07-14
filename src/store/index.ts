@@ -12,6 +12,7 @@ export interface BlockData {
 }
 
 interface AppState {
+  isLoaded: boolean;
   blocks: BlockData[];
   activeBlockId: string | null;
   activePath: string[] | null;
@@ -52,6 +53,7 @@ const savedTabs = savedTabsStr ? JSON.parse(savedTabsStr) : [];
 const savedActiveTab = localStorage.getItem("activeTab");
 
 export const useStore = create<AppState>((set, get) => ({
+  isLoaded: false,
   blocks: [],
   activeBlockId: null,
   activePath: null,
@@ -117,6 +119,7 @@ export const useStore = create<AppState>((set, get) => ({
       await get().loadSettings();
       get().initSync();
     }
+    set({ isLoaded: true });
   },
   connectLocalFS: async () => {
     const success = await backendApi.connectLocalFS();
@@ -124,6 +127,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({ backendMode: backendApi.mode });
       await get().loadBlocks();
       await get().loadSettings();
+      set({ isLoaded: true });
     }
   },
   loadSettings: async () => {
