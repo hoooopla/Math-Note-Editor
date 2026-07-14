@@ -128,9 +128,6 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 <div 
                     className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-visible bg-[var(--standout-bg)] hover:bg-[var(--standout-bg-hover)] group/embed`}
                     style={{ 
-                        borderStyle: 'solid',
-                        borderWidth: `${borderWidth}px`,
-                        borderColor: borderColor,
                         marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
                         width: indentWidth > 0 ? `calc(100% - ${indentWidth}px)` : '100%',
                         "--standout-bg": `color-mix(in srgb, color-mix(in srgb, var(--color-surface), white ${bgLighten}%) ${bgOpacityClosed}%, transparent)`,
