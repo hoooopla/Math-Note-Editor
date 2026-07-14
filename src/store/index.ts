@@ -68,6 +68,7 @@ export const useStore = create<AppState>((set, get) => ({
     searchShortcut: "meta+k",
     inlineBlockTitleColorWithContent: "#a8b5c2", // or whatever secondary is
     inlineBlockTitleColorEmpty: "#FF997D",
+    inlineBlockTitleUnderlineOpacity: 100,
     inlineBlockIndentWidth: 16,
     standoutBlockTitleColorWithContent: "#a8b5c2",
     standoutBlockTitleColorEmpty: "#FF997D",

@@ -25,13 +25,15 @@ body {
   font-family: var(--font-sans);
   font-size: 18px;
   display: block;
-  margin: 2px 0;
+  margin: -4px 0;
+  padding: 4px 0;
   text-align: center;
   color: #fff;
 }
 
 .cm-math-block .katex-display {
-  margin: 2px 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
 .cm-math-inline {

@@ -1,0 +1,3 @@
+    const [localInlineBlockColorFilled, setLocalInlineBlockColorFilled] = useState<string>('#a8b5c2');
+    const [localInlineBlockColorEmpty, setLocalInlineBlockColorEmpty] = useState<string>('#FF997D');
+    const [localInlineBlockIndentWidth, setLocalInlineBlockIndentWidth] = useState<number>(16);

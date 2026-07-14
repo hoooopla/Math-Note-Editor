@@ -8,6 +8,7 @@ export interface EditorSettings {
     searchShortcut?: string;
     inlineBlockTitleColorWithContent?: string;
     inlineBlockTitleColorEmpty?: string;
+    inlineBlockTitleUnderlineOpacity?: number;
     inlineBlockIndentWidth?: number;
     standoutBlockTitleColorWithContent?: string;
     standoutBlockTitleColorEmpty?: string;
@@ -145,6 +146,7 @@ export const api: BackendApi = {
             searchShortcut: "meta+k",
             inlineBlockTitleColorWithContent: "#a8b5c2",
             inlineBlockTitleColorEmpty: "#FF997D",
+            inlineBlockTitleUnderlineOpacity: 100,
             inlineBlockIndentWidth: 16,
             standoutBlockTitleColorWithContent: "#a8b5c2",
             standoutBlockTitleColorEmpty: "#FF997D",

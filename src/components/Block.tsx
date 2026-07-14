@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import type { PointerEvent } from "react";
 import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { GripVertical, Trash2, FileText, Check, X } from "lucide-react";
+import { Trash2, FileText, Check, X } from "lucide-react";
 import { MathTitle } from "./MathTitle";
 
 export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, index }) => {
@@ -107,14 +107,9 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
 
     return (
         <div 
-            className={`group relative border rounded-[8px] mb-6 transition-colors ${isFocused ? 'bg-surface border-accent shadow-[0_0_0_1px_var(--color-accent)] z-30' : 'bg-surface border-outline hover:border-outline/80 z-0'}`}
+            className={`group relative border rounded-[8px] mb-6 transition-colors bg-surface border-outline ${isFocused ? 'z-30' : 'z-0'}`}
         >
-            <div 
-                className="absolute left-0 top-10 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab -translate-x-full pr-2 text-secondary hidden md:block"
-                contentEditable={false}
-            >
-                <GripVertical size={18} />
-            </div>
+
 
             <div 
                 className="flex items-center justify-between px-4 py-2 bg-transparent border-b border-outline text-sm text-secondary cursor-text select-none rounded-t-[8px] relative z-10"
@@ -179,7 +174,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                         </div>
                     ) : (
                         <div className="flex items-center gap-3 font-sans text-[11px] text-secondary transition-colors">
-                            <MathTitle text={block.title} className="font-sans text-[16px] font-bold text-primary group-hover:text-accent transition-colors" />
+                            <MathTitle text={block.title} className="font-sans text-[16px] font-bold text-primary transition-colors" />
                             <span className="font-sans text-[11px] bg-transparent border border-outline px-1.5 py-0.5 rounded text-secondary tracking-widest">
                                 {block.label || 'label'}
                             </span>

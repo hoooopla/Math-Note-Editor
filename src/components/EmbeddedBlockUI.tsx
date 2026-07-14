@@ -160,11 +160,12 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
             const filledColor = settings?.inlineBlockTitleColorWithContent || "#a8b5c2";
             const emptyColor = settings?.inlineBlockTitleColorEmpty || "#FF997D";
+            const underlineOpacity = settings?.inlineBlockTitleUnderlineOpacity ?? 100;
             const color = hasContent ? filledColor : emptyColor;
             return (
                 <span 
                     className="inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors opacity-90 hover:opacity-100"
-                    style={{ color, borderColor: color }}
+                    style={{ color, borderColor: `color-mix(in srgb, ${color} ${underlineOpacity}%, transparent)` }}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
@@ -318,13 +319,14 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
         const filledColor = settings?.inlineBlockTitleColorWithContent || "#a8b5c2";
         const emptyColor = settings?.inlineBlockTitleColorEmpty || "#FF997D";
+        const underlineOpacity = settings?.inlineBlockTitleUnderlineOpacity ?? 100;
         const color = hasContent ? filledColor : emptyColor;
         const indentWidth = settings?.inlineBlockIndentWidth ?? 16;
         return (
             <span className="inline align-top">
                 <span 
                     className="inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors opacity-90 hover:opacity-100"
-                    style={{ color, borderColor: color }}
+                    style={{ color, borderColor: `color-mix(in srgb, ${color} ${underlineOpacity}%, transparent)` }}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                     title={`Close ${displayTitle}`}

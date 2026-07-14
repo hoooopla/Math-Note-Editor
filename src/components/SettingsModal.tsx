@@ -17,6 +17,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localMathHighlightColor, setLocalMathHighlightColor] = useState<string>('#d19a66');
     const [localInlineBlockColorFilled, setLocalInlineBlockColorFilled] = useState<string>('#a8b5c2');
     const [localInlineBlockColorEmpty, setLocalInlineBlockColorEmpty] = useState<string>('#FF997D');
+    const [localInlineBlockTitleUnderlineOpacity, setLocalInlineBlockTitleUnderlineOpacity] = useState<number>(100);
     const [localInlineBlockIndentWidth, setLocalInlineBlockIndentWidth] = useState<number>(16);
     const [localStandoutBlockColorFilled, setLocalStandoutBlockColorFilled] = useState<string>('#a8b5c2');
     const [localStandoutBlockColorEmpty, setLocalStandoutBlockColorEmpty] = useState<string>('#FF997D');
@@ -59,6 +60,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalSearchShortcut(settings.searchShortcut || 'meta+k');
             setLocalInlineBlockColorFilled(settings.inlineBlockTitleColorWithContent || '#a8b5c2');
             setLocalInlineBlockColorEmpty(settings.inlineBlockTitleColorEmpty || '#FF997D');
+            setLocalInlineBlockTitleUnderlineOpacity(settings.inlineBlockTitleUnderlineOpacity ?? 100);
             setLocalInlineBlockIndentWidth(settings.inlineBlockIndentWidth ?? 16);
             setLocalStandoutBlockColorFilled(settings.standoutBlockTitleColorWithContent || '#a8b5c2');
             setLocalStandoutBlockColorEmpty(settings.standoutBlockTitleColorEmpty || '#FF997D');
@@ -118,6 +120,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             searchShortcut: localSearchShortcut.trim() || 'meta+k',
             inlineBlockTitleColorWithContent: localInlineBlockColorFilled.trim() || '#a8b5c2',
             inlineBlockTitleColorEmpty: localInlineBlockColorEmpty.trim() || '#FF997D',
+            inlineBlockTitleUnderlineOpacity: isNaN(localInlineBlockTitleUnderlineOpacity) ? 100 : localInlineBlockTitleUnderlineOpacity,
             inlineBlockIndentWidth: isNaN(localInlineBlockIndentWidth) ? 16 : localInlineBlockIndentWidth,
             standoutBlockTitleColorWithContent: localStandoutBlockColorFilled.trim() || '#a8b5c2',
             standoutBlockTitleColorEmpty: localStandoutBlockColorEmpty.trim() || '#FF997D',
@@ -470,6 +473,20 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
                                                 />
                                                 <span className="text-xs text-secondary ml-1">Left Padding/Indent</span>
+                                            </div>
+                                            <div className="flex gap-2 items-center">
+                                                <span className="w-6 h-6 shrink-0 flex items-center justify-center text-secondary">
+                                                    %
+                                                </span>
+                                                <input
+                                                    type="number"
+                                                    value={isNaN(localInlineBlockTitleUnderlineOpacity) ? '' : localInlineBlockTitleUnderlineOpacity}
+                                                    onChange={(e) => setLocalInlineBlockTitleUnderlineOpacity(parseInt(e.target.value))}
+                                                    className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                    min="0"
+                                                    max="100"
+                                                />
+                                                <span className="text-xs text-secondary ml-1">Title Underline Opacity</span>
                                             </div>
                                         </div>
                                     </div>

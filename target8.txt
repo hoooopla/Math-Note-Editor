@@ -1,0 +1,3 @@
+            inlineBlockTitleColorWithContent: localInlineBlockColorFilled.trim() || '#a8b5c2',
+            inlineBlockTitleColorEmpty: localInlineBlockColorEmpty.trim() || '#FF997D',
+            inlineBlockIndentWidth: isNaN(localInlineBlockIndentWidth) ? 16 : localInlineBlockIndentWidth,

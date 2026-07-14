@@ -182,7 +182,7 @@ class MathWidget extends WidgetType {
 
     toDOM(view: EditorView) {
         const span = document.createElement(this.isBlock ? "div" : "span");
-        span.className = this.isBlock ? "cm-math-block my-0 text-center" : "cm-math-inline";
+        span.className = this.isBlock ? "cm-math-block my-0 text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all" : "cm-math-inline";
         span.style.cursor = "text";
         try {
             katex.render(this.text, span, {
@@ -373,7 +373,8 @@ function buildLiveDecorations(state: EditorState) {
                 }
             } else {
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
-                    widget: new MathWidget(r.text, r.type === "blockMath", macros)
+                    widget: new MathWidget(r.text, r.type === "blockMath", macros),
+                    block: r.type === "blockMath"
                 })});
             }
         }
