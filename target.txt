@@ -1,12 +1,9 @@
-.cm-math-block {
-  font-family: var(--font-sans);
-  font-size: 18px;
-  display: block;
-  margin: 0;
-  text-align: center;
-  color: #fff;
-}
-
-.cm-math-block .katex-display {
-  margin: 0 !important;
-}
+    const handleClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (e.metaKey || e.ctrlKey) {
+            useStore.getState().openBlockInTab(targetBlock!.id, true);
+        } else {
+            useStore.getState().setActiveBlock(null);
+            toggleOpen(e);
+        }
+    };

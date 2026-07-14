@@ -94,6 +94,8 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         if (e.metaKey || e.ctrlKey) {
             useStore.getState().openBlockInTab(targetBlock!.id, true);
         } else {
+            useStore.getState().setActiveBlock(null);
+            view?.contentDOM.blur();
             toggleOpen(e);
         }
     };
