@@ -47,14 +47,18 @@ const syncTimeouts: Record<string, NodeJS.Timeout> = {};
 
 let eventSource: EventSource | null = null;
 
+const savedTabsStr = localStorage.getItem("openTabs");
+const savedTabs = savedTabsStr ? JSON.parse(savedTabsStr) : [];
+const savedActiveTab = localStorage.getItem("activeTab");
+
 export const useStore = create<AppState>((set, get) => ({
   blocks: [],
   activeBlockId: null,
   activePath: null,
   activeFocusPos: null,
   focusDirection: null,
-  openTabs: [],
-  activeTab: null,
+  openTabs: savedTabs,
+  activeTab: savedActiveTab,
   backendMode: "none",
   imageUploadParams: null,
   setImageUploadParams: (params) => set({ imageUploadParams: params }),
@@ -317,3 +321,20 @@ export const useStore = create<AppState>((set, get) => ({
     };
   }
 }));
+
+let lastTabs = savedTabs;
+let lastActiveTab = savedActiveTab;
+useStore.subscribe((state) => {
+    if (state.openTabs !== lastTabs) {
+        localStorage.setItem("openTabs", JSON.stringify(state.openTabs));
+        lastTabs = state.openTabs;
+    }
+    if (state.activeTab !== lastActiveTab) {
+        if (state.activeTab) {
+            localStorage.setItem("activeTab", state.activeTab);
+        } else {
+            localStorage.removeItem("activeTab");
+        }
+        lastActiveTab = state.activeTab;
+    }
+});
