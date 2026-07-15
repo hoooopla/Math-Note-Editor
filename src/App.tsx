@@ -9,10 +9,12 @@ import { BlockContainer } from "./components/Block";
 import { SettingsModal } from "./components/SettingsModal";
 import { ImageUploadModal } from "./components/ImageUploadModal";
 import { SearchModal } from "./components/SearchModal";
-import { Search, Plus, X, Settings, FolderOpen, Command } from "lucide-react";
+import { Search, Plus, X, Settings, FolderOpen, Command, FileText } from "lucide-react";
 import "./index.css";
 
 export default function App() {
+    const fileInputRef = React.useRef<HTMLInputElement>(null);
+    const loadViewerFiles = useStore(state => state.loadViewerFiles);
     const blocks = useStore(state => state.blocks);
     const backendMode = useStore(state => state.backendMode);
     const isLoaded = useStore(state => state.isLoaded);
@@ -142,13 +144,33 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                    {backendMode === "none" && (
-                        <button 
-                            onClick={() => connectLocalFS()}
-                            className="px-3 py-1.5 bg-accent/20 text-accent rounded-lg font-medium text-sm hover:bg-accent/30 transition-colors flex items-center gap-2 mr-2"
-                        >
-                            <FolderOpen size={16} /> Open Workspace
-                        </button>
+{backendMode === "none" && (
+                        <div className="flex items-center gap-2">
+                            <button 
+                                onClick={() => connectLocalFS()}
+                                className="px-3 py-1.5 bg-accent/20 text-accent rounded-lg font-medium text-sm hover:bg-accent/30 transition-colors flex items-center gap-2 mr-2"
+                            >
+                                <FolderOpen size={16} /> Open Workspace
+                            </button>
+                            <input 
+                                type="file" 
+                                ref={fileInputRef} 
+                                style={{display: 'none'}} 
+                                webkitdirectory="" 
+                                onChange={(e) => {
+                                    if (e.target.files && e.target.files.length > 0) {
+                                        loadViewerFiles(e.target.files);
+                                    }
+                                }}
+                            />
+                            <button 
+                                onClick={() => fileInputRef.current?.click()}
+                                className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 mr-2"
+                                title="Read-only viewer (Works on iPad)"
+                            >
+                                <FileText size={16} /> Read-Only Viewer
+                            </button>
+                        </div>
                     )}
                     <button 
                         onClick={() => setIsSearchModalOpen(true)}
@@ -164,19 +186,21 @@ export default function App() {
                     >
                         <Settings size={18} />
                     </button>
-                    <button 
-                        onClick={async () => {
-                            const newBlock = await addBlock();
-                            if (newBlock) {
-                                setOpenTabs([...openTabs, newBlock.id]);
-                                setActiveTab(newBlock.id);
-                            }
-                        }}
-                        className="p-1.5 hover:bg-accent/20 rounded text-accent transition-colors"
-                        title="New Block"
-                    >
-                        <Plus size={18} />
-                    </button>
+                    {backendMode !== "viewer" && (
+                        <button 
+                            onClick={async () => {
+                                const newBlock = await addBlock();
+                                if (newBlock) {
+                                    setOpenTabs([...openTabs, newBlock.id]);
+                                    setActiveTab(newBlock.id);
+                                }
+                            }}
+                            className="p-1.5 hover:bg-accent/20 rounded text-accent transition-colors"
+                            title="New Block"
+                        >
+                            <Plus size={18} />
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -223,10 +247,25 @@ export default function App() {
                             <BlockContainer key={activeTab} id={activeTab} index={0} />
                         ) : (
                             <div className="text-center text-secondary h-full flex flex-col items-center justify-center pt-24">
-                                {backendMode === "none" ? (
+{backendMode === "none" ? (
                                     <>
                                         <FolderOpen size={48} className="mb-4 opacity-50 text-accent" />
-                                        <p>Connect a workspace folder to begin.</p>
+                                        <p className="mb-4">Connect a workspace folder to begin.</p>
+                                        <div className="flex flex-col gap-3">
+                                            <button 
+                                                onClick={() => connectLocalFS()}
+                                                className="px-4 py-2 bg-accent/20 hover:bg-accent/30 text-accent rounded-lg transition-colors flex items-center gap-2 justify-center"
+                                            >
+                                                <FolderOpen size={16} /> Open Workspace
+                                            </button>
+                                            <button 
+                                                onClick={() => fileInputRef.current?.click()}
+                                                className="px-4 py-2 border border-outline hover:bg-outline rounded-lg transition-colors flex items-center gap-2 justify-center"
+                                                title="Read-only viewer (Works on iPad)"
+                                            >
+                                                <FileText size={16} /> View Folder (Read-Only)
+                                            </button>
+                                        </div>
                                     </>
                                 ) : (
                                     <>

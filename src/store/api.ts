@@ -46,7 +46,7 @@ export interface EditorSettings {
 }
 
 export interface BackendApi {
-    mode: "server" | "local" | "none";
+    mode: "server" | "local" | "none" | "viewer";
     init: () => Promise<boolean>;
     connectLocalFS: () => Promise<boolean>;
     loadSettings: () => Promise<EditorSettings>;
@@ -64,7 +64,7 @@ export interface BackendApi {
 let dirHandle: FileSystemDirectoryHandle | null = null;
 let useServer = true;
 
-const parseFrontmatter = (text: string) => {
+export const parseFrontmatter = (text: string) => {
     const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)/);
     if (!match) return { data: {}, content: text };
     

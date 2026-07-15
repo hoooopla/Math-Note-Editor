@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import { api as backendApi, EditorSettings } from './api';
+import { api as backendApi, EditorSettings, parseFrontmatter } from './api';
 
 export interface BlockData {
   id: string;
@@ -21,7 +21,8 @@ interface AppState {
   settings: EditorSettings;
   openTabs: string[];
   activeTab: string | null;
-  backendMode: "server" | "local" | "none";
+  backendMode: "server" | "local" | "viewer" | "none";
+  loadViewerFiles: (files: FileList) => Promise<void>;
   initBackend: () => Promise<void>;
   connectLocalFS: () => Promise<void>;
   loadBlocks: () => Promise<void>;
@@ -121,6 +122,34 @@ export const useStore = create<AppState>((set, get) => ({
     }
     set({ isLoaded: true });
   },
+
+  loadViewerFiles: async (files: FileList) => {
+    const newBlocks: BlockData[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.name.endsWith('.md')) {
+        const text = await file.text();
+        const { data, content } = parseFrontmatter(text);
+        const id = data.id || file.name.replace('.md', '');
+        newBlocks.push({
+          id,
+          title: data.title || '',
+          label: data.label || '',
+          content,
+          hasContent: content.trim().length > 0
+        });
+      }
+    }
+    
+    // Sort blocks by title or somehow? Or let's just keep as is
+    set({ blocks: newBlocks, backendMode: 'viewer', isLoaded: true });
+    
+    // Auto-open first tab if any
+    if (newBlocks.length > 0) {
+      set({ openTabs: [newBlocks[0].id], activeTab: newBlocks[0].id });
+    }
+  },
+
   connectLocalFS: async () => {
     const success = await backendApi.connectLocalFS();
     if (success) {

@@ -23,6 +23,7 @@ if (typeof window !== "undefined") {
 }
 
 export interface CodeMirrorEditorProps {
+    isReadOnly?: boolean;
     content: string;
     onBlur: (val: string) => void;
     onChange?: (val: string) => void;

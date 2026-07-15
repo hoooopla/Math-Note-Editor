@@ -61,6 +61,7 @@ interface BlockProps {
 }
 
 export function Block({ block, blocks, isFocused, focusDirection, macros, setActive, onUp, onDown, updateBlock, deleteBlock }: BlockProps) {
+    const backendMode = useStore(state => state.backendMode);
     const setImageUploadParams = useStore(state => state.setImageUploadParams);
     const [isEditingMeta, setIsEditingMeta] = useState(false);
     const [titleInput, setTitleInput] = useState(block.title);
@@ -119,6 +120,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                 }}
                 onDoubleClick={(e) => {
                     e.stopPropagation();
+                    if (backendMode === "viewer") return;
                     setTitleInput(block.title);
                     setLabelInput(block.label);
                     setIsEditingMeta(true);
@@ -182,7 +184,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                     )}
                 </div>
                 
-                {isFocused && (
+                {isFocused && backendMode !== "viewer" && (
                     <div className="flex items-center gap-2">
                         <a 
                             href={`/api/blocks/${block.id}/raw`} 
@@ -220,7 +222,8 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                     onChange={handleContentChange}
                     onUp={onUp} 
                     onDown={onDown} 
-                    isFocused={isFocused && !isEditingMeta} 
+                    isFocused={isFocused && !isEditingMeta}
+                    isReadOnly={backendMode === "viewer"} 
                     macros={macros}
                     focusDirection={focusDirection}
                     onFocus={handleFocus}
