@@ -125,6 +125,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   loadViewerFiles: async (files: FileList) => {
     const newBlocks: BlockData[] = [];
+    let loadedSettings: any = null;
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (file.name.endsWith('.md')) {
@@ -138,11 +139,18 @@ export const useStore = create<AppState>((set, get) => ({
           content,
           hasContent: content.trim().length > 0
         });
+      } else if (file.name === 'settings.json' && file.webkitRelativePath.includes('/setting/')) {
+        try {
+          loadedSettings = JSON.parse(await file.text());
+        } catch (e) {}
       }
     }
     
-    // Sort blocks by title or somehow? Or let's just keep as is
     set({ blocks: newBlocks, backendMode: 'viewer', isLoaded: true });
+    
+    if (loadedSettings) {
+      set(state => ({ settings: { ...state.settings, ...loadedSettings } }));
+    }
     
     // Auto-open first tab if any
     if (newBlocks.length > 0) {
