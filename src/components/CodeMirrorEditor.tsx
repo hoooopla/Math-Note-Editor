@@ -39,7 +39,7 @@ export interface CodeMirrorEditorProps {
     onImagePaste?: (file: File, insertContent: (text: string) => void) => void;
 }
 
-export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, onFocus, parentLabel, visitedLabels, onEsc, onImagePaste, isReadOnly = false }: CodeMirrorEditorProps) {
+export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, onFocus, parentLabel, visitedLabels, onEsc, onImagePaste }: CodeMirrorEditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const onBlurRef = useRef(onBlur);
@@ -83,7 +83,6 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
     const parentLabelCompartmentRef = useRef(new Compartment());
     const visitedLabelsCompartmentRef = useRef(new Compartment());
     const macrosCompartmentRef = useRef(new Compartment());
-    const editableCompartmentRef = useRef(new Compartment());
 
     useEffect(() => {
         if (!containerRef.current) return;
@@ -178,7 +177,6 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 markdown(),
                 EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["(", "[", "{", "'", '"', "$"] } }]),
                 macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
-                editableCompartmentRef.current.of(EditorView.editable.of(!isReadOnly)),
                 parentLabelCompartmentRef.current.of(parentLabelFacet.of(parentLabelRef.current || "")),
                 visitedLabelsCompartmentRef.current.of(visitedLabelsFacet.of(visitedLabelsRef.current || [])),
                 editorFocusField,
@@ -432,7 +430,6 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
             }
             // reconfigure macros when they change
             effects.push(macrosCompartmentRef.current.reconfigure(livePreviewMacros.of(macros)));
-            effects.push(editableCompartmentRef.current.reconfigure(EditorView.editable.of(!isReadOnly)));
             if (effects.length > 0) {
                 viewRef.current.dispatch({ effects });
             }
