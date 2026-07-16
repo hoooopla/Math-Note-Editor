@@ -158,6 +158,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         newMacros[index][field] = val;
         setLocalMacros(newMacros);
     };
+    const moveMacro = (index: number, dir: -1 | 1) => {
+        if (index + dir < 0 || index + dir >= localMacros.length) return;
+        const newMacros = [...localMacros];
+        const temp = newMacros[index];
+        newMacros[index] = newMacros[index + dir];
+        newMacros[index + dir] = temp;
+        setLocalMacros(newMacros);
+    };
 
     const addCommand = () => setLocalCommands([...localCommands, '']);
     const removeCommand = (index: number) => setLocalCommands(localCommands.filter((_, i) => i !== index));
@@ -273,12 +281,28 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     onChange={(e) => updateMacro(i, 'value', e.target.value)}
                                                     className="flex-1 bg-base border border-outline rounded px-3 py-2 text-sm font-mono text-primary focus:outline-none focus:border-accent min-w-0"
                                                 />
-                                                <button
-                                                    onClick={() => removeMacro(i)}
-                                                    className="p-2 flex-shrink-0 text-secondary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
-                                                >
-                                                    <Trash2 size={18} />
-                                                </button>
+                                                <div className="flex items-center">
+                                                    <button
+                                                        onClick={() => moveMacro(i, -1)}
+                                                        disabled={i === 0}
+                                                        className="p-2 flex-shrink-0 text-secondary hover:text-accent disabled:opacity-30 rounded transition-colors"
+                                                    >
+                                                        <ArrowUp size={18} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => moveMacro(i, 1)}
+                                                        disabled={i === localMacros.length - 1}
+                                                        className="p-2 flex-shrink-0 text-secondary hover:text-accent disabled:opacity-30 rounded transition-colors"
+                                                    >
+                                                        <ArrowDown size={18} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => removeMacro(i)}
+                                                        className="p-2 flex-shrink-0 text-secondary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors ml-1"
+                                                    >
+                                                        <Trash2 size={18} />
+                                                    </button>
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
