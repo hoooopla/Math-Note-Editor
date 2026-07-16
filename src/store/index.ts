@@ -13,6 +13,7 @@ export interface BlockData {
 
 interface AppState {
   isLoaded: boolean;
+  isLoadingFiles?: boolean;
   blocks: BlockData[];
   activeBlockId: string | null;
   activePath: string[] | null;
@@ -55,6 +56,7 @@ const savedActiveTab = localStorage.getItem("activeTab");
 
 export const useStore = create<AppState>((set, get) => ({
   isLoaded: false,
+  isLoadingFiles: false,
   blocks: [],
   activeBlockId: null,
   activePath: null,
@@ -124,6 +126,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   loadViewerFiles: async (files: FileList) => {
+    set({ isLoadingFiles: true });
     const newBlocks: BlockData[] = [];
     let loadedSettings: any = null;
     for (let i = 0; i < files.length; i++) {
@@ -156,15 +159,21 @@ export const useStore = create<AppState>((set, get) => ({
     if (newBlocks.length > 0) {
       set({ openTabs: [newBlocks[0].id], activeTab: newBlocks[0].id });
     }
+    set({ isLoadingFiles: false });
   },
 
   connectLocalFS: async () => {
-    const success = await backendApi.connectLocalFS();
-    if (success) {
-      set({ backendMode: backendApi.mode });
-      await get().loadBlocks();
-      await get().loadSettings();
-      set({ isLoaded: true });
+    set({ isLoadingFiles: true });
+    try {
+      const success = await backendApi.connectLocalFS();
+      if (success) {
+        set({ backendMode: backendApi.mode });
+        await get().loadBlocks();
+        await get().loadSettings();
+        set({ isLoaded: true });
+      }
+    } finally {
+      set({ isLoadingFiles: false });
     }
   },
   loadSettings: async () => {

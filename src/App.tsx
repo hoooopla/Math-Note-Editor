@@ -9,7 +9,7 @@ import { BlockContainer } from "./components/Block";
 import { SettingsModal } from "./components/SettingsModal";
 import { ImageUploadModal } from "./components/ImageUploadModal";
 import { SearchModal } from "./components/SearchModal";
-import { Search, Plus, X, Settings, FolderOpen, Command, FileText } from "lucide-react";
+import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2 } from "lucide-react";
 import "./index.css";
 
 export default function App() {
@@ -18,6 +18,7 @@ export default function App() {
     const blocks = useStore(state => state.blocks);
     const backendMode = useStore(state => state.backendMode);
     const isLoaded = useStore(state => state.isLoaded);
+    const isLoadingFiles = useStore(state => state.isLoadingFiles);
     const { addBlock, setActiveBlock, initBackend, connectLocalFS, openTabs, activeTab, setOpenTabs, setActiveTab, settings } = useStore();
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
@@ -148,9 +149,11 @@ export default function App() {
                         <div className="flex items-center gap-2">
                             <button 
                                 onClick={() => connectLocalFS()}
-                                className="px-3 py-1.5 bg-accent/20 text-accent rounded-lg font-medium text-sm hover:bg-accent/30 transition-colors flex items-center gap-2 mr-2"
+                                disabled={isLoadingFiles}
+                                className="px-3 py-1.5 bg-accent/20 text-accent rounded-lg font-medium text-sm hover:bg-accent/30 transition-colors flex items-center gap-2 mr-2 disabled:opacity-50"
                             >
-                                <FolderOpen size={16} /> Open Workspace
+                                {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FolderOpen size={16} />} 
+                                Open Workspace
                             </button>
                             <input 
                                 type="file" 
@@ -165,10 +168,12 @@ export default function App() {
                             />
                             <button 
                                 onClick={() => fileInputRef.current?.click()}
-                                className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 mr-2"
+                                disabled={isLoadingFiles}
+                                className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 mr-2 disabled:opacity-50"
                                 title="Read-only viewer (Works on iPad)"
                             >
-                                <FileText size={16} /> Read-Only Viewer
+                                {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />} 
+                                Read-Only Viewer
                             </button>
                         </div>
                     )}
@@ -247,23 +252,32 @@ export default function App() {
                             <BlockContainer key={activeTab} id={activeTab} index={0} />
                         ) : (
                             <div className="text-center text-secondary h-full flex flex-col items-center justify-center pt-24">
-{backendMode === "none" ? (
+                                {isLoadingFiles ? (
+                                    <>
+                                        <Loader2 size={48} className="mb-4 text-accent animate-spin" />
+                                        <p className="mb-4">Loading your blocks...</p>
+                                    </>
+                                ) : backendMode === "none" ? (
                                     <>
                                         <FolderOpen size={48} className="mb-4 opacity-50 text-accent" />
                                         <p className="mb-4">Connect a workspace folder to begin.</p>
                                         <div className="flex flex-col gap-3">
                                             <button 
                                                 onClick={() => connectLocalFS()}
-                                                className="px-4 py-2 bg-accent/20 hover:bg-accent/30 text-accent rounded-lg transition-colors flex items-center gap-2 justify-center"
+                                                disabled={isLoadingFiles}
+                                                className="px-4 py-2 bg-accent/20 hover:bg-accent/30 text-accent rounded-lg transition-colors flex items-center gap-2 justify-center disabled:opacity-50"
                                             >
-                                                <FolderOpen size={16} /> Open Workspace
+                                                {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FolderOpen size={16} />} 
+                                                Open Workspace
                                             </button>
                                             <button 
                                                 onClick={() => fileInputRef.current?.click()}
-                                                className="px-4 py-2 border border-outline hover:bg-outline rounded-lg transition-colors flex items-center gap-2 justify-center"
+                                                disabled={isLoadingFiles}
+                                                className="px-4 py-2 border border-outline hover:bg-outline rounded-lg transition-colors flex items-center gap-2 justify-center disabled:opacity-50"
                                                 title="Read-only viewer (Works on iPad)"
                                             >
-                                                <FileText size={16} /> View Folder (Read-Only)
+                                                {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />} 
+                                                View Folder (Read-Only)
                                             </button>
                                         </div>
                                     </>
