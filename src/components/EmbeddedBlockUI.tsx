@@ -12,13 +12,15 @@ export interface EmbeddedBlockUIProps {
     visitedLabels?: string[];
     toggleOpen: (e?: React.MouseEvent) => void;
     view?: EditorView;
-    pos?: number;
-    length?: number;
+    stateRef?: { pos: number, length: number };
+    
     isAtEndOfLine?: boolean;
     isAtStartOfLine?: boolean;
 }
 
-export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleOpen, view, pos, length, isAtEndOfLine = false, isAtStartOfLine = false }: EmbeddedBlockUIProps) {
+export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleOpen, view, stateRef, isAtEndOfLine = false, isAtStartOfLine = false }: EmbeddedBlockUIProps) {
+    const pos = stateRef?.pos;
+    const length = stateRef?.length;
     let displayStyle: "standout" | "inline" = "inline";
     let ifToggled: "open" | "closed" = "closed";
     

@@ -50,6 +50,7 @@ export const parsedLinksField = StateField.define<ParsedLink[]>({
 class EmbeddedBlockWidget extends WidgetType {
     root: Root | null = null;
 
+    public stateRef: { pos: number, length: number };
     constructor(
         public text: string, 
         public parentLabel: string, 
@@ -57,9 +58,13 @@ class EmbeddedBlockWidget extends WidgetType {
         public from: number, 
         public to: number,
         public isAtEndOfLine: boolean = false,
-        public isAtStartOfLine: boolean = false
+        public isAtStartOfLine: boolean = false,
+        existingStateRef?: { pos: number, length: number }
     ) {
         super();
+        this.stateRef = existingStateRef || { pos: from, length: to - from };
+        this.stateRef.pos = from;
+        this.stateRef.length = to - from;
     }
 
     eq(other: EmbeddedBlockWidget) {
@@ -84,8 +89,7 @@ class EmbeddedBlockWidget extends WidgetType {
                 parentLabel={this.parentLabel}
                 visitedLabels={this.visitedLabels}
                 view={view}
-                pos={this.from}
-                length={this.to - this.from}
+                stateRef={this.stateRef}
                 isAtEndOfLine={this.isAtEndOfLine}
                 isAtStartOfLine={this.isAtStartOfLine}
                 toggleOpen={(e?: React.MouseEvent) => {
@@ -140,8 +144,7 @@ class EmbeddedBlockWidget extends WidgetType {
                     parentLabel={this.parentLabel}
                     visitedLabels={this.visitedLabels}
                     view={view}
-                    pos={this.from}
-                    length={this.to - this.from}
+                    stateRef={this.stateRef}
                     isAtEndOfLine={this.isAtEndOfLine}
                     isAtStartOfLine={this.isAtStartOfLine}
                     toggleOpen={(e?: React.MouseEvent) => {
