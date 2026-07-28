@@ -54,8 +54,5 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.0",
     "vite-plugin-pwa": "^1.3.0"
-  },
-  "overrides": {
-    "node-domexception": "file:/app/applet/packages/node-domexception"
   }
 }
