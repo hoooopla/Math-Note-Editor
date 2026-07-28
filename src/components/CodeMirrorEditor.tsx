@@ -6,7 +6,7 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField } from "../lib/editor/katex-plugin";
 import { blockNavigation } from "../lib/editor/navigation";
-import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion } from "@codemirror/autocomplete";
+import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { textCompletion } from "../lib/editor/text-autocomplete";
@@ -42,6 +42,7 @@ export interface CodeMirrorEditorProps {
 export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, onFocus, parentLabel, visitedLabels, onEsc, onImagePaste }: CodeMirrorEditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
+    const isProgrammaticFocusRef = useRef(false);
     const onBlurRef = useRef(onBlur);
     const onChangeRef = useRef(onChange);
     const onFocusRef = useRef(onFocus);
@@ -99,6 +100,72 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 }
             }
         ]);
+
+        const blockquoteKeymap = keymap.of([
+            {
+                key: "Enter",
+                run: (view) => {
+                    if (completionStatus(view.state) === "active") {
+                        return false;
+                    }
+
+                    const selection = view.state.selection.main;
+                    const head = selection.head;
+                    const line = view.state.doc.lineAt(selection.from);
+                    const lineText = line.text;
+
+                    const isBlockquote = /^\s*>/.test(lineText);
+
+                    if (isBlockquote) {
+                        // Pressing Enter on an empty blockquote line (e.g. ">" or "> ") clears the ">" marker and exits to a blank line
+                        if (/^\s*>\s*$/.test(lineText)) {
+                            view.dispatch({
+                                changes: { from: line.from, to: line.to, insert: "" },
+                                selection: { anchor: line.from },
+                                scrollIntoView: true,
+                                userEvent: "input.type"
+                            });
+                            return true;
+                        }
+
+                        // If cursor is at the very start of the line before '>', insert a plain newline before '>'
+                        if (selection.empty && head === line.from) {
+                            view.dispatch({
+                                changes: { from: line.from, insert: "\n" },
+                                selection: { anchor: line.from + 1 },
+                                scrollIntoView: true,
+                                userEvent: "input.type"
+                            });
+                            return true;
+                        }
+
+                        const match = lineText.match(/^(\s*> ?)/);
+                        const prefix = match ? (match[1].endsWith(" ") ? match[1] : match[1] + " ") : "> ";
+
+                        view.dispatch({
+                            changes: { from: selection.from, to: selection.to, insert: "\n" + prefix },
+                            selection: { anchor: selection.from + 1 + prefix.length },
+                            scrollIntoView: true,
+                            userEvent: "input.type"
+                        });
+                        return true;
+                    } else {
+                        // Original line does NOT start with '>'.
+                        // Prevent default markdown continuation (which auto-adds '>' for lazy blockquotes).
+                        const indentMatch = lineText.match(/^(\s*)/);
+                        const indent = indentMatch ? indentMatch[1] : "";
+
+                        view.dispatch({
+                            changes: { from: selection.from, to: selection.to, insert: "\n" + indent },
+                            selection: { anchor: selection.from + 1 + indent.length },
+                            scrollIntoView: true,
+                            userEvent: "input.type"
+                        });
+                        return true;
+                    }
+                }
+            }
+        ]);
         
         const state = EditorState.create({
             doc: content,
@@ -109,6 +176,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 EditorView.lineWrapping,
                 history(),
                 customKeymap,
+                Prec.highest(blockquoteKeymap),
                 Prec.highest(keymap.of(embedKeymap)),
                 keymap.of([{
                     key: "[",
@@ -275,19 +343,31 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                         return false;
                     },
                     focus: (e, view) => {
+                        const targetEl = e.target as HTMLElement;
+                        if (targetEl && targetEl.closest && targetEl.closest(".cm-embedded-block-wrapper")) {
+                            return false;
+                        }
+
+                        if (isProgrammaticFocusRef.current) {
+                            isProgrammaticFocusRef.current = false;
+                            view.dispatch({ effects: setEditorFocus.of(true) });
+                            return false;
+                        }
+
                         view.dispatch({ effects: setEditorFocus.of(true) });
                         if (onFocusRef.current) {
                             if (isGlobalMousePressed) {
                                 const handleMouseUp = () => {
-                                    window.removeEventListener("mouseup", handleMouseUp);
-                                    // Delay to let CodeMirror finish mouseup handling
                                     setTimeout(() => {
-                                        if (onFocusRef.current && view.hasFocus) {
-                                            onFocusRef.current();
+                                        if (onFocusRef.current && view.dom?.isConnected) {
+                                            const isStillFocused = view.hasFocus || (containerRef.current ? containerRef.current.contains(document.activeElement) : false);
+                                            if (isStillFocused) {
+                                                onFocusRef.current();
+                                            }
                                         }
                                     }, 0);
                                 };
-                                window.addEventListener("mouseup", handleMouseUp);
+                                window.addEventListener("mouseup", handleMouseUp, { once: true });
                             } else {
                                 onFocusRef.current();
                             }
@@ -312,7 +392,9 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                             if (match) {
                                 setTimeout(() => {
                                     import("@codemirror/autocomplete").then(({ startCompletion }) => {
-                                        startCompletion(update.view);
+                                        if (update.view && update.view.dom?.isConnected && update.view.hasFocus) {
+                                            startCompletion(update.view);
+                                        }
                                     });
                                 }, 10);
                             }
@@ -372,7 +454,13 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
             viewRef.current.dispatch({ effects: setEditorFocus.of(isFocused) });
         }
 
-        if (isFocused && viewRef.current && !viewRef.current.hasFocus) {
+        const isDOMFocused = viewRef.current ? (
+            viewRef.current.hasFocus || 
+            (containerRef.current ? containerRef.current.contains(document.activeElement) : false)
+        ) : false;
+
+        if (isFocused && viewRef.current && !isDOMFocused) {
+            isProgrammaticFocusRef.current = true;
             viewRef.current.focus();
             
             if (focusDirection === "end") {
@@ -416,6 +504,8 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
         }
     }, [content]);
 
+    const macrosRef = useRef(macros);
+
     // Parent label, visited labels, and macros dynamic update
     useEffect(() => {
         let effects = [];
@@ -428,8 +518,10 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 visitedLabelsRef.current = visitedLabels;
                 effects.push(visitedLabelsCompartmentRef.current.reconfigure(visitedLabelsFacet.of(visitedLabels || [])));
             }
-            // reconfigure macros when they change
-            effects.push(macrosCompartmentRef.current.reconfigure(livePreviewMacros.of(macros)));
+            if (JSON.stringify(macros) !== JSON.stringify(macrosRef.current)) {
+                macrosRef.current = macros;
+                effects.push(macrosCompartmentRef.current.reconfigure(livePreviewMacros.of(macros)));
+            }
             if (effects.length > 0) {
                 viewRef.current.dispatch({ effects });
             }

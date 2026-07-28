@@ -47,7 +47,7 @@ class ImageWidget extends WidgetType {
         return span;
     }
 
-    ignoreEvent() { return false; }
+    ignoreEvent() { return true; }
 }
 
 function buildImageDecorations(view: EditorView) {
