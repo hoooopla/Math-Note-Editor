@@ -242,7 +242,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                     }
                 }]),
                 keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),
-                markdown(),
+                markdown({ addKeymap: false }),
                 EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["(", "[", "{", "'", '"', "$"] } }]),
                 macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
                 parentLabelCompartmentRef.current.of(parentLabelFacet.of(parentLabelRef.current || "")),
