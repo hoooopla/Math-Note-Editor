@@ -25,7 +25,6 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     let ifToggled: "open" | "closed" = "closed";
     
     const { activePath, focusDirection, activeFocusPos, loadBlockContent, settings } = useStore();
-    const [isLocalFocused, setIsLocalFocused] = useState(false);
 
     let rawText = text;
     if (rawText.startsWith("@")) {
@@ -74,9 +73,8 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     const instancePath = [...visitedLabels, fullLabel];
     const pathMatches = activePath && activePath.length === instancePath.length && activePath.every((l, i) => l === instancePath[i]);
 
-    // We can say it's focused if local focus is true OR activePath precisely matches this instance AND activeFocusPos matches pos (or is null)
     const activeIsMe = pathMatches && (activeFocusPos === null || activeFocusPos === pos);
-    const isFocused = isLocalFocused || (activeIsMe ?? false);
+    const isFocused = activeIsMe ?? false;
     const globalFocusDirection = activeIsMe ? focusDirection : null;
 
     if (isLabelExisted && displayTitle === null) {
@@ -297,7 +295,6 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
                         onBlur={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
-                            setIsLocalFocused(false);
                         }}
                         onChange={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
@@ -312,8 +309,9 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         onImagePaste={(file, insertContent) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent })}
                         onEsc={() => toggleOpen()}
                         onFocus={() => {
-                            setIsLocalFocused(true);
-                            useStore.getState().setActiveBlock(targetBlock!.id, null, [...visitedLabels, fullLabel], pos);
+                            if (!activeIsMe) {
+                                useStore.getState().setActiveBlock(targetBlock!.id, null, [...visitedLabels, fullLabel], pos);
+                            }
                         }}
                     />
                 </div>
@@ -344,7 +342,6 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
                         onBlur={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
-                            setIsLocalFocused(false);
                         }}
                         onChange={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
@@ -359,8 +356,9 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         onImagePaste={(file, insertContent) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent })}
                         onEsc={() => toggleOpen()}
                         onFocus={() => {
-                            setIsLocalFocused(true);
-                            useStore.getState().setActiveBlock(targetBlock!.id, null, [...visitedLabels, fullLabel], pos);
+                            if (!activeIsMe) {
+                                useStore.getState().setActiveBlock(targetBlock!.id, null, [...visitedLabels, fullLabel], pos);
+                            }
                         }}
                     />
                 </span>

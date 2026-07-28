@@ -12,16 +12,26 @@ export function MathTitle({ text, className }: { text?: string | null; className
 
     const segments = [];
     let current = 0;
-    const mathRegex = /(\$\$?)([\s\S]*?)\1/g;
+    const mathRegex = /(\$)([\s\S]*?)\1|(\\\[)([\s\S]*?)(\\\])/g;
     let match;
 
     while ((match = mathRegex.exec(text)) !== null) {
+        if (match.index === mathRegex.lastIndex) {
+            mathRegex.lastIndex++;
+        }
         if (match.index > current) {
             segments.push({ type: 'text', content: text.slice(current, match.index) });
         }
         
+        const mathContent = (match[2] || match[4] || '').trim();
+        if (!mathContent) {
+            segments.push({ type: 'text', content: match[0] });
+            current = match.index + match[0].length;
+            continue;
+        }
+
         try {
-            const html = katex.renderToString(match[2], {
+            const html = katex.renderToString(mathContent, {
                 throwOnError: false,
                 displayMode: false,
                 strict: false,

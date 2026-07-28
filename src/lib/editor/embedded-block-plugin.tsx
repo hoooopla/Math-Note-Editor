@@ -201,10 +201,9 @@ class EmbeddedBlockWidget extends WidgetType {
 
     ignoreEvent(e: Event) {
         if (e.target instanceof HTMLElement) {
-            const editor = e.target.closest(".cm-editor");
-            const wrapper = e.target.closest(".cm-embedded-block-wrapper");
-            if (editor && wrapper && wrapper.contains(editor)) return true;
-            if (wrapper && (e.target.closest("button") || e.target.tagName === "BUTTON")) return true;
+            if (e.target.closest(".cm-embedded-block-wrapper")) {
+                return true;
+            }
         }
         return false;
     }

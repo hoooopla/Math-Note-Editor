@@ -38,37 +38,31 @@ function parseRanges(doc: string): ParsedRange[] {
         if (doc.startsWith("\\[", i)) {
             let end = doc.indexOf("\\]", i + 2);
             if (end !== -1) {
-                ranges.push({
-                    from: i, 
-                    to: end + 2, 
-                    text: doc.slice(i + 2, end).trim(),
-                    type: "blockMath"
-                });
-                i = end + 2;
-                continue;
+                const text = doc.slice(i + 2, end).trim();
+                if (text.length > 0) {
+                    ranges.push({
+                        from: i, 
+                        to: end + 2, 
+                        text: text,
+                        type: "blockMath"
+                    });
+                    i = end + 2;
+                    continue;
+                }
             }
         }
-        i++;
-    }
 
-    i = 0;
-    while (i < doc.length) {
-        const blockOverlap = ranges.find(r => r.type === "blockMath" && i >= r.from && i < r.to);
-        if (blockOverlap) {
-            i = blockOverlap.to;
-            continue;
-        }
-
-        if (doc[i] === '$' && doc[i-1] !== '\\') {
+        if (doc[i] === '$' && doc[i - 1] !== '\\') {
             let end = doc.indexOf("$", i + 1);
             while (end !== -1 && doc[end - 1] === '\\') {
                 end = doc.indexOf("$", end + 1);
             }
             if (end !== -1) {
+                const text = doc.slice(i + 1, end).trim();
                 ranges.push({
                     from: i, 
                     to: end + 1, 
-                    text: doc.slice(i + 1, end).trim(),
+                    text: text,
                     type: "inlineMath"
                 });
                 i = end + 1;
@@ -177,13 +171,31 @@ class MathWidget extends WidgetType {
     }
 
     eq(other: MathWidget) {
-        return this.text === other.text && this.isBlock === other.isBlock && this.macros === other.macros;
+        return this.text === other.text && 
+               this.isBlock === other.isBlock && 
+               JSON.stringify(this.macros) === JSON.stringify(other.macros);
     }
 
     toDOM(view: EditorView) {
         const span = document.createElement(this.isBlock ? "div" : "span");
-        span.className = this.isBlock ? "cm-math-block my-0 text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all" : "cm-math-inline";
+        const baseClass = this.isBlock ? "cm-math-block my-0 text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all" : "cm-math-inline";
+        span.className = baseClass;
         span.style.cursor = "text";
+
+        const handleFocus = (e: Event) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const pos = view.posAtDOM(span);
+            view.dispatch({
+                selection: { anchor: pos },
+                effects: setEditorFocus.of(true)
+            });
+            view.focus();
+        };
+
+        span.addEventListener("mousedown", handleFocus);
+        span.addEventListener("touchstart", handleFocus, { passive: false });
+
         try {
             katex.render(this.text, span, {
                 displayMode: this.isBlock,
@@ -192,14 +204,14 @@ class MathWidget extends WidgetType {
             });
         } catch (e: any) {
             span.innerText = this.text;
-            span.className += " text-red-500 bg-red-500/10 px-1 rounded";
+            span.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
             span.title = e.message;
         }
         return span;
     }
 
     ignoreEvent() {
-        return false;
+        return true;
     }
 }
 
@@ -209,12 +221,13 @@ class BlockMathEditingPreviewWidget extends WidgetType {
     }
 
     eq(other: BlockMathEditingPreviewWidget) {
-        return this.text === other.text && this.macros === other.macros;
+        return this.text === other.text && JSON.stringify(this.macros) === JSON.stringify(other.macros);
     }
 
     toDOM() {
         const dom = document.createElement("div");
-        dom.className = "cm-math-block my-0 text-center pointer-events-none"; 
+        const baseClass = "cm-math-block my-0 text-center pointer-events-none";
+        dom.className = baseClass;
         try {
             katex.render(this.text, dom, {
                 displayMode: true,
@@ -223,7 +236,7 @@ class BlockMathEditingPreviewWidget extends WidgetType {
             });
         } catch (e: any) {
             dom.innerText = this.text;
-            dom.className += " text-red-500 bg-red-500/10 px-1 rounded";
+            dom.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
         }
         return dom;
     }
@@ -239,7 +252,7 @@ class ListWidget extends WidgetType {
         span.className = "text-accent mx-2 rounded-full w-1.5 h-1.5 bg-accent inline-block transform -translate-y-[2px]";
         return span;
     }
-    ignoreEvent() { return false; }
+    ignoreEvent() { return true; }
 }
 
 function buildLiveDecorations(state: EditorState) {
@@ -371,6 +384,10 @@ function buildLiveDecorations(state: EditorState) {
                 if (r.to > r.from + 2) {
                     decos.push({from: r.from + 2, to: r.to, deco: Decoration.mark({ class: "text-[#CBF0FF] font-bold" })});
                 }
+            } else if (r.type === "inlineMath" && r.text.trim().length === 0) {
+                decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: "cm-math-editing" })});
+                decos.push({ from: r.from, to: r.from + 1, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
+                decos.push({ from: r.to - 1, to: r.to, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
             } else {
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
                     widget: new MathWidget(r.text, r.type === "blockMath", macros),
@@ -416,7 +433,7 @@ function getMathTooltip(state: EditorState): Tooltip | null {
     const macros = state.facet(livePreviewMacros);
 
     for (const r of ranges) {
-        if (r.type === "inlineMath") {
+        if (r.type === "inlineMath" && r.text.trim().length > 0) {
             const overlapping = selection.from <= r.to && selection.to >= r.from;
             if (overlapping) {
                 return {
