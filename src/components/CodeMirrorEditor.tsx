@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { EditorState, StateEffect, Compartment, Transaction, Prec, EditorSelection } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, dropCursor } from "@codemirror/view";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
+import { mathMarkdownExtension } from "../lib/editor/math-markdown-extension";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField } from "../lib/editor/katex-plugin";
@@ -98,6 +99,10 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                     }
                     return false;
                 }
+            },
+            {
+                key: "Enter",
+                run: insertNewlineContinueMarkup
             }
         ]);
 
@@ -242,7 +247,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                     }
                 }]),
                 keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),
-                markdown({ addKeymap: false }),
+                markdown({ addKeymap: false, extensions: [mathMarkdownExtension] }),
                 EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["(", "[", "{", "'", '"', "$"] } }]),
                 macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
                 parentLabelCompartmentRef.current.of(parentLabelFacet.of(parentLabelRef.current || "")),
