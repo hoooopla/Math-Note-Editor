@@ -218,7 +218,8 @@ export default function App() {
                 </div>
             </div>
 
-            <div className="flex-1 flex flex-col min-w-0 h-full">
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-w-0 h-full">
                 <div className="flex overflow-x-auto border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[42px] px-2 pt-2 gap-1">
                     {openTabs.map(id => {
                         const b = blocks.find(x => x.id === id);
@@ -306,6 +307,7 @@ export default function App() {
                         )}
                     </div>
                 </div>
+            </div>
             </div>
             
             <SearchModal isOpen={isSearchModalOpen} onClose={() => setIsSearchModalOpen(false)} />
