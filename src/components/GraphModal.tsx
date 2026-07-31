@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useEffect } from 'react';
 import { useStore } from '../store';
 import { X } from 'lucide-react';
 import ForceGraph2D from 'react-force-graph-2d';
-import { SidebarTree } from './SidebarTree';
+import { SidebarTree } from './LabelTree';
 import { splitPath } from '../lib/utils/path';
 
 export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
@@ -11,6 +11,7 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
     const fgRef = useRef<any>(null);
     const [dimensions, setDimensions] = React.useState({ width: 800, height: 600 });
     const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
+    const hoverSourceRef = useRef<'tree' | 'graph' | null>(null);
 
     useEffect(() => {
         if (isOpen && containerRef.current) {
@@ -72,6 +73,16 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
         return { nodes, links };
     }, [blocks]);
 
+    useEffect(() => {
+        if (hoverSourceRef.current === 'tree' && hoveredNodeId && fgRef.current && isOpen) {
+            const nodes = graphData.nodes;
+            const node = nodes.find((n: any) => n.id === hoveredNodeId);
+            if (node && node.x !== undefined && node.y !== undefined) {
+                fgRef.current.centerAt(node.x, node.y, 300);
+            }
+        }
+    }, [hoveredNodeId, isOpen, graphData.nodes]);
+
     if (!isOpen) return null;
 
     return (
@@ -87,7 +98,10 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
                     <SidebarTree 
                         onSelect={onClose} 
                         hoveredNodeId={hoveredNodeId}
-                        onNodeHover={setHoveredNodeId}
+                        onNodeHover={(id) => {
+                            hoverSourceRef.current = 'tree';
+                            setHoveredNodeId(id);
+                        }}
                     />
                     <div className="flex-1 overflow-hidden relative" ref={containerRef}>
                         {isOpen && (
@@ -96,9 +110,12 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
                             width={dimensions.width}
                             height={dimensions.height}
                             graphData={graphData}
-                            nodeLabel={() => ''}
+                            nodeLabel={() => null}
                             nodeColor="color"
-                            onNodeHover={(node: any) => setHoveredNodeId(node ? node.id : null)}
+                            onNodeHover={(node: any) => {
+                                hoverSourceRef.current = 'graph';
+                                setHoveredNodeId(node ? node.id : null);
+                            }}
                             onRenderFramePost={(ctx, globalScale) => {
                                 if (hoveredNodeId) {
                                     const nodes = graphData.nodes;
@@ -109,8 +126,8 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
                                         const title = node.name;
                                         const label = node.id;
                                         
-                                        const fontSize = 14 / globalScale;
-                                        const labelFontSize = 10 / globalScale;
+                                        const fontSize = 12 / globalScale;
+                                        const labelFontSize = 11 / globalScale;
                                         ctx.font = `bold ${fontSize}px Sans-Serif`;
                                         const titleWidth = ctx.measureText(title).width;
                                         ctx.font = `${labelFontSize}px Sans-Serif`;
@@ -126,9 +143,9 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
 
                                         ctx.save();
                                         
-                                        ctx.fillStyle = '#1a1d23'; // surface
+                                        ctx.fillStyle = '#0f1115'; // base color
                                         
-                                        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+                                        ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
                                         ctx.shadowBlur = 8 / globalScale;
                                         ctx.shadowOffsetX = 0;
                                         ctx.shadowOffsetY = 4 / globalScale;
