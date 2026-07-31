@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import { api as backendApi, EditorSettings, parseFrontmatter } from './api';
+import { api as backendApi, EditorSettings, parseFrontmatter, computeReferences } from './api';
 
 export interface BlockData {
   id: string;
@@ -8,6 +8,7 @@ export interface BlockData {
   label: string;
   content?: string;
   hasContent?: boolean;
+  references?: string[];
   _fileMeta?: any;
 }
 
@@ -139,6 +140,7 @@ export const useStore = create<AppState>((set, get) => ({
           id,
           title: data.title || '',
           label: data.label || '',
+          references: data.references || computeReferences(content),
           content,
           hasContent: content.trim().length > 0
         });
