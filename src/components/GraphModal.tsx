@@ -189,7 +189,7 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
                                     ctx.stroke();
                                 }
                             }}
-                            linkDirectionalArrowLength={4}
+                            linkDirectionalArrowLength={6}
                             linkDirectionalArrowRelPos={1}
                             linkColor={() => '#8b949e'}
                             linkDirectionalArrowColor={() => '#ffffff'}
