@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useStore } from '../store';
-import { ChevronRight, ChevronDown, FileText, Folder } from 'lucide-react';
+import { ChevronRight, ChevronDown } from 'lucide-react';
 import { splitPath } from '../lib/utils/path';
 
 type TreeNode = {
@@ -9,7 +9,15 @@ type TreeNode = {
     children: Record<string, TreeNode>;
 };
 
-export function SidebarTree({ onSelect }: { onSelect?: () => void }) {
+export function SidebarTree({ 
+    onSelect,
+    hoveredNodeId,
+    onNodeHover
+}: { 
+    onSelect?: () => void;
+    hoveredNodeId?: string | null;
+    onNodeHover?: (id: string | null) => void;
+}) {
     const blocks = useStore(state => state.blocks);
     const { openBlockInTab, activeTab } = useStore();
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -40,11 +48,16 @@ export function SidebarTree({ onSelect }: { onSelect?: () => void }) {
         const isFolder = Object.keys(node.children).length > 0;
         const isExpanded = expanded[path] !== false; // Default expanded
         const isActive = activeTab === node.blockId;
+        const isHovered = hoveredNodeId === path;
         
         return (
             <div key={path}>
                 <div 
-                    className={`flex items-center gap-1.5 py-1 px-2 hover:bg-accent/10 cursor-pointer rounded-md ${isActive ? 'bg-accent/20 text-accent font-medium' : 'text-secondary hover:text-primary'} transition-colors`}
+                    className={`flex items-center gap-1.5 py-1 px-2 cursor-pointer rounded-md transition-colors ${
+                        isActive ? 'bg-accent/20 text-accent font-medium' : 
+                        isHovered ? 'bg-accent/15 text-primary' :
+                        'text-secondary hover:text-primary hover:bg-accent/10'
+                    }`}
                     style={{ paddingLeft: `${level * 12 + 8}px` }}
                     onClick={() => {
                         if (isFolder) {
@@ -55,6 +68,8 @@ export function SidebarTree({ onSelect }: { onSelect?: () => void }) {
                             if (onSelect) onSelect();
                         }
                     }}
+                    onMouseEnter={() => onNodeHover && onNodeHover(path)}
+                    onMouseLeave={() => onNodeHover && onNodeHover(null)}
                 >
                     {isFolder ? (
                         <div className="opacity-70">
@@ -62,12 +77,6 @@ export function SidebarTree({ onSelect }: { onSelect?: () => void }) {
                         </div>
                     ) : (
                         <div className="w-3.5" /> // spacer
-                    )}
-                    
-                    {isFolder ? (
-                        <Folder size={14} className="opacity-70" />
-                    ) : (
-                        <FileText size={14} className="opacity-70" />
                     )}
                     
                     <span className="text-sm truncate select-none">{node.name}</span>

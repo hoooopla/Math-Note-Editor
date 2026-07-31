@@ -8,7 +8,9 @@ import { splitPath } from '../lib/utils/path';
 export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
     const { blocks, openBlockInTab } = useStore();
     const containerRef = useRef<HTMLDivElement>(null);
+    const fgRef = useRef<any>(null);
     const [dimensions, setDimensions] = React.useState({ width: 800, height: 600 });
+    const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
 
     useEffect(() => {
         if (isOpen && containerRef.current) {
@@ -16,6 +18,11 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
                 width: containerRef.current.clientWidth,
                 height: containerRef.current.clientHeight
             });
+        }
+        if (isOpen && fgRef.current) {
+            // Make the group of nodes closer to each other
+            fgRef.current.d3Force('charge').strength(-30);
+            fgRef.current.d3Force('link').distance(60);
         }
     }, [isOpen]);
 
@@ -37,7 +44,7 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
             return {
                 id: b.label, // use label as id for easy reference mapping
                 name: b.title || b.label,
-                val: Math.max(0.5, 2 - depth * 0.3), // Make root nodes slightly larger
+                val: Math.max(0.5, 4 - depth * 1.5), // Make root nodes significantly larger
                 color: getGroupColor(group, depth),
                 blockId: b.id
             };
@@ -77,15 +84,94 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
                     </button>
                 </div>
                 <div className="flex-1 flex min-h-0">
-                    <SidebarTree onSelect={onClose} />
+                    <SidebarTree 
+                        onSelect={onClose} 
+                        hoveredNodeId={hoveredNodeId}
+                        onNodeHover={setHoveredNodeId}
+                    />
                     <div className="flex-1 overflow-hidden relative" ref={containerRef}>
                         {isOpen && (
                             <ForceGraph2D
+                            ref={fgRef}
                             width={dimensions.width}
                             height={dimensions.height}
                             graphData={graphData}
-                            nodeLabel="name"
+                            nodeLabel={() => ''}
                             nodeColor="color"
+                            onNodeHover={(node: any) => setHoveredNodeId(node ? node.id : null)}
+                            onRenderFramePost={(ctx, globalScale) => {
+                                if (hoveredNodeId) {
+                                    const nodes = graphData.nodes;
+                                    const node = nodes.find((n: any) => n.id === hoveredNodeId);
+                                    if (node && node.x !== undefined && node.y !== undefined) {
+                                        const r = Math.sqrt(Math.max(0, node.val || 1)) * 4;
+                                        
+                                        const title = node.name;
+                                        const label = node.id;
+                                        
+                                        const fontSize = 14 / globalScale;
+                                        const labelFontSize = 10 / globalScale;
+                                        ctx.font = `bold ${fontSize}px Sans-Serif`;
+                                        const titleWidth = ctx.measureText(title).width;
+                                        ctx.font = `${labelFontSize}px Sans-Serif`;
+                                        const labelWidth = ctx.measureText(label).width;
+                                        
+                                        const textWidth = Math.max(titleWidth, labelWidth);
+                                        const padding = 8 / globalScale;
+                                        const boxWidth = textWidth + padding * 2;
+                                        const boxHeight = fontSize + labelFontSize + padding * 2.5;
+                                        
+                                        const boxX = node.x - boxWidth / 2;
+                                        const boxY = node.y - r - boxHeight - (8 / globalScale);
+
+                                        ctx.save();
+                                        
+                                        ctx.fillStyle = '#1a1d23'; // surface
+                                        
+                                        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+                                        ctx.shadowBlur = 8 / globalScale;
+                                        ctx.shadowOffsetX = 0;
+                                        ctx.shadowOffsetY = 4 / globalScale;
+                                        
+                                        ctx.beginPath();
+                                        if (ctx.roundRect) {
+                                            ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 4 / globalScale);
+                                        } else {
+                                            ctx.rect(boxX, boxY, boxWidth, boxHeight);
+                                        }
+                                        ctx.fill();
+                                        
+                                        ctx.shadowColor = 'transparent';
+                                        ctx.strokeStyle = '#30363d'; // outline
+                                        ctx.lineWidth = 1 / globalScale;
+                                        ctx.stroke();
+
+                                        ctx.textAlign = 'center';
+                                        ctx.textBaseline = 'top';
+                                        
+                                        ctx.fillStyle = '#ffffff'; // primary text
+                                        ctx.font = `bold ${fontSize}px Sans-Serif`;
+                                        ctx.fillText(title, node.x, boxY + padding);
+                                        
+                                        ctx.fillStyle = '#8b949e'; // secondary text
+                                        ctx.font = `${labelFontSize}px Sans-Serif`;
+                                        ctx.fillText(label, node.x, boxY + padding + fontSize + padding * 0.5);
+                                        
+                                        ctx.restore();
+                                    }
+                                }
+                            }}
+                            nodeCanvasObjectMode={() => 'after'}
+                            nodeCanvasObject={(node: any, ctx, globalScale) => {
+                                if (node.id === hoveredNodeId) {
+                                    const r = Math.sqrt(Math.max(0, node.val || 1)) * 4;
+                                    ctx.beginPath();
+                                    ctx.arc(node.x, node.y, r + (3 / Math.max(1, globalScale)), 0, 2 * Math.PI, false);
+                                    ctx.strokeStyle = '#ffffff';
+                                    ctx.lineWidth = 2 / Math.max(1, globalScale);
+                                    ctx.stroke();
+                                }
+                            }}
                             linkDirectionalArrowLength={4}
                             linkDirectionalArrowRelPos={1}
                             linkColor={() => '#8b949e'}
