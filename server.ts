@@ -15,16 +15,28 @@ const parseFrontmatter = (text: string) => {
         if (idx > -1) {
             const key = line.substring(0, idx).trim();
             const val = line.substring(idx + 1).trim();
-            data[key] = val;
+            if (val.startsWith('[') && val.endsWith(']')) {
+                try {
+                    data[key] = JSON.parse(val.replace(/'/g, '"'));
+                } catch (e) {
+                    data[key] = val;
+                }
+            } else {
+                data[key] = val;
+            }
         }
     });
     return { data, content: match[2] };
 };
 
-const stringifyFrontmatter = (data: Record<string, string>, content: string) => {
+const stringifyFrontmatter = (data: Record<string, any>, content: string) => {
     let fm = '---\n';
     for (const [k, v] of Object.entries(data)) {
-        fm += `${k}: ${v}\n`;
+        if (Array.isArray(v)) {
+            fm += `${k}: ${JSON.stringify(v)}\n`;
+        } else {
+            fm += `${k}: ${v}\n`;
+        }
     }
     fm += '---\n';
     return fm + content;
@@ -41,6 +53,7 @@ interface BlockData {
     title: string;
     label: string;
     content: string;
+    references?: string[];
 }
 
 let blocksMap = new Map<string, BlockData>();
@@ -107,6 +120,16 @@ const INITIAL_BLOCKS = [
 
 const blockIdToFileMap = new Map<string, string>();
 
+function computeReferences(content: string): string[] {
+    const regex = /\[\[@?([^\]\|∨]+)(?:\|\|[^\]∨]+)?∨?\]\]/g;
+    const refs = new Set<string>();
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+        refs.add(match[1]);
+    }
+    return Array.from(refs);
+}
+
 async function writeBlockToFile(block: any) {
     const safeTitle = (block.title || "Untitled").replace(/[/\\?%*:|"<>]/g, '-').trim() || "Untitled";
     const safeLabel = (block.label || "block").replace(/[/\\?%*:|"<>]/g, '-').trim() || "block";
@@ -126,7 +149,8 @@ async function writeBlockToFile(block: any) {
     const fileContent = stringifyFrontmatter({
         id: block.id,
         title: block.title || "",
-        label: block.label || ""
+        label: block.label || "",
+        references: block.references || []
     }, block.content || "");
     
     if (baseDir) {
@@ -163,6 +187,7 @@ async function initBlocks() {
                 id,
                 title: parsed.data.title || "",
                 label: parsed.data.label || "",
+                references: parsed.data.references || computeReferences(parsed.content),
                 content: parsed.content
             });
             // Normalize path slashes for consistency across platforms (use forward slash in map)
@@ -222,16 +247,20 @@ app.get("/api/assets/*", async (req, res) => {
 
 app.get("/api/blocks", async (req, res) => {
     try {
-        const blocks = Array.from(blocksMap.values()).map(b => ({
-            id: b.id,
-            title: b.title,
-            label: b.label,
-            hasContent: b.content !== undefined && b.content.trim().length > 0
-            // we do NOT send content to make it fast for 10000+ blocks!
-            // wait, if we don't send content, the frontend must be updated to load it on demand.
-            // to avoid instantly breaking the app, let's include it for now, 
-            // but we add a query parameter ?metaOnly=true for search views
-        }));
+        const blocks = Array.from(blocksMap.values()).map(b => {
+            return {
+                id: b.id,
+                title: b.title,
+                label: b.label,
+                references: b.references || [],
+                hasContent: b.content !== undefined && b.content.trim().length > 0
+                // we do NOT send content to make it fast for 10000+ blocks!
+                // wait, if we don't send content, the frontend must be updated to load it on demand.
+                // to avoid instantly breaking the app, let's include it for now, 
+                // but we add a query parameter ?metaOnly=true for search views
+            };
+        });
+        console.log("Blocks references:", blocks.map(b => b.references));
         
         // Sort by title
         blocks.sort((a, b) => a.title.localeCompare(b.title));
@@ -287,12 +316,13 @@ app.post("/api/settings", async (req, res) => {
 app.post("/api/blocks", async (req, res) => {
     try {
         const id = uuidv4();
-        const block = {
+        const block: BlockData = {
             id,
             title: req.body.title || "New Block",
             label: req.body.label || "block",
             content: req.body.content || ""
         };
+        block.references = computeReferences(block.content);
         await writeBlockToFile(block);
         blocksMap.set(block.id, block);
         res.json(block);
@@ -309,12 +339,13 @@ app.put("/api/blocks/:id", async (req, res) => {
         const newLabel = req.body.label !== undefined ? req.body.label : existing.label;
         const oldLabel = existing.label;
 
-        const block = {
+        const block: BlockData = {
             id,
             title: req.body.title !== undefined ? req.body.title : existing.title,
             label: newLabel,
             content: req.body.content !== undefined ? req.body.content : existing.content
         };
+        block.references = computeReferences(block.content);
 
         let updatedBlocks = [block];
         blocksMap.set(id, block);
@@ -374,6 +405,7 @@ app.put("/api/blocks/:id", async (req, res) => {
                 }
 
                 if (changed || bId === id) {
+                    newB.references = computeReferences(newB.content || "");
                     blocksMap.set(bId, newB);
                     updatedBlocks.push(newB);
                 }
@@ -479,10 +511,11 @@ async function startServer() {
                     return; // No change or our own update
                 }
 
-                const newBlock = {
+                const newBlock: BlockData = {
                     id,
                     title: parsed.data.title || "",
                     label: parsed.data.label || "",
+                    references: parsed.data.references || computeReferences(parsed.content),
                     content: parsed.content
                 };
                 blocksMap.set(id, newBlock);

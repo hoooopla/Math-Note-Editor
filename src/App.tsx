@@ -9,7 +9,8 @@ import { BlockContainer } from "./components/Block";
 import { SettingsModal } from "./components/SettingsModal";
 import { ImageUploadModal } from "./components/ImageUploadModal";
 import { SearchModal } from "./components/SearchModal";
-import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2 } from "lucide-react";
+import { GraphModal } from "./components/GraphModal";
+import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network } from "lucide-react";
 import "./index.css";
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
     const { addBlock, setActiveBlock, initBackend, connectLocalFS, openTabs, activeTab, setOpenTabs, setActiveTab, settings } = useStore();
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
+    const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
     
     // Drag state for tabs
     const [draggedTab, setDraggedTab] = useState<string | null>(null);
@@ -183,6 +185,13 @@ export default function App() {
                     >
                         <Search size={16} /> Search <kbd className="text-xs font-mono bg-base px-1.5 rounded ml-1 border border-outline shadow-sm">{settings.searchShortcut || 'meta+k'}</kbd>
                     </button>
+                    <button 
+                        onClick={() => setIsGraphModalOpen(true)}
+                        className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
+                        title="Graph View"
+                    >
+                        <Network size={18} />
+                    </button>
                     <div className="w-px h-6 bg-outline mx-1"></div>
                     <button 
                         onClick={() => setIsMacroModalOpen(true)}
@@ -209,7 +218,8 @@ export default function App() {
                 </div>
             </div>
 
-            <div className="flex-1 flex flex-col min-w-0 h-full">
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-w-0 h-full">
                 <div className="flex overflow-x-auto border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[42px] px-2 pt-2 gap-1">
                     {openTabs.map(id => {
                         const b = blocks.find(x => x.id === id);
@@ -298,8 +308,10 @@ export default function App() {
                     </div>
                 </div>
             </div>
+            </div>
             
             <SearchModal isOpen={isSearchModalOpen} onClose={() => setIsSearchModalOpen(false)} />
+            <GraphModal isOpen={isGraphModalOpen} onClose={() => setIsGraphModalOpen(false)} />
             <SettingsModal isOpen={isMacroModalOpen} onClose={() => setIsMacroModalOpen(false)} />
             <ImageUploadModal />
         </div>

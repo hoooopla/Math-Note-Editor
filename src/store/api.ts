@@ -64,26 +64,48 @@ export interface BackendApi {
 let dirHandle: FileSystemDirectoryHandle | null = null;
 let useServer = true;
 
+export const computeReferences = (content: string): string[] => {
+    const regex = /\[\[@?([^\]\|∨]+)(?:\|\|[^\]∨]+)?∨?\]\]/g;
+    const refs = new Set<string>();
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+        refs.add(match[1]);
+    }
+    return Array.from(refs);
+};
+
 export const parseFrontmatter = (text: string) => {
     const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)/);
     if (!match) return { data: {}, content: text };
     
-    const data: Record<string, string> = {};
+    const data: Record<string, any> = {};
     match[1].split('\n').forEach(line => {
         const idx = line.indexOf(':');
         if (idx > -1) {
             const key = line.substring(0, idx).trim();
             const val = line.substring(idx + 1).trim();
-            data[key] = val;
+            if (val.startsWith('[') && val.endsWith(']')) {
+                try {
+                    data[key] = JSON.parse(val.replace(/'/g, '"'));
+                } catch (e) {
+                    data[key] = val;
+                }
+            } else {
+                data[key] = val;
+            }
         }
     });
     return { data, content: match[2] };
 };
 
-const stringifyFrontmatter = (data: Record<string, string>, content: string) => {
+const stringifyFrontmatter = (data: Record<string, any>, content: string) => {
     let fm = '---\n';
     for (const [k, v] of Object.entries(data)) {
-        fm += `${k}: ${v}\n`;
+        if (Array.isArray(v)) {
+            fm += `${k}: ${JSON.stringify(v)}\n`;
+        } else {
+            fm += `${k}: ${v}\n`;
+        }
     }
     fm += '---\n';
     return fm + content;
@@ -314,6 +336,7 @@ export const api: BackendApi = {
                             id,
                             title: data.title || '',
                             label: data.label || '',
+                            references: data.references || computeReferences(content),
                             hasContent: content.trim().length > 0
                         });
                     } else if (entry.kind === 'directory') {
@@ -362,7 +385,7 @@ export const api: BackendApi = {
         }
         if (api.mode === "local" && dirHandle) {
             const id = uuidv4();
-            const block = { id, title: data.title || "New Block", label: data.label || "block", content: data.content || "" };
+            const block = { id, title: data.title || "New Block", label: data.label || "block", content: data.content || "", references: computeReferences(data.content || "") };
             
             const safeTitle = (block.title).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "Untitled";
             const safeLabel = (block.label).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "block";
@@ -380,7 +403,7 @@ export const api: BackendApi = {
 
             const fileHandle = await dirHandle.getFileHandle(newFilename, { create: true });
             const writable = await fileHandle.createWritable();
-            await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content));
+            await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label, references: block.references || [] }, block.content));
             await writable.close();
             return block;
         }
@@ -424,26 +447,28 @@ export const api: BackendApi = {
                     try {
                         const newHandle = await dirHandle.getFileHandle(newFilename, { create: true });
                         const writable = await newHandle.createWritable();
-                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
+                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label, references: computeReferences(block.content || "") }, block.content || ""));
                         await writable.close();
                         
                         await dirHandle.removeEntry(filename);
                     } catch(e) {
                         // fallback to just writing old file
                         const writable = await entry.createWritable();
-                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
+                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label, references: computeReferences(block.content || "") }, block.content || ""));
                         await writable.close();
                     }
                 } else {
                     const writable = await entry.createWritable();
-                    await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
+                    await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label, references: computeReferences(block.content || "") }, block.content || ""));
                     await writable.close();
                 }
                 
                 // Client-side cascades (simplified for FS mode)
+                block.references = computeReferences(block.content || "");
                 return { block };
             }
         }
+        block.references = computeReferences(block.content || "");
         return { block };
     },
     deleteBlock: async (id, blocks) => {

@@ -105,3 +105,6 @@ body {
 .cm-content .not-italic, .cm-content .not-italic * {
   font-style: normal !important;
 }
+.graph-tooltip { display: none !important; }
+
+.float-tooltip-kap { display: none !important; }
