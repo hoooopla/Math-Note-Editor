@@ -3,7 +3,10 @@ import { useStore } from '../store';
 import { X, Upload, FileImage, Folder, AlertTriangle } from 'lucide-react';
 
 export function ImageUploadModal() {
-    const { imageUploadParams, setImageUploadParams, saveAsset, listAssets } = useStore();
+        const imageUploadParams = useStore(state => state.imageUploadParams);
+    const setImageUploadParams = useStore(state => state.setImageUploadParams);
+    const saveAsset = useStore(state => state.saveAsset);
+    const listAssets = useStore(state => state.listAssets);
     const [path, setPath] = useState('');
     const [width, setWidth] = useState('500');
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -42,7 +45,7 @@ export function ImageUploadModal() {
             imageUploadParams.onInsert(htmlTag);
             setImageUploadParams(null);
         } catch (e) {
-            console.error("Save asset failed", e);
+            console.warn("Save asset failed", e);
             alert("Failed to save asset");
         } finally {
             setIsSaving(false);

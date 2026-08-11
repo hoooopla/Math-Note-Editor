@@ -20,7 +20,15 @@ export default function App() {
     const backendMode = useStore(state => state.backendMode);
     const isLoaded = useStore(state => state.isLoaded);
     const isLoadingFiles = useStore(state => state.isLoadingFiles);
-    const { addBlock, setActiveBlock, initBackend, connectLocalFS, openTabs, activeTab, setOpenTabs, setActiveTab, settings } = useStore();
+    const addBlock = useStore(state => state.addBlock);
+    const setActiveBlock = useStore(state => state.setActiveBlock);
+    const initBackend = useStore(state => state.initBackend);
+    const connectLocalFS = useStore(state => state.connectLocalFS);
+    const openTabs = useStore(state => state.openTabs);
+    const activeTab = useStore(state => state.activeTab);
+    const setOpenTabs = useStore(state => state.setOpenTabs);
+    const setActiveTab = useStore(state => state.setActiveTab);
+    const settings = useStore(state => state.settings);
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
     const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
@@ -136,7 +144,8 @@ export default function App() {
                 "--math-color-comment": settings.mathColors?.comment || "#8b949e",
                 "--math-color-delimiter": settings.mathColors?.delimiter || "#98c379",
                 "--math-color-align": settings.mathColors?.align || "#e06c75",
-                "--math-color-escaped": settings.mathColors?.escaped || "#56b6c2"
+                "--math-color-escaped": settings.mathColors?.escaped || "#56b6c2",
+                "--math-block-padding-y": `${settings.mathBlockPaddingY ?? 4}px`
             } as React.CSSProperties}
         >
             <div className="flex h-12 bg-surface border-b border-outline items-center px-4 justify-between shrink-0">

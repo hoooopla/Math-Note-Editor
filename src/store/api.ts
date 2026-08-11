@@ -43,6 +43,7 @@ export interface EditorSettings {
         align: string;
         escaped: string;
     };
+    mathBlockPaddingY?: number;
 }
 
 export interface BackendApi {
@@ -156,7 +157,7 @@ export const api: BackendApi = {
             api.mode = "local";
             return true;
         } catch (e) {
-            console.error(e);
+            console.warn(e);
             return false;
         }
     },
@@ -356,7 +357,7 @@ export const api: BackendApi = {
     },
     loadBlockContent: async (id, blocks) => {
         if (useServer) {
-            const res = await fetch(`/api/blocks/${id}`);
+            const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`);
             return res.ok ? await res.json() : null;
         }
         if (api.mode === "local" && dirHandle) {
@@ -412,7 +413,7 @@ export const api: BackendApi = {
     },
     updateBlock: async (id, block, existingBlocks) => {
         if (useServer) {
-            const res = await fetch(`/api/blocks/${id}`, {
+            const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(block)
@@ -473,7 +474,7 @@ export const api: BackendApi = {
     },
     deleteBlock: async (id, blocks) => {
         if (useServer) {
-            await fetch(`/api/blocks/${id}`, { method: 'DELETE' });
+            await fetch(`/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
         } else if (api.mode === "local" && dirHandle) {
             const entry = await getFileByBlockId(id);
             if (entry) {

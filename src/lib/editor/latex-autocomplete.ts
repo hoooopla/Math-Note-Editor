@@ -32,10 +32,22 @@ export function latexCompletion(context: CompletionContext) {
     if (!word) return null;
     if (word.from === word.to && !context.explicit) return null;
 
+    let backslashesBefore = 0;
+    for (let i = word.from - 1; i >= 0; i--) {
+        if (context.state.doc.sliceString(i, i + 1) === "\\") {
+            backslashesBefore++;
+        } else {
+            break;
+        }
+    }
+
+    if (backslashesBefore % 2 !== 0) {
+        return null;
+    }
+
     const afterStr = context.state.doc.sliceString(context.pos, Math.min(context.pos + 50, context.state.doc.length));
-    const matchAfter = afterStr.match(/^[a-zA-Z]*(?:\}?)/); // include optional closing brace for environments? Actually let's just stick to word chars. Wait, environments have `}`
-    // Let's just match word characters after the cursor.
-    const wordAfterMatch = afterStr.match(/^[a-zA-Z]*\}?/);
+    const hasBrace = word.text.includes("{");
+    const wordAfterMatch = hasBrace ? afterStr.match(/^[a-zA-Z]*\}?/) : afterStr.match(/^[a-zA-Z]*/);
     const to = context.pos + (wordAfterMatch ? wordAfterMatch[0].length : 0);
 
     // Get settings from store

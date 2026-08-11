@@ -178,7 +178,7 @@ class MathWidget extends WidgetType {
 
     toDOM(view: EditorView) {
         const span = document.createElement(this.isBlock ? "div" : "span");
-        const baseClass = this.isBlock ? "cm-math-block my-0 text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all" : "cm-math-inline";
+        const baseClass = this.isBlock ? "cm-math-block text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all" : "cm-math-inline";
         span.className = baseClass;
         span.style.cursor = "text";
 
@@ -226,7 +226,7 @@ class BlockMathEditingPreviewWidget extends WidgetType {
 
     toDOM() {
         const dom = document.createElement("div");
-        const baseClass = "cm-math-block my-0 text-center pointer-events-none";
+        const baseClass = "cm-math-block text-center pointer-events-none";
         dom.className = baseClass;
         try {
             katex.render(this.text, dom, {
@@ -277,7 +277,7 @@ function buildLiveDecorations(state: EditorState) {
         if (overlapping) {
             let editClass = "cm-math-editing";
             if (r.type === "bold" || r.type === "italic" || r.type === "underline") {
-                editClass = "bg-neutral-800/80 text-blue-300 rounded px-1";
+                editClass = "bg-neutral-800/80 text-blue-300 rounded px-1 cm-inclusive";
             } else if (r.type === "list") {
                 editClass = "text-blue-400 font-bold";
             } else if (r.type === "quote") {
@@ -285,7 +285,7 @@ function buildLiveDecorations(state: EditorState) {
             }
             
             // 1. The outer background wrapping
-            decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: editClass })});
+            decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: editClass, inclusive: true })});
 
             // 2. Syntax highlighting specifically for math zones
             if (r.type === "blockMath" || r.type === "inlineMath") {
@@ -385,7 +385,7 @@ function buildLiveDecorations(state: EditorState) {
                     decos.push({from: r.from + 2, to: r.to, deco: Decoration.mark({ class: "text-[#CBF0FF] font-bold" })});
                 }
             } else if (r.type === "inlineMath" && r.text.trim().length === 0) {
-                decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: "cm-math-editing" })});
+                decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: "cm-math-editing", inclusive: true })});
                 decos.push({ from: r.from, to: r.from + 1, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
                 decos.push({ from: r.to - 1, to: r.to, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
             } else {

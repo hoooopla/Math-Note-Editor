@@ -12,9 +12,13 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
     const activePath = useStore(state => state.activePath);
     const isFocused = activeBlockId === id && (!activePath || (activePath.length === 1 && activePath[0] === block?.label));
     const focusDirection = useStore(state => state.focusDirection);
-    const macros = useStore(state => state.settings?.macros || {});
+    const macros = useStore(state => state.settings?.macros) || {};
 
-    const { setActiveBlock, updateBlock, deleteBlock, loadBlockContent, setImageUploadParams } = useStore();
+        const setActiveBlock = useStore(state => state.setActiveBlock);
+    const updateBlock = useStore(state => state.updateBlock);
+    const deleteBlock = useStore(state => state.deleteBlock);
+    const loadBlockContent = useStore(state => state.loadBlockContent);
+    const setImageUploadParams = useStore(state => state.setImageUploadParams);
 
     useEffect(() => {
         if (block && block.content === undefined) {

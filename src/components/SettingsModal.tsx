@@ -8,7 +8,8 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-    const { settings, saveSettings } = useStore();
+        const settings = useStore(state => state.settings);
+    const saveSettings = useStore(state => state.saveSettings);
     const [activeTab, setActiveTab] = useState<'general' | 'macros' | 'commands' | 'text' | 'embedded' | 'colors'>('general');
     const [localMacros, setLocalMacros] = useState<Array<{key: string, value: string}>>([]);
     const [localCommands, setLocalCommands] = useState<string[]>([]);
@@ -42,6 +43,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localStandoutBgOpacityClosedHover, setLocalStandoutBgOpacityClosedHover] = useState<number>(40);
     const [localStandoutBgOpacityOpen, setLocalStandoutBgOpacityOpen] = useState<number>(80);
     const [localStandoutBgOpacityOpenHover, setLocalStandoutBgOpacityOpenHover] = useState<number>(90);
+    const [localMathBlockPaddingY, setLocalMathBlockPaddingY] = useState<number>(4);
     const [localMathColors, setLocalMathColors] = useState<Record<string, string>>({
         command: "#61afef",
         brace: "#e5c07b",
@@ -85,6 +87,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalStandoutBgOpacityClosedHover(settings.standoutBlockBgOpacityClosedHover ?? 40);
             setLocalStandoutBgOpacityOpen(settings.standoutBlockBgOpacityOpen ?? 80);
             setLocalStandoutBgOpacityOpenHover(settings.standoutBlockBgOpacityOpenHover ?? 90);
+            setLocalMathBlockPaddingY(settings.mathBlockPaddingY ?? 4);
             setLocalMathHighlightColor(settings.mathHighlightColor || '#d19a66');
             if (settings.mathColors) {
                 setLocalMathColors({ ...settings.mathColors });
@@ -145,6 +148,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             standoutBlockBgOpacityClosedHover: isNaN(localStandoutBgOpacityClosedHover) ? 40 : localStandoutBgOpacityClosedHover,
             standoutBlockBgOpacityOpen: isNaN(localStandoutBgOpacityOpen) ? 80 : localStandoutBgOpacityOpen,
             standoutBlockBgOpacityOpenHover: isNaN(localStandoutBgOpacityOpenHover) ? 90 : localStandoutBgOpacityOpenHover,
+            mathBlockPaddingY: isNaN(localMathBlockPaddingY) ? 4 : localMathBlockPaddingY,
             mathHighlightColor: localMathHighlightColor.trim() || '#d19a66',
             mathColors: { ...localMathColors } as any
         });
@@ -450,6 +454,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 className="w-full max-w-xs bg-base border border-outline rounded px-3 py-2 text-sm font-mono text-primary focus:outline-none focus:border-accent"
                                             />
                                             <span className="text-xs text-secondary ml-2">Use 'meta' for Cmd (Mac) / Win key. Use 'ctrl' for Control. Format: modifier+key.</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="flex flex-col gap-2 mt-4">
+                                        <label className="text-sm font-medium text-primary">Math Block Vertical Padding (px)</label>
+                                        <div className="flex gap-2 items-center">
+                                            <input
+                                                type="number"
+                                                value={localMathBlockPaddingY}
+                                                onChange={(e) => setLocalMathBlockPaddingY(Number(e.target.value))}
+                                                min="0"
+                                                step="1"
+                                                className="w-full max-w-xs bg-base border border-outline rounded px-3 py-2 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                            />
+                                            <span className="text-xs text-secondary ml-2">Padding above and below block math equations.</span>
                                         </div>
                                     </div>
                                 </div>

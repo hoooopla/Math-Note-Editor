@@ -19,7 +19,8 @@ export function SidebarTree({
     onNodeHover?: (id: string | null) => void;
 }) {
     const blocks = useStore(state => state.blocks);
-    const { openBlockInTab, activeTab } = useStore();
+        const openBlockInTab = useStore(state => state.openBlockInTab);
+    const activeTab = useStore(state => state.activeTab);
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
     const tree = useMemo(() => {

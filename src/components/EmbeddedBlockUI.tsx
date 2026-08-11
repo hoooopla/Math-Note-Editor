@@ -24,7 +24,11 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     let displayStyle: "standout" | "inline" = "inline";
     let ifToggled: "open" | "closed" = "closed";
     
-    const { activePath, focusDirection, activeFocusPos, loadBlockContent, settings } = useStore();
+        const activePath = useStore(state => state.activePath);
+    const focusDirection = useStore(state => state.focusDirection);
+    const activeFocusPos = useStore(state => state.activeFocusPos);
+    const loadBlockContent = useStore(state => state.loadBlockContent);
+    const settings = useStore(state => state.settings);
 
     let rawText = text;
     if (rawText.startsWith("@")) {
