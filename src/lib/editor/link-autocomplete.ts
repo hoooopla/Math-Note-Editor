@@ -60,7 +60,9 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
                     changes: { from: applyFrom, to: applyTo, insert: applyText },
                     annotations: Transaction.userEvent.of("input.complete")
                 });
-                const newTitle = fullQueryLabel.includes("/") ? fullQueryLabel.slice(fullQueryLabel.lastIndexOf("/") + 1) : fullQueryLabel;
+                const strippedQuery = fullQueryLabel.replace(/\$\$[\s\S]*?\$\$|\$[\s\S]*?\$/g, match => ' '.repeat(match.length));
+                const slashIdx = strippedQuery.lastIndexOf("/");
+                const newTitle = slashIdx !== -1 ? fullQueryLabel.slice(slashIdx + 1) : fullQueryLabel;
                 store.addBlock(undefined, { title: newTitle, label: fullQueryLabel });
             }
         });

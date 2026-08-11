@@ -25,8 +25,7 @@ body {
   font-family: var(--font-sans);
   font-size: 18px;
   display: block;
-  margin: -4px 0;
-  padding: 4px 0;
+  padding: var(--math-block-padding-y, 4px) 0;
   text-align: center;
   color: #fff;
 }

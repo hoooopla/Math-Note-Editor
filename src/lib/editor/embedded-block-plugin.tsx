@@ -227,7 +227,7 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
             decos.push({
                 from: link.from,
                 to: link.to,
-                deco: Decoration.mark({ class: "bg-accent/20 rounded px-1 text-accent" })
+                deco: Decoration.mark({ class: "bg-accent/20 rounded px-1 text-accent", inclusive: true })
             });
         } else {
             const line = state.doc.lineAt(link.to);

@@ -1,3 +1,0 @@
-            setLocalInlineBlockColorFilled(settings.inlineBlockTitleColorWithContent || '#a8b5c2');
-            setLocalInlineBlockColorEmpty(settings.inlineBlockTitleColorEmpty || '#FF997D');
-            setLocalInlineBlockIndentWidth(settings.inlineBlockIndentWidth ?? 16);

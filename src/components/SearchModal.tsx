@@ -5,7 +5,12 @@ import { MathTitle } from './MathTitle';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
-    const { blocks, addBlock, setOpenTabs, openTabs, setActiveTab, settings } = useStore();
+        const blocks = useStore(state => state.blocks);
+    const addBlock = useStore(state => state.addBlock);
+    const setOpenTabs = useStore(state => state.setOpenTabs);
+    const openTabs = useStore(state => state.openTabs);
+    const setActiveTab = useStore(state => state.setActiveTab);
+    const settings = useStore(state => state.settings);
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);

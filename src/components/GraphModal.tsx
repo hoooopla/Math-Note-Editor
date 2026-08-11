@@ -6,7 +6,8 @@ import { SidebarTree } from './LabelTree';
 import { splitPath } from '../lib/utils/path';
 
 export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
-    const { blocks, openBlockInTab } = useStore();
+        const blocks = useStore(state => state.blocks);
+    const openBlockInTab = useStore(state => state.openBlockInTab);
     const containerRef = useRef<HTMLDivElement>(null);
     const fgRef = useRef<any>(null);
     const [dimensions, setDimensions] = React.useState({ width: 800, height: 600 });

@@ -185,7 +185,7 @@ export const useStore = create<AppState>((set, get) => ({
         set({ settings: data });
       }
     } catch (e) {
-      console.error("Failed to load settings", e);
+      console.warn("Failed to load settings", e);
     }
   },
   saveSettings: async (settings) => {
@@ -193,7 +193,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({ settings });
       await backendApi.saveSettings(settings);
     } catch (e) {
-      console.error("Failed to save settings", e);
+      console.warn("Failed to save settings", e);
     }
   },
   loadBlocks: async () => {
@@ -201,7 +201,7 @@ export const useStore = create<AppState>((set, get) => ({
       const blocks = await backendApi.loadBlocks();
       set({ blocks });
     } catch (e) {
-      console.error("Failed to load blocks", e);
+      console.warn("Failed to load blocks", e);
     }
   },
   loadBlockContent: async (id: string) => {
@@ -215,7 +215,7 @@ export const useStore = create<AppState>((set, get) => ({
         blocks: state.blocks.map(b => b.id === id ? { ...b, content: fullBlock.content } : b)
       }));
     } catch (e) {
-      console.error("Failed to load block content", e);
+      console.warn("Failed to load block content", e);
     }
   },
   addBlock: async (index, data) => {
@@ -247,7 +247,7 @@ export const useStore = create<AppState>((set, get) => ({
       });
       return newBlock;
     } catch (e) {
-      console.error("Failed to add block", e);
+      console.warn("Failed to add block", e);
     }
   },
   updateBlock: (id, data) => {
@@ -287,7 +287,7 @@ export const useStore = create<AppState>((set, get) => ({
             });
         }
       } catch (e) {
-          console.error(e);
+          console.warn(e);
       }
     }, 500);
   },
@@ -309,7 +309,7 @@ export const useStore = create<AppState>((set, get) => ({
         return { blocks: newBlocks, activeBlockId: nextActive, focusDirection: "end" };
       });
     } catch (e) {
-      console.error("Failed to delete block", e);
+      console.warn("Failed to delete block", e);
     }
   },
   setActiveBlock: (id, dir, path, pos) => set({ activeBlockId: id, focusDirection: dir || null, activePath: path || null, activeFocusPos: pos ?? null }),

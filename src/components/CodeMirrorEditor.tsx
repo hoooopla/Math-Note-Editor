@@ -4,10 +4,10 @@ import { EditorView, keymap, drawSelection, dropCursor } from "@codemirror/view"
 import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import { mathMarkdownExtension } from "../lib/editor/math-markdown-extension";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { history, defaultKeymap, historyKeymap } from "@codemirror/commands";
+import { history, defaultKeymap, historyKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField } from "../lib/editor/katex-plugin";
 import { blockNavigation } from "../lib/editor/navigation";
-import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, completionStatus } from "@codemirror/autocomplete";
+import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, completionStatus, closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { textCompletion } from "../lib/editor/text-autocomplete";
@@ -101,8 +101,74 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 }
             },
             {
+                key: "ArrowUp",
+                run: (view) => {
+                    const selection = view.state.selection.main;
+                    if (!selection.empty) return false;
+                    
+                    const ranges = view.state.field(parsedRangesField, false);
+                    if (!ranges) return false;
+                    
+                    const currentLine = view.state.doc.lineAt(selection.from);
+                    if (currentLine.number <= 1) return false;
+                    
+                    const prevLine = view.state.doc.line(currentLine.number - 1);
+                    const blockMathAbove = ranges.find(r => r.type === "blockMath" && r.from <= prevLine.to && r.to >= prevLine.from);
+                    
+                    if (blockMathAbove && selection.from > blockMathAbove.to) {
+                        view.dispatch({
+                            selection: { anchor: blockMathAbove.to },
+                            effects: setEditorFocus.of(true)
+                        });
+                        return true;
+                    }
+                    return false;
+                }
+            },
+            {
+                key: "ArrowDown",
+                run: (view) => {
+                    const selection = view.state.selection.main;
+                    if (!selection.empty) return false;
+                    
+                    const ranges = view.state.field(parsedRangesField, false);
+                    if (!ranges) return false;
+                    
+                    const currentLine = view.state.doc.lineAt(selection.from);
+                    if (currentLine.number >= view.state.doc.lines) return false;
+                    
+                    const nextLine = view.state.doc.line(currentLine.number + 1);
+                    const blockMathBelow = ranges.find(r => r.type === "blockMath" && r.from <= nextLine.to && r.to >= nextLine.from);
+                    
+                    if (blockMathBelow && selection.from < blockMathBelow.from) {
+                        view.dispatch({
+                            selection: { anchor: blockMathBelow.from },
+                            effects: setEditorFocus.of(true)
+                        });
+                        return true;
+                    }
+                    return false;
+                }
+            },
+            {
                 key: "Enter",
                 run: insertNewlineContinueMarkup
+            },
+            {
+                key: "Mod-ArrowLeft",
+                run: cursorLineStart
+            },
+            {
+                key: "Mod-ArrowRight",
+                run: cursorLineEnd
+            },
+            {
+                key: "Shift-Mod-ArrowLeft",
+                run: selectLineStart
+            },
+            {
+                key: "Shift-Mod-ArrowRight",
+                run: selectLineEnd
             }
         ]);
 
@@ -286,9 +352,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                                     selection: { anchor: replaceFrom + parentLabel.length }
                                 });
                                 // also close autocomplete if open
-                                import("@codemirror/autocomplete").then(({ closeCompletion }) => {
-                                    closeCompletion(view);
-                                });
+                                closeCompletion(view);
                                 return true;
                             }
                         }
@@ -349,7 +413,8 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                     },
                     focus: (e, view) => {
                         const targetEl = e.target as HTMLElement;
-                        if (targetEl && targetEl.closest && targetEl.closest(".cm-embedded-block-wrapper")) {
+                        const wrapper = targetEl && targetEl.closest ? targetEl.closest(".cm-embedded-block-wrapper") : null;
+                        if (wrapper && !wrapper.contains(view.dom)) {
                             return false;
                         }
 
@@ -389,21 +454,6 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                     if (update.docChanged && onChangeRef.current && userEvent) {
                         onChangeRef.current(update.state.doc.toString());
                         
-                        // the menu should pop up when editing (including deleting text)
-                        // specifically exclude "input.complete" since we don't want it popping back up right after selection!
-                        if (userEvent === "input.type" || userEvent?.startsWith("delete") || userEvent === "input.paste") {
-                            const head = update.state.selection.main.head;
-                            const match = update.state.doc.slice(Math.max(0, head - 100), head).toString().match(/\[\[[^\]]*$/);
-                            if (match) {
-                                setTimeout(() => {
-                                    import("@codemirror/autocomplete").then(({ startCompletion }) => {
-                                        if (update.view && update.view.dom?.isConnected && update.view.hasFocus) {
-                                            startCompletion(update.view);
-                                        }
-                                    });
-                                }, 10);
-                            }
-                        }
                     }
                     // Sync only when focus is lost to prevent React from re-rendering the app rapidly
                     if (update.focusChanged && !update.view.hasFocus) {

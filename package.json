@@ -28,6 +28,7 @@
     "codemirror": "^6.0.2",
     "codemirror-lang-latex": "^0.4.1",
     "dotenv": "^17.2.3",
+    "esbuild": "^0.28.1",
     "express": "^4.21.2",
     "gray-matter": "^4.0.3",
     "katex": "^0.16.45",
