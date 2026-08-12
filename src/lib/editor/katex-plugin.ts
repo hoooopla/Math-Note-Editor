@@ -593,19 +593,24 @@ function alignUnderlinesInView(view: EditorView) {
     uGroupMap.forEach((els) => {
         if (els.length === 0) return;
 
+        // Keep leaf elements (if a parent and child both match, keep child to avoid double padding)
+        const targetEls = els.filter(el => !els.some(other => other !== el && el.contains(other)));
+
         // Reset paddingBottom to 0 to measure natural layout rects
-        els.forEach(el => {
+        targetEls.forEach(el => {
             el.style.paddingBottom = '0px';
         });
 
         // Subdivide into line groups for elements on the same line
         const lineGroups: HTMLElement[][] = [];
-        els.forEach(el => {
+        targetEls.forEach(el => {
             const rect = el.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) return;
+
             let added = false;
             for (const lineGroup of lineGroups) {
                 const sampleRect = lineGroup[0].getBoundingClientRect();
-                if (Math.abs(rect.top - sampleRect.top) < 8) {
+                if (Math.abs(rect.top - sampleRect.top) < 12) {
                     lineGroup.push(el);
                     added = true;
                     break;
@@ -628,7 +633,7 @@ function alignUnderlinesInView(view: EditorView) {
 
             lineGroup.forEach((el, i) => {
                 const diff = maxBottom - rects[i].bottom;
-                if (diff > 0.2) {
+                if (diff > 0.1) {
                     el.style.paddingBottom = `${diff.toFixed(2)}px`;
                 } else {
                     el.style.paddingBottom = '0px';
@@ -657,7 +662,7 @@ export const underlineAlignPlugin = ViewPlugin.fromClass(
         }
 
         update(update: ViewUpdate) {
-            if (update.docChanged || update.viewportChanged || update.geometryChanged) {
+            if (update.docChanged || update.viewportChanged || update.geometryChanged || update.selectionSet || update.focusChanged) {
                 this.scheduleAlign();
             }
         }
