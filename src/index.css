@@ -39,8 +39,7 @@ body {
   border-bottom: 1.5px solid currentColor;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
-  display: inline-block;
-  vertical-align: baseline;
+  display: inline;
   text-decoration: none !important;
 }
 
