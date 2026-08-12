@@ -1,4 +1,4 @@
-import { Decoration, DecorationSet, EditorView, WidgetType, showTooltip, Tooltip } from "@codemirror/view";
+import { Decoration, DecorationSet, EditorView, WidgetType, showTooltip, Tooltip, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { RangeSetBuilder, StateField, EditorState, Facet, StateEffect } from "@codemirror/state";
 import katex from "katex";
 import "katex/dist/katex.min.css"; 
@@ -72,29 +72,59 @@ function parseRanges(doc: string): ParsedRange[] {
         i++;
     }
 
+    // Mask math ranges so math internal syntax (like * or _) does not break formatting regexes
+    let maskedDoc = doc;
+    for (const r of ranges) {
+        if (r.type === "blockMath" || r.type === "inlineMath") {
+            const len = r.to - r.from;
+            maskedDoc = maskedDoc.slice(0, r.from) + "a".repeat(len) + maskedDoc.slice(r.to);
+        }
+    }
+
+    function isInvalidOverlap(start: number, end: number, r: ParsedRange): boolean {
+        const hasIntersection = Math.max(start, r.from) < Math.min(end, r.to);
+        if (!hasIntersection) return false;
+
+        // Cannot intersect blockMath
+        if (r.type === "blockMath") return true;
+
+        // If r is fully contained within [start, end] (e.g. formatting enclosing math or inner formatting)
+        if (start <= r.from && r.to <= end) {
+            if (start === r.from && end === r.to && r.type !== "inlineMath") return true;
+            return false;
+        }
+
+        // If [start, end] is fully contained within r (e.g. inner formatting inside outer formatting)
+        if (r.type !== "inlineMath" && r.from <= start && end <= r.to) {
+            return false;
+        }
+
+        return true;
+    }
+
     const boldRegex = /\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*/g;
     let match;
-    while ((match = boldRegex.exec(doc)) !== null) {
+    while ((match = boldRegex.exec(maskedDoc)) !== null) {
         const start = match.index;
         const end = match.index + match[0].length;
-        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
-        if (!overlapping) {
+        const invalid = ranges.some(r => isInvalidOverlap(start, end, r));
+        if (!invalid) {
             ranges.push({
                 from: start,
                 to: end,
-                text: match[1],
+                text: doc.slice(start + 2, end - 2),
                 type: "bold"
             });
         }
     }
 
     const italicRegex = /(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)/g;
-    while ((match = italicRegex.exec(doc)) !== null) {
+    while ((match = italicRegex.exec(maskedDoc)) !== null) {
         const start = match.index;
         const end = match.index + match[0].length;
-        const text = match[1];
-        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
-        if (!overlapping) {
+        const text = doc.slice(start + 1, end - 1);
+        const invalid = ranges.some(r => isInvalidOverlap(start, end, r));
+        if (!invalid) {
             ranges.push({
                 from: start,
                 to: end,
@@ -105,12 +135,12 @@ function parseRanges(doc: string): ParsedRange[] {
     }
 
     const underlineRegex = /(?<!_)_(?!\s)([^_\n]+?)(?<!\s)_(?!_)/g;
-    while ((match = underlineRegex.exec(doc)) !== null) {
+    while ((match = underlineRegex.exec(maskedDoc)) !== null) {
         const start = match.index;
         const end = match.index + match[0].length;
-        const text = match[1];
-        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
-        if (!overlapping) {
+        const text = doc.slice(start + 1, end - 1);
+        const invalid = ranges.some(r => isInvalidOverlap(start, end, r));
+        if (!invalid) {
             ranges.push({
                 from: start,
                 to: end,
@@ -121,11 +151,11 @@ function parseRanges(doc: string): ParsedRange[] {
     }
 
     const listRegex = /^[ \t]*(\*)(?=\s)/gm;
-    while ((match = listRegex.exec(doc)) !== null) {
+    while ((match = listRegex.exec(maskedDoc)) !== null) {
         const start = match.index + match[0].length - 1;
         const end = start + 1;
-        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
-        if (!overlapping) {
+        const invalid = ranges.some(r => isInvalidOverlap(start, end, r));
+        if (!invalid) {
             ranges.push({
                 from: start,
                 to: end,
@@ -136,22 +166,22 @@ function parseRanges(doc: string): ParsedRange[] {
     }
 
     const quoteRegex = /^[ \t]*(> )(.*)$/gm;
-    while ((match = quoteRegex.exec(doc)) !== null) {
+    while ((match = quoteRegex.exec(maskedDoc)) !== null) {
         const start = match.index + match[0].indexOf('> ');
         const end = match.index + match[0].length;
         // Only check if the "> " itself overlaps with something, not the whole line
-        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(start + 2, r.to));
-        if (!overlapping) {
+        const invalid = ranges.some(r => Math.max(start, r.from) < Math.min(start + 2, r.to));
+        if (!invalid) {
             ranges.push({
                 from: start,
                 to: end,
-                text: match[0].substring(match[0].indexOf('> ')),
+                text: doc.substring(start + 2),
                 type: "quote"
             });
         }
     }
 
-    ranges.sort((a, b) => a.from - b.from);
+    ranges.sort((a, b) => a.from - b.from || b.to - a.to);
     return ranges;
 }
 
@@ -166,19 +196,42 @@ export const parsedRangesField = StateField.define<ParsedRange[]>({
 });
 
 class MathWidget extends WidgetType {
-    constructor(public text: string, public isBlock: boolean, public macros: Record<string, string>) {
+    constructor(
+        public text: string, 
+        public isBlock: boolean, 
+        public macros: Record<string, string>,
+        public isBold: boolean = false,
+        public isItalic: boolean = false,
+        public isUnderline: boolean = false,
+        public underlineGroupId?: string
+    ) {
         super();
     }
 
     eq(other: MathWidget) {
         return this.text === other.text && 
                this.isBlock === other.isBlock && 
+               this.isBold === other.isBold &&
+               this.isItalic === other.isItalic &&
+               this.isUnderline === other.isUnderline &&
+               this.underlineGroupId === other.underlineGroupId &&
                JSON.stringify(this.macros) === JSON.stringify(other.macros);
     }
 
     toDOM(view: EditorView) {
         const span = document.createElement(this.isBlock ? "div" : "span");
-        const baseClass = this.isBlock ? "cm-math-block text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all" : "cm-math-inline";
+        let baseClass = this.isBlock ? "cm-math-block text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all" : "cm-math-inline";
+        
+        if (!this.isBlock) {
+            if (this.isBold) baseClass += " font-bold";
+            if (this.isItalic) baseClass += " italic";
+            if (this.isUnderline) baseClass += " cm-underline-element";
+        }
+
+        if (this.underlineGroupId) {
+            span.setAttribute("data-u-group", this.underlineGroupId);
+        }
+
         span.className = baseClass;
         span.style.cursor = "text";
 
@@ -276,8 +329,12 @@ function buildLiveDecorations(state: EditorState) {
         
         if (overlapping) {
             let editClass = "cm-math-editing";
-            if (r.type === "bold" || r.type === "italic" || r.type === "underline") {
-                editClass = "bg-neutral-800/80 text-blue-300 rounded px-1 cm-inclusive";
+            if (r.type === "bold") {
+                editClass = "bg-neutral-800/80 text-blue-300 font-bold rounded px-1 cm-inclusive";
+            } else if (r.type === "italic") {
+                editClass = "bg-neutral-800/80 text-blue-300 italic rounded px-1 cm-inclusive";
+            } else if (r.type === "underline") {
+                editClass = "bg-neutral-800/80 text-blue-300 underline underline-offset-2 rounded px-1 cm-inclusive";
             } else if (r.type === "list") {
                 editClass = "text-blue-400 font-bold";
             } else if (r.type === "quote") {
@@ -372,8 +429,16 @@ function buildLiveDecorations(state: EditorState) {
                 decos.push({from: r.from + 1, to: r.to - 1, deco: Decoration.mark({ class: "italic text-primary" })});
                 decos.push({from: r.to - 1, to: r.to, deco: Decoration.replace({})});
             } else if (r.type === "underline") {
+                const groupId = `u-${r.from}-${r.to}`;
                 decos.push({from: r.from, to: r.from + 1, deco: Decoration.replace({})});
-                decos.push({from: r.from + 1, to: r.to - 1, deco: Decoration.mark({ class: "underline underline-offset-2 text-primary not-italic" })});
+                decos.push({
+                    from: r.from + 1, 
+                    to: r.to - 1, 
+                    deco: Decoration.mark({ 
+                        class: "cm-underline-element text-primary not-italic",
+                        attributes: { "data-u-group": groupId }
+                    })
+                });
                 decos.push({from: r.to - 1, to: r.to, deco: Decoration.replace({})});
             } else if (r.type === "list") {
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
@@ -389,8 +454,26 @@ function buildLiveDecorations(state: EditorState) {
                 decos.push({ from: r.from, to: r.from + 1, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
                 decos.push({ from: r.to - 1, to: r.to, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
             } else {
+                let isBold = false;
+                let isItalic = false;
+                let isUnderline = false;
+                let underlineGroupId: string | undefined = undefined;
+
+                if (r.type === "inlineMath") {
+                    for (const parent of ranges) {
+                        if (parent.from <= r.from && parent.to >= r.to) {
+                            if (parent.type === "bold") isBold = true;
+                            if (parent.type === "italic") isItalic = true;
+                            if (parent.type === "underline") {
+                                isUnderline = true;
+                                underlineGroupId = `u-${parent.from}-${parent.to}`;
+                            }
+                        }
+                    }
+                }
+
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
-                    widget: new MathWidget(r.text, r.type === "blockMath", macros),
+                    widget: new MathWidget(r.text, r.type === "blockMath", macros, isBold, isItalic, isUnderline, underlineGroupId),
                     block: r.type === "blockMath"
                 })});
             }
@@ -491,5 +574,106 @@ export const mathTooltipField = showTooltip.compute(
     ["doc", "selection", editorFocusField, parsedRangesField],
     (state) => {
         return getMathTooltip(state);
+    }
+);
+
+function alignUnderlinesInView(view: EditorView) {
+    const allGroupEls = view.dom.querySelectorAll<HTMLElement>('[data-u-group]');
+    if (allGroupEls.length === 0) return;
+
+    const uGroupMap = new Map<string, HTMLElement[]>();
+    allGroupEls.forEach(el => {
+        const gid = el.getAttribute('data-u-group');
+        if (gid) {
+            if (!uGroupMap.has(gid)) uGroupMap.set(gid, []);
+            uGroupMap.get(gid)!.push(el);
+        }
+    });
+
+    uGroupMap.forEach((els) => {
+        if (els.length === 0) return;
+
+        // Reset paddingBottom to 0 to measure natural layout rects
+        els.forEach(el => {
+            el.style.paddingBottom = '0px';
+        });
+
+        // Subdivide into line groups for elements on the same line
+        const lineGroups: HTMLElement[][] = [];
+        els.forEach(el => {
+            const rect = el.getBoundingClientRect();
+            let added = false;
+            for (const lineGroup of lineGroups) {
+                const sampleRect = lineGroup[0].getBoundingClientRect();
+                if (Math.abs(rect.top - sampleRect.top) < 8) {
+                    lineGroup.push(el);
+                    added = true;
+                    break;
+                }
+            }
+            if (!added) {
+                lineGroups.push([el]);
+            }
+        });
+
+        for (const lineGroup of lineGroups) {
+            let maxBottom = -Infinity;
+            const rects = lineGroup.map(el => {
+                const rect = el.getBoundingClientRect();
+                if (rect.bottom > maxBottom) {
+                    maxBottom = rect.bottom;
+                }
+                return rect;
+            });
+
+            lineGroup.forEach((el, i) => {
+                const diff = maxBottom - rects[i].bottom;
+                if (diff > 0.2) {
+                    el.style.paddingBottom = `${diff.toFixed(2)}px`;
+                } else {
+                    el.style.paddingBottom = '0px';
+                }
+            });
+        }
+    });
+}
+
+export const underlineAlignPlugin = ViewPlugin.fromClass(
+    class {
+        private observer: MutationObserver | null = null;
+        private resizeObserver: ResizeObserver | null = null;
+        private rafId: number | null = null;
+
+        constructor(public view: EditorView) {
+            this.scheduleAlign();
+            if (typeof MutationObserver !== "undefined") {
+                this.observer = new MutationObserver(() => this.scheduleAlign());
+                this.observer.observe(view.dom, { childList: true, subtree: true, characterData: true });
+            }
+            if (typeof ResizeObserver !== "undefined") {
+                this.resizeObserver = new ResizeObserver(() => this.scheduleAlign());
+                this.resizeObserver.observe(view.dom);
+            }
+        }
+
+        update(update: ViewUpdate) {
+            if (update.docChanged || update.viewportChanged || update.geometryChanged) {
+                this.scheduleAlign();
+            }
+        }
+
+        scheduleAlign() {
+            if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+            this.rafId = requestAnimationFrame(() => {
+                this.rafId = null;
+                alignUnderlinesInView(this.view);
+            });
+        }
+
+        destroy() {
+            if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+            this.observer?.disconnect();
+            this.resizeObserver?.disconnect();
+        }
     }
 );

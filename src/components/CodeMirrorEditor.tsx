@@ -5,7 +5,7 @@ import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown
 import { mathMarkdownExtension } from "../lib/editor/math-markdown-extension";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { history, defaultKeymap, historyKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
-import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField } from "../lib/editor/katex-plugin";
+import { mathPlugin, underlineAlignPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField } from "../lib/editor/katex-plugin";
 import { blockNavigation } from "../lib/editor/navigation";
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, completionStatus, closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
@@ -327,6 +327,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 parsedRangesField,
                 mathTooltipField,
                 mathPlugin,
+                underlineAlignPlugin,
                 parsedLinksField,
                 embeddedBlockPlugin,
                 embedTooltipField,
