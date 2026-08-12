@@ -124,13 +124,27 @@ export const useStore = create<AppState>((set, get) => ({
   getAssetUrl: async (path: string) => {
     const { backendMode, viewerAssets } = get();
     if (backendMode === "viewer" || backendMode === "none") {
-      // Normalize path (remove leading slash if present for lookup)
-      const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
+      let decodedPath = path;
+      try {
+        decodedPath = decodeURIComponent(path);
+      } catch(e) {}
+      
+      // Normalize path (remove leading slash or ./ if present for lookup)
+      let normalizedPath = decodedPath;
+      if (normalizedPath.startsWith('./')) normalizedPath = normalizedPath.slice(2);
+      if (normalizedPath.startsWith('/')) normalizedPath = normalizedPath.slice(1);
+      
       if (viewerAssets[normalizedPath]) {
         return viewerAssets[normalizedPath];
       }
-      if (viewerAssets[path]) {
-        return viewerAssets[path];
+      if (viewerAssets[decodedPath]) {
+        return viewerAssets[decodedPath];
+      }
+      // Fallback matching by just filename
+      const filename = decodedPath.split('/').pop();
+      if (filename) {
+        const foundKey = Object.keys(viewerAssets).find(k => k.endsWith('/' + filename) || k === filename);
+        if (foundKey) return viewerAssets[foundKey];
       }
     }
     return await backendApi.getAssetUrl(path);
@@ -150,6 +164,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({ isLoadingFiles: true });
     const newBlocks: BlockData[] = [];
     let loadedSettings: any = null;
+    let tempViewerAssets: Record<string, string> = {};
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (file.name.endsWith('.md')) {
@@ -179,19 +194,12 @@ export const useStore = create<AppState>((set, get) => ({
           finalPath = `assets/${file.name}`;
         }
         
-        // We add this to our store state at the end
-        if (!loadedSettings) loadedSettings = { _tempViewerAssets: {} };
-        if (!loadedSettings._tempViewerAssets) loadedSettings._tempViewerAssets = {};
-        loadedSettings._tempViewerAssets[finalPath] = URL.createObjectURL(file);
+        tempViewerAssets[finalPath] = URL.createObjectURL(file);
       }
     }
     
     set((state) => {
-      const newViewerAssets = { ...state.viewerAssets };
-      if (loadedSettings && loadedSettings._tempViewerAssets) {
-        Object.assign(newViewerAssets, loadedSettings._tempViewerAssets);
-        delete loadedSettings._tempViewerAssets;
-      }
+      const newViewerAssets = { ...state.viewerAssets, ...tempViewerAssets };
       return { 
         blocks: newBlocks, 
         backendMode: 'viewer', 
