@@ -43,6 +43,7 @@ interface AppState {
   saveAsset: (file: File, filename: string) => Promise<string>;
   listAssets: () => Promise<string[]>;
   getAssetUrl: (path: string) => Promise<string>;
+  viewerAssets: Record<string, string>;
   viewOnlyBlocks: Record<string, boolean>;
   toggleViewOnly: (id: string) => void;
   imageUploadParams: { file: File, onInsert: (text: string) => void } | null;
@@ -68,6 +69,7 @@ export const useStore = create<AppState>((set, get) => ({
   openTabs: savedTabs,
   activeTab: savedActiveTab,
   backendMode: "none",
+  viewerAssets: {},
   viewOnlyBlocks: {},
   toggleViewOnly: (id) => set(state => {
     const current = state.viewOnlyBlocks[id] ?? (state.backendMode === "viewer");
@@ -120,6 +122,17 @@ export const useStore = create<AppState>((set, get) => ({
     return await backendApi.listAssets();
   },
   getAssetUrl: async (path: string) => {
+    const { backendMode, viewerAssets } = get();
+    if (backendMode === "viewer" || backendMode === "none") {
+      // Normalize path (remove leading slash if present for lookup)
+      const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
+      if (viewerAssets[normalizedPath]) {
+        return viewerAssets[normalizedPath];
+      }
+      if (viewerAssets[path]) {
+        return viewerAssets[path];
+      }
+    }
     return await backendApi.getAssetUrl(path);
   },
   initBackend: async () => {
@@ -155,12 +168,39 @@ export const useStore = create<AppState>((set, get) => ({
         try {
           loadedSettings = JSON.parse(await file.text());
         } catch (e) {}
+      } else if (file.type.startsWith('image/') || file.name.match(/\.(png|jpe?g|gif|svg|webp)$/i)) {
+        const path = file.webkitRelativePath || file.name;
+        // Try to construct a useful path like "assets/filename.png"
+        const assetsIndex = path.indexOf('assets/');
+        let finalPath = path;
+        if (assetsIndex !== -1) {
+          finalPath = path.substring(assetsIndex);
+        } else if (!path.startsWith('assets/')) {
+          finalPath = `assets/${file.name}`;
+        }
+        
+        // We add this to our store state at the end
+        if (!loadedSettings) loadedSettings = { _tempViewerAssets: {} };
+        if (!loadedSettings._tempViewerAssets) loadedSettings._tempViewerAssets = {};
+        loadedSettings._tempViewerAssets[finalPath] = URL.createObjectURL(file);
       }
     }
     
-    set({ blocks: newBlocks, backendMode: 'viewer', isLoaded: true });
+    set((state) => {
+      const newViewerAssets = { ...state.viewerAssets };
+      if (loadedSettings && loadedSettings._tempViewerAssets) {
+        Object.assign(newViewerAssets, loadedSettings._tempViewerAssets);
+        delete loadedSettings._tempViewerAssets;
+      }
+      return { 
+        blocks: newBlocks, 
+        backendMode: 'viewer', 
+        isLoaded: true,
+        viewerAssets: newViewerAssets
+      };
+    });
     
-    if (loadedSettings) {
+    if (loadedSettings && Object.keys(loadedSettings).length > 0) {
       set(state => ({ settings: { ...state.settings, ...loadedSettings } }));
     }
     
