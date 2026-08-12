@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import type { PointerEvent } from "react";
 import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { Trash2, FileText, Check, X } from "lucide-react";
+import { Trash2, FileText, Check, X, Lock, Unlock } from "lucide-react";
 import { MathTitle } from "./MathTitle";
 
 export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, index }) => {
@@ -65,7 +65,9 @@ interface BlockProps {
 }
 
 export function Block({ block, blocks, isFocused, focusDirection, macros, setActive, onUp, onDown, updateBlock, deleteBlock }: BlockProps) {
+    const isViewOnlyState = useStore(state => state.viewOnlyBlocks[block.id]);
     const backendMode = useStore(state => state.backendMode);
+    const isViewOnly = isViewOnlyState ?? (backendMode === "viewer");
     const setImageUploadParams = useStore(state => state.setImageUploadParams);
     const [isEditingMeta, setIsEditingMeta] = useState(false);
     const [titleInput, setTitleInput] = useState(block.title);
@@ -188,18 +190,27 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                     )}
                 </div>
                 
-                {isFocused && backendMode !== "viewer" && (
+                {isFocused && (
                     <div className="flex items-center gap-2">
-                        <a 
-                            href={`/api/blocks/${block.id}/raw`} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
+                        {backendMode === "server" && (
+                            <a 
+                                href={`/api/blocks/${block.id}/raw`} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-secondary hover:text-accent transition-colors opacity-0 group-hover:opacity-100 flex items-center"
+                                title="View Raw Markdown"
+                                onClick={e => e.stopPropagation()}
+                            >
+                                <FileText size={16} />
+                            </a>
+                        )}
+                        <button
+                            onClick={(e) => { e.stopPropagation(); useStore.getState().toggleViewOnly(block.id); }}
                             className="text-secondary hover:text-accent transition-colors opacity-0 group-hover:opacity-100 flex items-center"
-                            title="View Raw Markdown"
-                            onClick={e => e.stopPropagation()}
+                            title={isViewOnly ? "Unlock for editing" : "Lock for view-only"}
                         >
-                            <FileText size={16} />
-                        </a>
+                            {isViewOnly ? <Lock size={16} /> : <Unlock size={16} />}
+                        </button>
                         {isConfirmingDelete ? (
                             <div className="flex items-center gap-1 opacity-100 bg-red-500/10 text-red-500 rounded px-2 py-0.5" onClick={e => e.stopPropagation()}>
                                 <span className="text-xs font-sans mr-1">Delete?</span>
@@ -227,7 +238,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                     onUp={onUp} 
                     onDown={onDown} 
                     isFocused={isFocused && !isEditingMeta}
-                    isReadOnly={backendMode === "viewer"} 
+                    isReadOnly={isViewOnly} 
                     macros={macros}
                     focusDirection={focusDirection}
                     onFocus={handleFocus}

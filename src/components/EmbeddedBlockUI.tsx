@@ -58,6 +58,14 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     const blocks = useStore(state => state.blocks);
     const targetBlock = blocks.find(b => b.label === fullLabel);
     const isLabelExisted = !!targetBlock;
+    
+    const backendMode = useStore(state => state.backendMode);
+    const rootBlock = blocks.find(b => b.label === visitedLabels[0]);
+    const viewOnlyBlocks = useStore(state => state.viewOnlyBlocks);
+    
+    const targetViewOnly = targetBlock ? (viewOnlyBlocks[targetBlock.id] ?? (backendMode === "viewer")) : false;
+    const rootViewOnly = rootBlock ? (viewOnlyBlocks[rootBlock.id] ?? (backendMode === "viewer")) : false;
+    const isReadOnly = targetViewOnly || rootViewOnly || !!view?.state.readOnly;
 
     useEffect(() => {
         if (targetBlock && targetBlock.content === undefined && ifToggled === "open") {
@@ -296,6 +304,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                      }}
                 >
                     <CodeMirrorEditor 
+                        isReadOnly={isReadOnly}
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
                         onBlur={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
@@ -343,6 +352,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                      style={{ paddingLeft: `${indentWidth}px` }}
                      onClick={e => e.stopPropagation()}>
                     <CodeMirrorEditor 
+                        isReadOnly={isReadOnly}
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
                         onBlur={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
