@@ -40,7 +40,7 @@ export interface CodeMirrorEditorProps {
     onImagePaste?: (file: File, insertContent: (text: string) => void) => void;
 }
 
-export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, onFocus, parentLabel, visitedLabels, onEsc, onImagePaste }: CodeMirrorEditorProps) {
+export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, onFocus, parentLabel, visitedLabels, onEsc, onImagePaste }: CodeMirrorEditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const isProgrammaticFocusRef = useRef(false);
@@ -85,6 +85,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
     const parentLabelCompartmentRef = useRef(new Compartment());
     const visitedLabelsCompartmentRef = useRef(new Compartment());
     const macrosCompartmentRef = useRef(new Compartment());
+    const readOnlyCompartmentRef = useRef(new Compartment());
 
     useEffect(() => {
         if (!containerRef.current) return;
@@ -247,8 +248,8 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 EditorView.lineWrapping,
                 history(),
                 customKeymap,
-                Prec.highest(blockquoteKeymap),
                 Prec.highest(keymap.of(embedKeymap)),
+                Prec.highest(blockquoteKeymap),
                 keymap.of([{
                     key: "[",
                     run: (view) => {
@@ -318,6 +319,10 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
                 parentLabelCompartmentRef.current.of(parentLabelFacet.of(parentLabelRef.current || "")),
                 visitedLabelsCompartmentRef.current.of(visitedLabelsFacet.of(visitedLabelsRef.current || [])),
+                readOnlyCompartmentRef.current.of([
+                    EditorState.readOnly.of(!!isReadOnly),
+                    EditorView.editable.of(!isReadOnly)
+                ]),
                 editorFocusField,
                 parsedRangesField,
                 mathTooltipField,
@@ -514,7 +519,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
             (containerRef.current ? containerRef.current.contains(document.activeElement) : false)
         ) : false;
 
-        if (isFocused && viewRef.current && !isDOMFocused) {
+        if (isFocused && viewRef.current && !isDOMFocused && !isReadOnly) {
             isProgrammaticFocusRef.current = true;
             viewRef.current.focus();
             
@@ -529,7 +534,7 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 });
             }
         }
-    }, [isFocused, focusDirection]);
+    }, [isFocused, focusDirection, isReadOnly]);
 
     // Sync external content changes
     useEffect(() => {
@@ -577,11 +582,15 @@ export function CodeMirrorEditor({ content, onBlur, onChange, onUp, onDown, isFo
                 macrosRef.current = macros;
                 effects.push(macrosCompartmentRef.current.reconfigure(livePreviewMacros.of(macros)));
             }
+            effects.push(readOnlyCompartmentRef.current.reconfigure([
+                EditorState.readOnly.of(!!isReadOnly),
+                EditorView.editable.of(!isReadOnly)
+            ]));
             if (effects.length > 0) {
                 viewRef.current.dispatch({ effects });
             }
         }
-    }, [parentLabel, visitedLabels, macros]);
+    }, [parentLabel, visitedLabels, macros, isReadOnly]);
 
     return <div ref={containerRef} className="w-full" />;
 }

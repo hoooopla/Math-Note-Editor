@@ -43,6 +43,8 @@ interface AppState {
   saveAsset: (file: File, filename: string) => Promise<string>;
   listAssets: () => Promise<string[]>;
   getAssetUrl: (path: string) => Promise<string>;
+  viewOnlyBlocks: Record<string, boolean>;
+  toggleViewOnly: (id: string) => void;
   imageUploadParams: { file: File, onInsert: (text: string) => void } | null;
   setImageUploadParams: (params: { file: File, onInsert: (text: string) => void } | null) => void;
 }
@@ -66,6 +68,11 @@ export const useStore = create<AppState>((set, get) => ({
   openTabs: savedTabs,
   activeTab: savedActiveTab,
   backendMode: "none",
+  viewOnlyBlocks: {},
+  toggleViewOnly: (id) => set(state => {
+    const current = state.viewOnlyBlocks[id] ?? (state.backendMode === "viewer");
+    return { viewOnlyBlocks: { ...state.viewOnlyBlocks, [id]: !current } };
+  }),
   imageUploadParams: null,
   setImageUploadParams: (params) => set({ imageUploadParams: params }),
   settings: {
