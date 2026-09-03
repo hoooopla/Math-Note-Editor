@@ -35,12 +35,50 @@ body {
   padding: 0 !important;
 }
 
+.cm-underline-element {
+  border-bottom: 1.5px solid currentColor;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  display: inline;
+  text-decoration: none !important;
+}
+
+.cm-underline-element .katex-html,
+.cm-underline-element .katex {
+  text-decoration: none !important;
+  border-bottom: none !important;
+}
+
 .cm-math-inline {
   color: inherit;
   background: transparent;
   padding: 0 2px;
-  display: inline-block;
+  display: inline-flex;
+  vertical-align: baseline;
+  align-items: center;
   white-space: nowrap;
+}
+
+.cm-math-inline.cm-underline-element,
+.cm-math-inline.underline {
+  border-bottom: 1.5px solid currentColor;
+}
+
+.cm-math-inline.cm-underline-element .katex-html,
+.cm-math-inline.underline .katex-html {
+  text-decoration: none !important;
+}
+
+.cm-math-inline.font-bold,
+.cm-math-inline.font-bold .katex,
+.cm-math-inline.font-bold .katex * {
+  font-weight: bold !important;
+}
+
+.cm-math-inline.italic,
+.cm-math-inline.italic .katex,
+.cm-math-inline.italic .katex * {
+  font-style: italic !important;
 }
 
 .cm-math-inline .katex {
