@@ -97,8 +97,48 @@ body {
   }
 }
 
-.cm-content .underline, .cm-content .underline * {
+.cm-content .cm-underline-run {
+  display: inline-flex;
+  align-items: baseline;
+  border-bottom: 1px solid currentColor;
+  text-decoration: none;
   font-style: normal !important;
+}
+
+.cm-content .cm-format-bold {
+  font-weight: bold;
+}
+
+.cm-content .cm-format-italic {
+  font-style: italic;
+}
+
+.cm-content .cm-format-bold > .cm-math-inline {
+  font-weight: normal;
+}
+
+.cm-content .cm-format-italic > .cm-math-inline {
+  font-style: normal;
+}
+
+.cm-content .cm-quote-run {
+  color: #CBF0FF;
+  font-weight: bold;
+}
+
+.cm-content .cm-quote-run > .cm-math-inline {
+  color: inherit;
+  font-weight: normal;
+}
+
+.cm-content .cm-quote-math {
+  color: #CBF0FF;
+}
+
+.cm-content .cm-markdown-link {
+  color: #3b82f6;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .cm-content .not-italic, .cm-content .not-italic * {

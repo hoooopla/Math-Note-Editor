@@ -10,7 +10,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { ImageUploadModal } from "./components/ImageUploadModal";
 import { SearchModal } from "./components/SearchModal";
 import { GraphModal } from "./components/GraphModal";
-import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network } from "lucide-react";
+import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical } from "lucide-react";
 import "./index.css";
 
 export default function App() {
@@ -29,9 +29,14 @@ export default function App() {
     const setOpenTabs = useStore(state => state.setOpenTabs);
     const setActiveTab = useStore(state => state.setActiveTab);
     const settings = useStore(state => state.settings);
+    const persistenceError = useStore(state => state.persistenceError);
+    const clearPersistenceError = useStore(state => state.clearPersistenceError);
+    const flushBlock = useStore(state => state.flushBlock);
+    const flushPendingSaves = useStore(state => state.flushPendingSaves);
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
     const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
+    const [isTestMode, setIsTestMode] = useState(false);
     
     // Drag state for tabs
     const [draggedTab, setDraggedTab] = useState<string | null>(null);
@@ -39,6 +44,27 @@ export default function App() {
     useEffect(() => {
         initBackend();
     }, [initBackend]);
+
+    useEffect(() => {
+        fetch('/api/runtime')
+            .then(response => response.ok ? response.json() : null)
+            .then(runtime => setIsTestMode(runtime?.testMode === true))
+            .catch(() => setIsTestMode(false));
+    }, []);
+
+    useEffect(() => {
+        const handlePageHide = () => { void flushPendingSaves(); };
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'hidden') void flushPendingSaves();
+        };
+
+        window.addEventListener('pagehide', handlePageHide);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            window.removeEventListener('pagehide', handlePageHide);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, [flushPendingSaves]);
 
     useEffect(() => {
         if (!isLoaded) return;
@@ -84,6 +110,7 @@ export default function App() {
 
     const closeTab = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
+        void flushBlock(id);
         const newTabs = openTabs.filter(t => t !== id);
         setOpenTabs(newTabs);
         if (activeTab === id) {
@@ -151,7 +178,17 @@ export default function App() {
             <div className="flex h-12 bg-surface border-b border-outline items-center px-4 justify-between shrink-0">
                 <div className="flex items-center gap-4">
                     <h1 className="text-[16px] font-bold tracking-tight text-primary flex items-center gap-2">
-                        <Command className="text-accent" size={20} /> NoteFlow
+                        <Command className="text-accent" size={20} />
+                        {isTestMode && (
+                            <span
+                                className="flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wider text-amber-300"
+                                title="Test mode: edits are stored in memory and discarded when the server stops"
+                                aria-label="In-memory test mode"
+                            >
+                                <FlaskConical size={13} aria-hidden="true" /> TEST
+                            </span>
+                        )}
+                        NoteFlow
                     </h1>
                 </div>
 
@@ -198,6 +235,7 @@ export default function App() {
                         onClick={() => setIsGraphModalOpen(true)}
                         className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
                         title="Graph View"
+                        aria-label="Open graph view"
                     >
                         <Network size={18} />
                     </button>
@@ -206,6 +244,7 @@ export default function App() {
                         onClick={() => setIsMacroModalOpen(true)}
                         className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
                         title="Settings"
+                        aria-label="Open settings"
                     >
                         <Settings size={18} />
                     </button>
@@ -220,12 +259,22 @@ export default function App() {
                             }}
                             className="p-1.5 hover:bg-accent/20 rounded text-accent transition-colors"
                             title="New Block"
+                            aria-label="Create new block"
                         >
                             <Plus size={18} />
                         </button>
                     )}
                 </div>
             </div>
+
+            {persistenceError && (
+                <div className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300" role="alert">
+                    <span>Changes may not have been saved: {persistenceError}</span>
+                    <button onClick={clearPersistenceError} className="shrink-0 rounded p-1 hover:bg-red-500/20" aria-label="Dismiss save error">
+                        <X size={16} />
+                    </button>
+                </div>
+            )}
 
             <div className="flex flex-1 min-h-0 overflow-hidden">
                 <div className="flex-1 flex flex-col min-w-0 h-full">

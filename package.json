@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
+    "dev:test": "tsx server.ts --test-mode",
+    "test:e2e": "playwright test",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server.ts",
+    "start": "node server.ts --production",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
   },

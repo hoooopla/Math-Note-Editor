@@ -6,8 +6,9 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  const base = env.VITE_BASE_PATH || '/';
   return {
-    base: '/Math-Note-Editor/',
+    base,
     plugins: [
       react(), 
       tailwindcss(),
@@ -26,7 +27,7 @@ export default defineConfig(({mode}) => {
           theme_color: '#ffffff',
           background_color: '#ffffff',
           display: 'standalone',
-          start_url: '/Math-Note-Editor/',
+          start_url: base,
           icons: [
             {
               src: 'pwa-192x192.png',

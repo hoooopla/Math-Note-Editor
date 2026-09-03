@@ -4,11 +4,18 @@ import { RangeSetBuilder } from "@codemirror/state";
 function buildUrlDecorations(view: EditorView) {
     const decos: {from: number, to: number, deco: Decoration}[] = [];
     const doc = view.state.doc.toString();
+    const markdownLinkRanges: Array<{ from: number; to: number }> = [];
+    const mdRegex = /\[([^\]\n]+)\]\((https?:\/\/[^\s)\]">]+)\)/g;
+    let mdMatch;
+    while ((mdMatch = mdRegex.exec(doc)) !== null) {
+        markdownLinkRanges.push({ from: mdMatch.index, to: mdMatch.index + mdMatch[0].length });
+    }
     
     // Match raw urls
     const urlRegex = /https?:\/\/[^\s)\]">]+/g;
     let match;
     while ((match = urlRegex.exec(doc)) !== null) {
+        if (markdownLinkRanges.some(range => match!.index >= range.from && match!.index < range.to)) continue;
         decos.push({
             from: match.index,
             to: match.index + match[0].length,
@@ -16,31 +23,6 @@ function buildUrlDecorations(view: EditorView) {
                 tagName: "a",
                 attributes: {
                     href: match[0],
-                    target: "_blank",
-                    rel: "noopener noreferrer",
-                    style: "text-decoration: underline; cursor: pointer; color: #3b82f6;"
-                }
-            })
-        });
-    }
-
-    // Match markdown links [text](url)
-    // Avoid double creation of anchors if they overlap, but URL is separate
-    // Wait, let's keep it simple and just make the raw urls clickable, or both.
-    const mdRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)\]">]+)\)/g;
-    let mdMatch;
-    while ((mdMatch = mdRegex.exec(doc)) !== null) {
-        // We decorate the 'text' part too
-        const start = mdMatch.index + 1; // after '['
-        const end = start + mdMatch[1].length;
-        const url = mdMatch[2];
-        decos.push({
-            from: start,
-            to: end,
-            deco: Decoration.mark({
-                tagName: "a",
-                attributes: {
-                    href: url,
                     target: "_blank",
                     rel: "noopener noreferrer",
                     style: "text-decoration: underline; cursor: pointer; color: #3b82f6;"

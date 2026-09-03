@@ -11,6 +11,7 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
     const openTabs = useStore(state => state.openTabs);
     const setActiveTab = useStore(state => state.setActiveTab);
     const settings = useStore(state => state.settings);
+    const backendMode = useStore(state => state.backendMode);
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -58,7 +59,7 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                 setOpenTabs([...openTabs, id]);
             }
             setActiveTab(id);
-        } else if (searchQuery) {
+        } else if (searchQuery && backendMode !== 'viewer') {
             // create new block with this title
             const newBlock = await addBlock(undefined, { title: searchQuery.trim(), label: searchQuery.trim().toLowerCase().replace(/\s+/g, '-') });
             if (newBlock) {
@@ -80,7 +81,7 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
             e.preventDefault();
             if (searchResults[selectedIndex]) {
                 handleSelect(searchResults[selectedIndex].id);
-            } else if (searchQuery) {
+            } else if (searchQuery && backendMode !== 'viewer') {
                 handleSelect();
             }
         } else if (e.key === 'Escape') {
@@ -144,7 +145,7 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                             })}
                         </div>
                     ) : (
-                        searchQuery ? (
+                        searchQuery && backendMode !== 'viewer' ? (
                             <div 
                                 onClick={() => handleSelect()}
                                 className="px-3 py-3 cursor-pointer rounded bg-accent/20 text-accent flex flex-col items-center justify-center text-center"

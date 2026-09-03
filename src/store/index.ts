@@ -33,6 +33,8 @@ interface AppState {
   loadBlockContent: (id: string) => Promise<void>;
   addBlock: (index?: number, data?: Partial<BlockData>) => Promise<BlockData | void>;
   updateBlock: (id: string, data: Partial<BlockData>) => void;
+  flushBlock: (id: string) => Promise<void>;
+  flushPendingSaves: () => Promise<void>;
   deleteBlock: (id: string) => Promise<void>;
   setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null) => void;
   setSettings: (settings: EditorSettings) => void;
@@ -47,15 +49,33 @@ interface AppState {
   toggleViewOnly: (id: string) => void;
   imageUploadParams: { file: File, onInsert: (text: string) => void } | null;
   setImageUploadParams: (params: { file: File, onInsert: (text: string) => void } | null) => void;
+  persistenceError: string | null;
+  clearPersistenceError: () => void;
 }
 
-const syncTimeouts: Record<string, NodeJS.Timeout> = {};
+const syncTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
+const dirtyBlockVersions = new Map<string, number>();
+const blockSaveChains = new Map<string, Promise<void>>();
 
 let eventSource: EventSource | null = null;
 
 const savedTabsStr = localStorage.getItem("openTabs");
-const savedTabs = savedTabsStr ? JSON.parse(savedTabsStr) : [];
+let savedTabs: string[] = [];
+if (savedTabsStr) {
+  try {
+    const parsed = JSON.parse(savedTabsStr);
+    if (Array.isArray(parsed) && parsed.every(value => typeof value === 'string')) {
+      savedTabs = parsed;
+    } else {
+      localStorage.removeItem("openTabs");
+    }
+  } catch {
+    localStorage.removeItem("openTabs");
+  }
+}
 const savedActiveTab = localStorage.getItem("activeTab");
+
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export const useStore = create<AppState>((set, get) => ({
   isLoaded: false,
@@ -75,6 +95,8 @@ export const useStore = create<AppState>((set, get) => ({
   }),
   imageUploadParams: null,
   setImageUploadParams: (params) => set({ imageUploadParams: params }),
+  persistenceError: null,
+  clearPersistenceError: () => set({ persistenceError: null }),
   settings: {
     macros: {
       "\\R": "\\mathbb{R}",
@@ -158,7 +180,8 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     
-    set({ blocks: newBlocks, backendMode: 'viewer', isLoaded: true });
+    backendApi.mode = 'viewer';
+    set({ blocks: newBlocks, backendMode: 'viewer', isLoaded: true, persistenceError: null });
     
     if (loadedSettings) {
       set(state => ({ settings: { ...state.settings, ...loadedSettings } }));
@@ -196,19 +219,22 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
   saveSettings: async (settings) => {
+    const previousSettings = get().settings;
     try {
-      set({ settings });
+      set({ settings, persistenceError: null });
       await backendApi.saveSettings(settings);
     } catch (e) {
       console.warn("Failed to save settings", e);
+      set({ settings: previousSettings, persistenceError: errorMessage(e) });
     }
   },
   loadBlocks: async () => {
     try {
       const blocks = await backendApi.loadBlocks();
-      set({ blocks });
+      set({ blocks, persistenceError: null });
     } catch (e) {
       console.warn("Failed to load blocks", e);
+      set({ persistenceError: errorMessage(e) });
     }
   },
   loadBlockContent: async (id: string) => {
@@ -248,13 +274,14 @@ export const useStore = create<AppState>((set, get) => ({
           const newBlocks = [...withoutNew];
           const insertIdx = index >= withoutNew.length ? withoutNew.length : index + 1;
           newBlocks.splice(insertIdx, 0, newBlock);
-          return { blocks: newBlocks, activeBlockId: newBlock.id, focusDirection: "start" };
+          return { blocks: newBlocks, activeBlockId: newBlock.id, focusDirection: "start", persistenceError: null };
         }
-        return { blocks: [...withoutNew, newBlock], activeBlockId: newBlock.id, focusDirection: "start" };
+        return { blocks: [...withoutNew, newBlock], activeBlockId: newBlock.id, focusDirection: "start", persistenceError: null };
       });
       return newBlock;
     } catch (e) {
       console.warn("Failed to add block", e);
+      set({ persistenceError: errorMessage(e) });
     }
   },
   updateBlock: (id, data) => {
@@ -262,43 +289,23 @@ export const useStore = create<AppState>((set, get) => ({
       blocks: state.blocks.map(b => b.id === id ? { ...b, ...data } : b)
     }));
 
-    if (syncTimeouts[id]) {
-      clearTimeout(syncTimeouts[id]);
-    }
-
-    syncTimeouts[id] = setTimeout(async () => {
-      const block = get().blocks.find(b => b.id === id);
-      if (!block) return;
-
-      try {
-        const result = await backendApi.updateBlock(id, block as BlockData, get().blocks);
-        if (result.updatedBlocks && result.updatedBlocks.length > 0) {
-            // Apply server-side cascades (label renames & reference updates)
-            set(s => {
-                const newBlocks = [...s.blocks];
-                result.updatedBlocks!.forEach((ub: any) => {
-                    const idx = newBlocks.findIndex(b => b.id === ub.id);
-                    if (idx !== -1) {
-                        // Only update content if we already have it loaded, 
-                        // or if the server gave us updated content.
-                        const current = newBlocks[idx];
-                        newBlocks[idx] = { 
-                            ...current, 
-                            label: ub.label,
-                            title: ub.title,
-                            ...(current.content !== undefined ? { content: ub.content } : {})
-                        };
-                    }
-                });
-                return { blocks: newBlocks };
-            });
-        }
-      } catch (e) {
-          console.warn(e);
-      }
-    }, 500);
+    dirtyBlockVersions.set(id, (dirtyBlockVersions.get(id) || 0) + 1);
+    scheduleBlockSave(id);
+  },
+  flushBlock: async (id) => {
+    await flushBlockSave(id);
+  },
+  flushPendingSaves: async () => {
+    await Promise.all(Array.from(dirtyBlockVersions.keys(), id => flushBlockSave(id)));
   },
   deleteBlock: async (id) => {
+    if (syncTimeouts[id]) {
+      clearTimeout(syncTimeouts[id]);
+      delete syncTimeouts[id];
+    }
+    const activeSave = blockSaveChains.get(id);
+    if (activeSave) await activeSave;
+    dirtyBlockVersions.delete(id);
     try {
       await backendApi.deleteBlock(id, get().blocks);
       set((state) => {
@@ -313,10 +320,11 @@ export const useStore = create<AppState>((set, get) => ({
                 nextActive = null;
             }
         }
-        return { blocks: newBlocks, activeBlockId: nextActive, focusDirection: "end" };
+        return { blocks: newBlocks, activeBlockId: nextActive, focusDirection: "end", persistenceError: null };
       });
     } catch (e) {
       console.warn("Failed to delete block", e);
+      set({ persistenceError: errorMessage(e) });
     }
   },
   setActiveBlock: (id, dir, path, pos) => set({ activeBlockId: id, focusDirection: dir || null, activePath: path || null, activeFocusPos: pos ?? null }),
@@ -342,6 +350,9 @@ export const useStore = create<AppState>((set, get) => ({
         const msg = JSON.parse(e.data);
         if (msg.type === 'update' && msg.block) {
           set(state => {
+            // An acknowledgement or external event must not replace newer local input
+            // while that block is still waiting to be persisted.
+            if (dirtyBlockVersions.has(msg.block.id)) return state;
             const idx = state.blocks.findIndex(b => b.id === msg.block.id);
             if (idx !== -1) {
               const current = state.blocks[idx];
@@ -380,6 +391,76 @@ export const useStore = create<AppState>((set, get) => ({
     };
   }
 }));
+
+function scheduleBlockSave(id: string) {
+  if (syncTimeouts[id]) clearTimeout(syncTimeouts[id]);
+  syncTimeouts[id] = setTimeout(() => {
+    delete syncTimeouts[id];
+    void flushBlockSave(id);
+  }, 500);
+}
+
+async function flushBlockSave(id: string): Promise<void> {
+  if (syncTimeouts[id]) {
+    clearTimeout(syncTimeouts[id]);
+    delete syncTimeouts[id];
+  }
+
+  const existingChain = blockSaveChains.get(id);
+  if (existingChain) return existingChain;
+
+  const chain = (async () => {
+    while (dirtyBlockVersions.has(id)) {
+      const version = dirtyBlockVersions.get(id)!;
+      const state = useStore.getState();
+      const block = state.blocks.find(candidate => candidate.id === id);
+      if (!block) {
+        dirtyBlockVersions.delete(id);
+        return;
+      }
+
+      try {
+        const result = await backendApi.updateBlock(id, block as BlockData, state.blocks);
+        useStore.setState({ persistenceError: null });
+
+        if (dirtyBlockVersions.get(id) === version) {
+          dirtyBlockVersions.delete(id);
+        }
+
+        if (result.updatedBlocks?.length) {
+          useStore.setState(currentState => {
+            const nextBlocks = [...currentState.blocks];
+            for (const updatedBlock of result.updatedBlocks!) {
+              // Never let a server response overwrite newer unsaved local input.
+              if (dirtyBlockVersions.has(updatedBlock.id)) continue;
+              const index = nextBlocks.findIndex(candidate => candidate.id === updatedBlock.id);
+              if (index === -1) continue;
+              const current = nextBlocks[index];
+              nextBlocks[index] = {
+                ...current,
+                label: updatedBlock.label,
+                title: updatedBlock.title,
+                ...(current.content !== undefined ? { content: updatedBlock.content } : {})
+              };
+            }
+            return { blocks: nextBlocks };
+          });
+        }
+      } catch (error) {
+        console.warn("Failed to save block", error);
+        useStore.setState({ persistenceError: errorMessage(error) });
+        return;
+      }
+    }
+  })();
+
+  blockSaveChains.set(id, chain);
+  try {
+    await chain;
+  } finally {
+    if (blockSaveChains.get(id) === chain) blockSaveChains.delete(id);
+  }
+}
 
 let lastTabs = savedTabs;
 let lastActiveTab = savedActiveTab;

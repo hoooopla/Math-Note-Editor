@@ -43,7 +43,12 @@ const stringifyFrontmatter = (data: Record<string, any>, content: string) => {
 };
 
 const app = express();
-const PORT = 3000;
+const portArgumentIndex = process.argv.indexOf("--port");
+const requestedPort = portArgumentIndex >= 0 ? Number(process.argv[portArgumentIndex + 1]) : 3000;
+const PORT = Number.isInteger(requestedPort) && requestedPort > 0 && requestedPort <= 65535 ? requestedPort : 3000;
+const HOST = process.env.HOST || "127.0.0.1";
+const isProduction = process.env.NODE_ENV === "production" || process.argv.includes("--production");
+const isTestMode = process.argv.includes("--test-mode");
 app.use(express.json({ limit: '20mb' }));
 
 const BLOCKS_DIR = path.join(process.cwd(), "blocks");
@@ -58,6 +63,12 @@ interface BlockData {
 
 let blocksMap = new Map<string, BlockData>();
 let sseClients: express.Response[] = [];
+let testSettings: Record<string, unknown> | null = null;
+const testAssets = new Map<string, { buffer: Buffer; contentType: string }>();
+
+app.get("/api/runtime", (_req, res) => {
+    res.json({ testMode: isTestMode });
+});
 
 function notifyClients(message: any) {
     sseClients.forEach(client => {
@@ -131,6 +142,8 @@ function computeReferences(content: string): string[] {
 }
 
 async function writeBlockToFile(block: any) {
+    if (isTestMode) return;
+
     const safeTitle = (block.title || "Untitled").replace(/[/\\?%*:|"<>]/g, '-').trim() || "Untitled";
     const safeLabel = (block.label || "block").replace(/[/\\?%*:|"<>]/g, '-').trim() || "block";
     
@@ -169,7 +182,15 @@ async function writeBlockToFile(block: any) {
 }
 
 async function initBlocks() {
-    await ensureDir(BLOCKS_DIR);
+    blocksMap.clear();
+    blockIdToFileMap.clear();
+    if (!fsSync.existsSync(BLOCKS_DIR)) {
+        if (isTestMode) {
+            for (const block of INITIAL_BLOCKS) blocksMap.set(block.id, { ...block });
+            return;
+        }
+        await ensureDir(BLOCKS_DIR);
+    }
     const files = await fs.readdir(BLOCKS_DIR, { recursive: true });
     if (files.filter(f => typeof f === 'string' && f.endsWith(".md")).length === 0) {
         for (const block of INITIAL_BLOCKS) {
@@ -183,6 +204,10 @@ async function initBlocks() {
             const content = await fs.readFile(filePath, "utf-8");
             const parsed = parseFrontmatter(content);
             const id = parsed.data.id || path.basename(file, ".md");
+            const existingFilename = blockIdToFileMap.get(id);
+            if (existingFilename) {
+                throw new Error(`Duplicate block id "${id}" found in "${existingFilename}" and "${file}"`);
+            }
             blocksMap.set(id, {
                 id,
                 title: parsed.data.title || "",
@@ -203,9 +228,15 @@ app.post("/api/assets", express.json({limit: '20mb'}), async (req, res) => {
         if (!absolutePath.startsWith(path.join(BLOCKS_DIR, 'assets'))) {
             return res.status(400).json({error: "Invalid path"});
         }
-        await ensureDir(path.dirname(absolutePath));
-        const base64Data = content.replace(/^data:image\/\w+;base64,/, "");
+        const base64Data = content.replace(/^data:[^;]+;base64,/, "");
         const buffer = Buffer.from(base64Data, 'base64');
+        if (isTestMode) {
+            const assetPath = filePath.replace(/^assets\//, '');
+            const contentType = content.match(/^data:([^;]+);base64,/)?.[1] || 'application/octet-stream';
+            testAssets.set(assetPath, { buffer, contentType });
+            return res.json({ success: true, url: `/api/assets/${assetPath}` });
+        }
+        await ensureDir(path.dirname(absolutePath));
         await fs.writeFile(absolutePath, buffer);
         res.json({ success: true, url: `/api/assets/${filePath.replace(/^assets\//, '')}` }); 
     } catch (e) {
@@ -216,8 +247,8 @@ app.post("/api/assets", express.json({limit: '20mb'}), async (req, res) => {
 app.get("/api/assets-list", async (req, res) => {
     try {
         const assetsPath = path.join(BLOCKS_DIR, "assets");
-        await ensureDir(assetsPath);
-        const files: string[] = [];
+        if (!isTestMode) await ensureDir(assetsPath);
+        const files: string[] = Array.from(testAssets.keys());
         async function scanDir(dir: string, base: string) {
             const entries = await fs.readdir(dir, { withFileTypes: true });
             for (const entry of entries) {
@@ -228,7 +259,7 @@ app.get("/api/assets-list", async (req, res) => {
                 }
             }
         }
-        await scanDir(assetsPath, "");
+        if (fsSync.existsSync(assetsPath)) await scanDir(assetsPath, "");
         res.json(files);
     } catch (e) {
         res.status(500).json({ error: String(e) });
@@ -238,6 +269,11 @@ app.get("/api/assets-list", async (req, res) => {
 app.get("/api/assets/*", async (req, res) => {
     try {
         const assetPath = req.params[0];
+        const testAsset = testAssets.get(assetPath);
+        if (testAsset) {
+            res.type(testAsset.contentType);
+            return res.send(testAsset.buffer);
+        }
         const absolutePath = path.join(BLOCKS_DIR, "assets", assetPath);
         res.sendFile(absolutePath);
     } catch (e) {
@@ -292,9 +328,13 @@ app.get("/api/blocks/:id", async (req, res) => {
 app.get("/api/settings", async (req, res) => {
     try {
         const settingDir = path.join(process.cwd(), "blocks", "setting");
-        await ensureDir(settingDir);
         const settingsPath = path.join(settingDir, "settings.json");
         const content = await fs.readFile(settingsPath, "utf-8").catch(() => "{\"macros\":{},\"customCommands\":[],\"textCommands\":[]}");
+        if (isTestMode) {
+            testSettings ??= JSON.parse(content);
+            return res.json(testSettings);
+        }
+        await ensureDir(settingDir);
         res.json(JSON.parse(content));
     } catch (e) {
         res.status(500).json({ error: String(e) });
@@ -303,6 +343,10 @@ app.get("/api/settings", async (req, res) => {
 
 app.post("/api/settings", async (req, res) => {
     try {
+        if (isTestMode) {
+            testSettings = structuredClone(req.body || {});
+            return res.json({ success: true });
+        }
         const settingDir = path.join(process.cwd(), "blocks", "setting");
         await ensureDir(settingDir);
         const settingsPath = path.join(settingDir, "settings.json");
@@ -334,7 +378,10 @@ app.post("/api/blocks", async (req, res) => {
 app.put("/api/blocks/:id", async (req, res) => {
     try {
         const id = req.params.id;
-        const existing = blocksMap.get(id) || { title: "", label: "", content: "", id };
+        const existing = blocksMap.get(id);
+        if (!existing) {
+            return res.status(404).json({ error: "Block not found" });
+        }
         
         const newLabel = req.body.label !== undefined ? req.body.label : existing.label;
         const oldLabel = existing.label;
@@ -444,7 +491,9 @@ app.delete("/api/blocks/:id", async (req, res) => {
     try {
         const id = req.params.id;
         const filename = blockIdToFileMap.get(id);
-        if (filename) {
+        if (isTestMode) {
+            blockIdToFileMap.delete(id);
+        } else if (filename) {
             const filePath = path.join(BLOCKS_DIR, filename);
             await fs.unlink(filePath).catch(() => {});
             blockIdToFileMap.delete(id);
@@ -484,7 +533,7 @@ app.get("/api/events", (req, res) => {
 async function startServer() {
     await initBlocks();
 
-    if (fsSync.existsSync(BLOCKS_DIR)) {
+    if (!isTestMode && fsSync.existsSync(BLOCKS_DIR)) {
         fsSync.watch(BLOCKS_DIR, (eventType, filename) => {
             if (!filename || !filename.endsWith('.md')) return;
             
@@ -505,6 +554,11 @@ async function startServer() {
 
                 const parsed = parseFrontmatter(content);
                 const id = parsed.data.id || filename.replace(".md", "");
+                const mappedFilename = blockIdToFileMap.get(id);
+                if (mappedFilename && mappedFilename !== filename) {
+                    console.error(`Ignoring duplicate block id "${id}" in "${filename}"; already loaded from "${mappedFilename}"`);
+                    return;
+                }
                 
                 const existing = blocksMap.get(id);
                 if (existing && existing.content === parsed.content && existing.title === parsed.data.title && existing.label === parsed.data.label) {
@@ -526,9 +580,9 @@ async function startServer() {
     }
 
     // Vite middleware for development
-    if (process.env.NODE_ENV !== "production") {
+    if (!isProduction) {
         const vite = await createViteServer({
-            server: { middlewareMode: true },
+            server: { middlewareMode: true, hmr: isTestMode ? false : undefined },
             appType: "spa",
         });
         app.use(vite.middlewares);
@@ -540,9 +594,13 @@ async function startServer() {
         });
     }
 
-    app.listen(PORT, "0.0.0.0", () => {
-        console.log(`Server running on http://localhost:${PORT}`);
+    app.listen(PORT, HOST, () => {
+        console.log(`Server running on http://${HOST}:${PORT}`);
+        if (isTestMode) console.log("Test mode enabled: all edits are stored in memory and discarded on exit.");
     });
 }
 
-startServer();
+startServer().catch((error) => {
+    console.error("Failed to start server:", error);
+    process.exitCode = 1;
+});

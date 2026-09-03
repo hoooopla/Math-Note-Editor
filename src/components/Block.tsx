@@ -16,6 +16,7 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
 
         const setActiveBlock = useStore(state => state.setActiveBlock);
     const updateBlock = useStore(state => state.updateBlock);
+    const flushBlock = useStore(state => state.flushBlock);
     const deleteBlock = useStore(state => state.deleteBlock);
     const loadBlockContent = useStore(state => state.loadBlockContent);
     const setImageUploadParams = useStore(state => state.setImageUploadParams);
@@ -47,6 +48,7 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
         onUp={onUp} 
         onDown={onDown} 
         updateBlock={updateBlock} 
+        flushBlock={flushBlock}
         deleteBlock={deleteBlock} 
     />;
 }
@@ -61,10 +63,11 @@ interface BlockProps {
     onUp: () => void;
     onDown: () => void;
     updateBlock: (id: string, data: any) => void;
+    flushBlock: (id: string) => Promise<void>;
     deleteBlock: (id: string) => void;
 }
 
-export function Block({ block, blocks, isFocused, focusDirection, macros, setActive, onUp, onDown, updateBlock, deleteBlock }: BlockProps) {
+export function Block({ block, blocks, isFocused, focusDirection, macros, setActive, onUp, onDown, updateBlock, flushBlock, deleteBlock }: BlockProps) {
     const isViewOnlyState = useStore(state => state.viewOnlyBlocks[block.id]);
     const backendMode = useStore(state => state.backendMode);
     const isViewOnly = isViewOnlyState ?? (backendMode === "viewer");
@@ -79,6 +82,11 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
     const handleContentChange = useCallback((val: string) => {
         updateBlock(block.id, { content: val });
     }, [block.id, updateBlock]);
+
+    const handleContentBlur = useCallback((val: string) => {
+        updateBlock(block.id, { content: val });
+        void flushBlock(block.id);
+    }, [block.id, flushBlock, updateBlock]);
 
     const handleFocus = useCallback(() => {
         if (!isFocused) {
@@ -233,7 +241,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
             <div className="p-4 relative font-sans text-primary min-h-[3rem] z-20">
                 <CodeMirrorEditor 
                     content={block.content} 
-                    onBlur={handleContentChange} 
+                    onBlur={handleContentBlur}
                     onChange={handleContentChange}
                     onUp={onUp} 
                     onDown={onDown} 

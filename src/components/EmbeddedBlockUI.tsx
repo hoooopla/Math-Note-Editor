@@ -308,6 +308,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
                         onBlur={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
+                            void useStore.getState().flushBlock(targetBlock!.id);
                         }}
                         onChange={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
@@ -356,6 +357,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
                         onBlur={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });
+                            void useStore.getState().flushBlock(targetBlock!.id);
                         }}
                         onChange={(val) => {
                             useStore.getState().updateBlock(targetBlock!.id, { content: val });

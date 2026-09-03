@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { X, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
 
@@ -7,10 +7,44 @@ interface SettingsModalProps {
     onClose: () => void;
 }
 
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const MATH_COMMAND = /^\\[A-Za-z]+(?:\{[^{}\n]*\})*$/;
+
+const normalizeMathCommand = (value: string) => {
+    const trimmed = value.trim();
+    return trimmed.startsWith('\\') ? trimmed : `\\${trimmed}`;
+};
+
+const isValidShortcut = (value: string) => {
+    const parts = value.toLowerCase().split('+').map(part => part.trim()).filter(Boolean);
+    const modifiers = parts.slice(0, -1);
+    const key = parts.at(-1) || '';
+    return parts.length >= 2
+        && modifiers.every(modifier => ['ctrl', 'meta', 'cmd'].includes(modifier))
+        && modifiers.some(modifier => ['ctrl', 'meta', 'cmd'].includes(modifier))
+        && new Set(modifiers).size === modifiers.length
+        && /^(?:[a-z0-9]|enter|space|escape|backspace|delete|arrow(?:up|down|left|right)|\/)$/.test(key);
+};
+
+const settingsTabs = [
+    { id: 'general', label: 'Keyboard Shortcuts' },
+    { id: 'macros', label: 'Math Macros' },
+    { id: 'commands', label: 'Autocomplete' },
+    { id: 'text', label: 'Text Autocomplete' },
+    { id: 'embedded', label: 'Embedded Blocks' },
+    { id: 'colors', label: 'LaTeX Highlight Colors' }
+] as const;
+
+type SettingsTab = typeof settingsTabs[number]['id'];
+
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-        const settings = useStore(state => state.settings);
+    const settings = useStore(state => state.settings);
     const saveSettings = useStore(state => state.saveSettings);
-    const [activeTab, setActiveTab] = useState<'general' | 'macros' | 'commands' | 'text' | 'embedded' | 'colors'>('general');
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
+    const [activeTab, setActiveTab] = useState<SettingsTab>('general');
     const [localMacros, setLocalMacros] = useState<Array<{key: string, value: string}>>([]);
     const [localCommands, setLocalCommands] = useState<string[]>([]);
     const [localTextCommands, setLocalTextCommands] = useState<string[]>([]);
@@ -44,6 +78,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localStandoutBgOpacityOpen, setLocalStandoutBgOpacityOpen] = useState<number>(80);
     const [localStandoutBgOpacityOpenHover, setLocalStandoutBgOpacityOpenHover] = useState<number>(90);
     const [localMathBlockPaddingY, setLocalMathBlockPaddingY] = useState<number>(4);
+    const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const [localMathColors, setLocalMathColors] = useState<Record<string, string>>({
         command: "#61afef",
         brace: "#e5c07b",
@@ -56,6 +91,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     useEffect(() => {
         if (isOpen) {
+            setValidationErrors([]);
             setLocalMacros(Object.entries(settings.macros || {}).map(([key, value]) => ({ key, value })));
             setLocalCommands([...(settings.customCommands || [])]);
             setLocalTextCommands([...(settings.textCommands || [])]);
@@ -95,13 +131,51 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
     }, [isOpen, settings]);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        closeButtonRef.current?.focus();
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                onCloseRef.current();
+                return;
+            }
+            if (event.key !== 'Tab' || !dialogRef.current) return;
+
+            const focusable = Array.from(dialogRef.current.querySelectorAll(
+                'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            )) as HTMLElement[];
+            const visibleFocusable = focusable.filter(element => element.offsetParent !== null);
+            if (visibleFocusable.length === 0) return;
+            const first = visibleFocusable[0];
+            const last = visibleFocusable[visibleFocusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            previouslyFocused?.focus();
+        };
+    }, [isOpen]);
+
     if (!isOpen) return null;
 
     const handleSave = () => {
+        const errors: string[] = [];
         const newMacros: Record<string, string> = {};
         for (const m of localMacros) {
             if (m.key.trim()) {
-                const key = m.key.trim().startsWith('\\') ? m.key.trim() : `\\${m.key.trim()}`;
+                const key = normalizeMathCommand(m.key);
+                if (!/^\\[A-Za-z]+$/.test(key)) errors.push(`Macro name "${m.key.trim()}" must be a backslash followed by letters.`);
+                if (!m.value.trim()) errors.push(`Macro "${key}" needs a replacement value.`);
+                if (Object.prototype.hasOwnProperty.call(newMacros, key)) errors.push(`Macro "${key}" is duplicated.`);
                 newMacros[key] = m.value.trim();
             }
         }
@@ -109,47 +183,108 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         const newCommands = localCommands
             .map(c => c.trim())
             .filter(c => c.length > 0)
-            .map(c => c.startsWith('\\') ? c : `\\${c}`);
+            .map(normalizeMathCommand);
 
         const newTextCommands = localTextCommands
             .map(c => c.trim())
             .filter(c => c.length > 0);
+
+        for (const command of newCommands) {
+            if (!MATH_COMMAND.test(command)) errors.push(`Autocomplete command "${command}" is not valid.`);
+        }
+        if (new Set(newCommands).size !== newCommands.length) errors.push('Autocomplete commands must be unique.');
+        if (newTextCommands.some(command => command.includes('\n'))) errors.push('Text autocomplete entries must use one line.');
+        if (new Set(newTextCommands).size !== newTextCommands.length) errors.push('Text autocomplete entries must be unique.');
+
+        const normalizedShortcut = localSearchShortcut.trim().toLowerCase();
+        if (!isValidShortcut(normalizedShortcut)) {
+            errors.push('Search shortcut must contain Ctrl, Meta, or Cmd plus one supported key, for example meta+k.');
+        }
+
+        const colorValues = [
+            ['Inline title color', localInlineBlockColorFilled],
+            ['Empty inline title color', localInlineBlockColorEmpty],
+            ['Standout title color', localStandoutBlockColorFilled],
+            ['Empty standout title color', localStandoutBlockColorEmpty],
+            ['Standout border color', localStandoutBorderColor],
+            ['Standout divider color', localStandoutDividerColor],
+            ['Math text color', localMathHighlightColor],
+            ...Object.entries(localMathColors).map(([name, value]) => [`Math ${name} color`, value])
+        ];
+        for (const [label, value] of colorValues) {
+            if (!HEX_COLOR.test(value.trim())) errors.push(`${label} must be a six-digit hex color such as #61afef.`);
+        }
+
+        const numericValues: Array<[string, number, number, number]> = [
+            ['Inline block indent', localInlineBlockIndentWidth, 0, 200],
+            ['Inline title underline opacity', localInlineBlockTitleUnderlineOpacity, 0, 100],
+            ['Standout block indent', localStandoutBlockIndentWidth, 0, 200],
+            ['Standout title left padding', localStandoutTitlePaddingLeft, 0, 200],
+            ['Standout title right padding', localStandoutTitlePaddingRight, 0, 200],
+            ['Standout title top padding', localStandoutTitlePaddingTop, 0, 200],
+            ['Standout title bottom padding', localStandoutTitlePaddingBottom, 0, 200],
+            ['Standout content left padding', localStandoutContentPaddingLeft, 0, 200],
+            ['Standout content right padding', localStandoutContentPaddingRight, 0, 200],
+            ['Standout content top padding', localStandoutContentPaddingTop, 0, 200],
+            ['Standout content bottom padding', localStandoutContentPaddingBottom, 0, 200],
+            ['Standout border width', localStandoutBorderWidth, 0, 20],
+            ['Standout divider width', localStandoutDividerWidth, 0, 20],
+            ['Standout base title size', localStandoutTitleFontSizeBase, 8, 96],
+            ['Standout title size step', localStandoutTitleFontSizeStep, 0, 24],
+            ['Standout minimum title size', localStandoutTitleFontSizeMin, 8, 96],
+            ['Standout background lighten step', localStandoutBgLightenStep, 0, 100],
+            ['Closed background opacity', localStandoutBgOpacityClosed, 0, 100],
+            ['Closed hover background opacity', localStandoutBgOpacityClosedHover, 0, 100],
+            ['Open background opacity', localStandoutBgOpacityOpen, 0, 100],
+            ['Open hover background opacity', localStandoutBgOpacityOpenHover, 0, 100],
+            ['Math block vertical padding', localMathBlockPaddingY, 0, 100]
+        ];
+        for (const [label, value, min, max] of numericValues) {
+            if (!Number.isFinite(value) || value < min || value > max) errors.push(`${label} must be between ${min} and ${max}.`);
+        }
+
+        if (errors.length > 0) {
+            setValidationErrors(errors);
+            return;
+        }
+
+        setValidationErrors([]);
             
         saveSettings({
             ...settings,
             macros: newMacros,
             customCommands: newCommands,
             textCommands: newTextCommands,
-            searchShortcut: localSearchShortcut.trim() || 'meta+k',
-            inlineBlockTitleColorWithContent: localInlineBlockColorFilled.trim() || '#a8b5c2',
-            inlineBlockTitleColorEmpty: localInlineBlockColorEmpty.trim() || '#FF997D',
-            inlineBlockTitleUnderlineOpacity: isNaN(localInlineBlockTitleUnderlineOpacity) ? 100 : localInlineBlockTitleUnderlineOpacity,
-            inlineBlockIndentWidth: isNaN(localInlineBlockIndentWidth) ? 16 : localInlineBlockIndentWidth,
-            standoutBlockTitleColorWithContent: localStandoutBlockColorFilled.trim() || '#a8b5c2',
-            standoutBlockTitleColorEmpty: localStandoutBlockColorEmpty.trim() || '#FF997D',
-            standoutBlockIndentWidth: isNaN(localStandoutBlockIndentWidth) ? 0 : localStandoutBlockIndentWidth,
-            standoutBlockTitlePaddingLeft: isNaN(localStandoutTitlePaddingLeft) ? 10 : localStandoutTitlePaddingLeft,
-            standoutBlockTitlePaddingRight: isNaN(localStandoutTitlePaddingRight) ? 6 : localStandoutTitlePaddingRight,
-            standoutBlockTitlePaddingTop: isNaN(localStandoutTitlePaddingTop) ? 5 : localStandoutTitlePaddingTop,
-            standoutBlockTitlePaddingBottom: isNaN(localStandoutTitlePaddingBottom) ? 5 : localStandoutTitlePaddingBottom,
-            standoutBlockContentPaddingLeft: isNaN(localStandoutContentPaddingLeft) ? 10 : localStandoutContentPaddingLeft,
-            standoutBlockContentPaddingTop: isNaN(localStandoutContentPaddingTop) ? 8 : localStandoutContentPaddingTop,
-            standoutBlockContentPaddingRight: isNaN(localStandoutContentPaddingRight) ? 12 : localStandoutContentPaddingRight,
-            standoutBlockContentPaddingBottom: isNaN(localStandoutContentPaddingBottom) ? 12 : localStandoutContentPaddingBottom,
-            standoutBlockBorderColor: localStandoutBorderColor.trim() || '#ffffff',
-            standoutBlockDividerColor: localStandoutDividerColor.trim() || '#ffffff',
-            standoutBlockBorderWidth: isNaN(localStandoutBorderWidth) ? 1 : localStandoutBorderWidth,
-            standoutBlockDividerWidth: isNaN(localStandoutDividerWidth) ? 1 : localStandoutDividerWidth,
-            standoutBlockTitleFontSizeBase: isNaN(localStandoutTitleFontSizeBase) ? 24 : localStandoutTitleFontSizeBase,
-            standoutBlockTitleFontSizeStep: isNaN(localStandoutTitleFontSizeStep) ? 2 : localStandoutTitleFontSizeStep,
-            standoutBlockTitleFontSizeMin: isNaN(localStandoutTitleFontSizeMin) ? 18 : localStandoutTitleFontSizeMin,
-            standoutBlockBgLightenStep: isNaN(localStandoutBgLightenStep) ? 2 : localStandoutBgLightenStep,
-            standoutBlockBgOpacityClosed: isNaN(localStandoutBgOpacityClosed) ? 30 : localStandoutBgOpacityClosed,
-            standoutBlockBgOpacityClosedHover: isNaN(localStandoutBgOpacityClosedHover) ? 40 : localStandoutBgOpacityClosedHover,
-            standoutBlockBgOpacityOpen: isNaN(localStandoutBgOpacityOpen) ? 80 : localStandoutBgOpacityOpen,
-            standoutBlockBgOpacityOpenHover: isNaN(localStandoutBgOpacityOpenHover) ? 90 : localStandoutBgOpacityOpenHover,
-            mathBlockPaddingY: isNaN(localMathBlockPaddingY) ? 4 : localMathBlockPaddingY,
-            mathHighlightColor: localMathHighlightColor.trim() || '#d19a66',
+            searchShortcut: normalizedShortcut,
+            inlineBlockTitleColorWithContent: localInlineBlockColorFilled.trim(),
+            inlineBlockTitleColorEmpty: localInlineBlockColorEmpty.trim(),
+            inlineBlockTitleUnderlineOpacity: localInlineBlockTitleUnderlineOpacity,
+            inlineBlockIndentWidth: localInlineBlockIndentWidth,
+            standoutBlockTitleColorWithContent: localStandoutBlockColorFilled.trim(),
+            standoutBlockTitleColorEmpty: localStandoutBlockColorEmpty.trim(),
+            standoutBlockIndentWidth: localStandoutBlockIndentWidth,
+            standoutBlockTitlePaddingLeft: localStandoutTitlePaddingLeft,
+            standoutBlockTitlePaddingRight: localStandoutTitlePaddingRight,
+            standoutBlockTitlePaddingTop: localStandoutTitlePaddingTop,
+            standoutBlockTitlePaddingBottom: localStandoutTitlePaddingBottom,
+            standoutBlockContentPaddingLeft: localStandoutContentPaddingLeft,
+            standoutBlockContentPaddingTop: localStandoutContentPaddingTop,
+            standoutBlockContentPaddingRight: localStandoutContentPaddingRight,
+            standoutBlockContentPaddingBottom: localStandoutContentPaddingBottom,
+            standoutBlockBorderColor: localStandoutBorderColor.trim(),
+            standoutBlockDividerColor: localStandoutDividerColor.trim(),
+            standoutBlockBorderWidth: localStandoutBorderWidth,
+            standoutBlockDividerWidth: localStandoutDividerWidth,
+            standoutBlockTitleFontSizeBase: localStandoutTitleFontSizeBase,
+            standoutBlockTitleFontSizeStep: localStandoutTitleFontSizeStep,
+            standoutBlockTitleFontSizeMin: localStandoutTitleFontSizeMin,
+            standoutBlockBgLightenStep: localStandoutBgLightenStep,
+            standoutBlockBgOpacityClosed: localStandoutBgOpacityClosed,
+            standoutBlockBgOpacityClosedHover: localStandoutBgOpacityClosedHover,
+            standoutBlockBgOpacityOpen: localStandoutBgOpacityOpen,
+            standoutBlockBgOpacityOpenHover: localStandoutBgOpacityOpenHover,
+            mathBlockPaddingY: localMathBlockPaddingY,
+            mathHighlightColor: localMathHighlightColor.trim(),
             mathColors: { ...localMathColors } as any
         });
         onClose();
@@ -203,59 +338,67 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         setLocalTextCommands(newTextCommands);
     };
 
+    const handleTabKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const currentIndex = settingsTabs.findIndex(tab => tab.id === activeTab);
+        const nextIndex = event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+                ? settingsTabs.length - 1
+                : (currentIndex + (event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 1) + settingsTabs.length) % settingsTabs.length;
+        const nextTab = settingsTabs[nextIndex];
+        setActiveTab(nextTab.id);
+        dialogRef.current?.querySelector<HTMLElement>(`#settings-tab-${nextTab.id}`)?.focus();
+    };
+
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-surface rounded-xl shadow-xl w-full max-w-4xl h-[75vh] flex flex-col border border-outline overflow-hidden">
+            <div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="editor-settings-title"
+                aria-describedby={validationErrors.length > 0 ? "settings-validation-errors" : undefined}
+                className="bg-surface rounded-xl shadow-xl w-full max-w-4xl h-[75vh] flex flex-col border border-outline overflow-hidden"
+            >
                 <div className="flex justify-between items-center p-4 border-b border-outline">
-                    <h2 className="text-lg font-bold text-primary">Editor Settings</h2>
-                    <button onClick={onClose} className="p-1 text-secondary hover:text-primary transition-colors">
-                        <X size={20} />
+                    <h2 id="editor-settings-title" className="text-lg font-bold text-primary">Editor Settings</h2>
+                    <button ref={closeButtonRef} onClick={onClose} aria-label="Close settings" className="p-1 text-secondary hover:text-primary transition-colors">
+                        <X size={20} aria-hidden="true" />
                     </button>
                 </div>
+
+                {validationErrors.length > 0 && (
+                    <div id="settings-validation-errors" role="alert" className="mx-4 mt-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                        <p className="font-semibold">Please correct these settings:</p>
+                        <ul className="mt-1 list-disc pl-5">
+                            {validationErrors.map(error => <li key={error}>{error}</li>)}
+                        </ul>
+                    </div>
+                )}
                 
                 <div className="flex flex-1 overflow-hidden">
                     {/* Left Sidebar */}
-                    <div className="w-48 md:w-64 border-r border-outline flex flex-col p-3 space-y-1 bg-base/30">
-                        <button 
-                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'general' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
-                            onClick={() => setActiveTab('general')}
-                        >
-                            Keyboard Shortcuts
-                        </button>
-                        <button 
-                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'macros' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
-                            onClick={() => setActiveTab('macros')}
-                        >
-                            Math Macros
-                        </button>
-                        <button 
-                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'commands' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
-                            onClick={() => setActiveTab('commands')}
-                        >
-                            Autocomplete
-                        </button>
-                        <button 
-                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'text' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
-                            onClick={() => setActiveTab('text')}
-                        >
-                            Text Autocomplete
-                        </button>
-                        <button 
-                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'embedded' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
-                            onClick={() => setActiveTab('embedded')}
-                        >
-                            Embedded Blocks
-                        </button>
-                        <button 
-                            className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === 'colors' ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
-                            onClick={() => setActiveTab('colors')}
-                        >
-                            LaTeX Highlight Colors
-                        </button>
+                    <div role="tablist" aria-label="Settings sections" onKeyDown={handleTabKeyDown} className="w-48 md:w-64 border-r border-outline flex flex-col p-3 space-y-1 bg-base/30">
+                        {settingsTabs.map(tab => (
+                            <button
+                                key={tab.id}
+                                id={`settings-tab-${tab.id}`}
+                                role="tab"
+                                tabIndex={activeTab === tab.id ? 0 : -1}
+                                aria-selected={activeTab === tab.id}
+                                aria-controls="settings-active-panel"
+                                className={`px-3 py-2.5 text-sm font-medium rounded-lg text-left transition-colors ${activeTab === tab.id ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-outline/50 hover:text-primary'}`}
+                                onClick={() => setActiveTab(tab.id)}
+                            >
+                                {tab.label}
+                            </button>
+                        ))}
                     </div>
 
                     {/* Right Content */}
-                    <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                    <div id="settings-active-panel" role="tabpanel" aria-labelledby={`settings-tab-${activeTab}`} className="flex-1 overflow-y-auto p-6 space-y-6">
                         {activeTab === 'macros' && (
                             <div className="max-w-2xl">
                                 <h3 className="text-base font-semibold text-primary mb-1">Math Macros</h3>
@@ -272,6 +415,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <div key={i} className="flex gap-2 items-center">
                                                 <input
                                                     type="text"
+                                                    aria-label={`Macro ${i + 1} name`}
                                                     placeholder="\macro"
                                                     value={macro.key}
                                                     onChange={(e) => updateMacro(i, 'key', e.target.value)}
@@ -280,6 +424,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 <span className="text-secondary">=</span>
                                                 <input
                                                     type="text"
+                                                    aria-label={`Macro ${i + 1} replacement`}
                                                     placeholder="\mathbb{R}"
                                                     value={macro.value}
                                                     onChange={(e) => updateMacro(i, 'value', e.target.value)}
@@ -287,24 +432,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 />
                                                 <div className="flex items-center">
                                                     <button
+                                                        aria-label={`Move macro ${i + 1} up`}
                                                         onClick={() => moveMacro(i, -1)}
                                                         disabled={i === 0}
                                                         className="p-2 flex-shrink-0 text-secondary hover:text-accent disabled:opacity-30 rounded transition-colors"
                                                     >
-                                                        <ArrowUp size={18} />
+                                                        <ArrowUp size={18} aria-hidden="true" />
                                                     </button>
                                                     <button
+                                                        aria-label={`Move macro ${i + 1} down`}
                                                         onClick={() => moveMacro(i, 1)}
                                                         disabled={i === localMacros.length - 1}
                                                         className="p-2 flex-shrink-0 text-secondary hover:text-accent disabled:opacity-30 rounded transition-colors"
                                                     >
-                                                        <ArrowDown size={18} />
+                                                        <ArrowDown size={18} aria-hidden="true" />
                                                     </button>
                                                     <button
+                                                        aria-label={`Remove macro ${i + 1}`}
                                                         onClick={() => removeMacro(i)}
                                                         className="p-2 flex-shrink-0 text-secondary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors ml-1"
                                                     >
-                                                        <Trash2 size={18} />
+                                                        <Trash2 size={18} aria-hidden="true" />
                                                     </button>
                                                 </div>
                                             </div>
@@ -338,6 +486,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 <div className="flex-1 relative">
                                                     <input
                                                         type="text"
+                                                        aria-label={`Autocomplete command ${i + 1}`}
                                                         placeholder="\mycommand"
                                                         value={cmd}
                                                         onChange={(e) => updateCommand(i, e.target.value)}
@@ -345,24 +494,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     />
                                                 </div>
                                                 <button
+                                                    aria-label={`Move autocomplete command ${i + 1} up`}
                                                     onClick={() => moveCommand(i, -1)}
                                                     disabled={i === 0}
                                                     className="p-1.5 text-secondary hover:text-primary hover:bg-outline/50 rounded transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-secondary"
                                                 >
-                                                    <ArrowUp size={16} />
+                                                    <ArrowUp size={16} aria-hidden="true" />
                                                 </button>
                                                 <button
+                                                    aria-label={`Move autocomplete command ${i + 1} down`}
                                                     onClick={() => moveCommand(i, 1)}
                                                     disabled={i === localCommands.length - 1}
                                                     className="p-1.5 text-secondary hover:text-primary hover:bg-outline/50 rounded transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-secondary"
                                                 >
-                                                    <ArrowDown size={16} />
+                                                    <ArrowDown size={16} aria-hidden="true" />
                                                 </button>
                                                 <button
+                                                    aria-label={`Remove autocomplete command ${i + 1}`}
                                                     onClick={() => removeCommand(i)}
                                                     className="p-1.5 text-secondary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
                                                 >
-                                                    <Trash2 size={16} />
+                                                    <Trash2 size={16} aria-hidden="true" />
                                                 </button>
                                             </div>
                                         ))}
@@ -395,6 +547,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 <div className="flex-1 relative">
                                                     <input
                                                         type="text"
+                                                        aria-label={`Text autocomplete entry ${i + 1}`}
                                                         placeholder="command"
                                                         value={cmd}
                                                         onChange={(e) => updateTextCommand(i, e.target.value)}
@@ -402,24 +555,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     />
                                                 </div>
                                                 <button
+                                                    aria-label={`Move text autocomplete entry ${i + 1} up`}
                                                     onClick={() => moveTextCommand(i, -1)}
                                                     disabled={i === 0}
                                                     className="p-1.5 text-secondary hover:text-primary hover:bg-outline/50 rounded transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-secondary"
                                                 >
-                                                    <ArrowUp size={16} />
+                                                    <ArrowUp size={16} aria-hidden="true" />
                                                 </button>
                                                 <button
+                                                    aria-label={`Move text autocomplete entry ${i + 1} down`}
                                                     onClick={() => moveTextCommand(i, 1)}
                                                     disabled={i === localTextCommands.length - 1}
                                                     className="p-1.5 text-secondary hover:text-primary hover:bg-outline/50 rounded transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-secondary"
                                                 >
-                                                    <ArrowDown size={16} />
+                                                    <ArrowDown size={16} aria-hidden="true" />
                                                 </button>
                                                 <button
+                                                    aria-label={`Remove text autocomplete entry ${i + 1}`}
                                                     onClick={() => removeTextCommand(i)}
                                                     className="p-1.5 text-secondary hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
                                                 >
-                                                    <Trash2 size={16} />
+                                                    <Trash2 size={16} aria-hidden="true" />
                                                 </button>
                                             </div>
                                         ))}
@@ -444,9 +600,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 
                                 <div className="space-y-4">
                                     <div className="flex flex-col gap-2">
-                                        <label className="text-sm font-medium text-primary">Global Search Shortcut</label>
+                                        <label htmlFor="settings-search-shortcut" className="text-sm font-medium text-primary">Global Search Shortcut</label>
                                         <div className="flex gap-2 items-center">
                                             <input
+                                                id="settings-search-shortcut"
                                                 type="text"
                                                 value={localSearchShortcut}
                                                 onChange={(e) => setLocalSearchShortcut(e.target.value)}
@@ -458,13 +615,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     </div>
                                     
                                     <div className="flex flex-col gap-2 mt-4">
-                                        <label className="text-sm font-medium text-primary">Math Block Vertical Padding (px)</label>
+                                        <label htmlFor="settings-math-padding" className="text-sm font-medium text-primary">Math Block Vertical Padding (px)</label>
                                         <div className="flex gap-2 items-center">
                                             <input
+                                                id="settings-math-padding"
                                                 type="number"
                                                 value={localMathBlockPaddingY}
                                                 onChange={(e) => setLocalMathBlockPaddingY(Number(e.target.value))}
                                                 min="0"
+                                                max="100"
                                                 step="1"
                                                 className="w-full max-w-xs bg-base border border-outline rounded px-3 py-2 text-sm font-mono text-primary focus:outline-none focus:border-accent"
                                             />
@@ -491,6 +650,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden relative" style={{ backgroundColor: item.value }}>
                                                         <input
                                                             type="color"
+                                                            aria-label={`${item.label} color picker`}
                                                             value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#000000'}
                                                             onChange={(e) => item.setter(e.target.value)}
                                                             className="opacity-0 cursor-pointer w-10 h-10 absolute"
@@ -498,6 +658,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     </div>
                                                     <input
                                                         type="text"
+                                                        aria-label={`${item.label} hex color`}
                                                         value={item.value || ''}
                                                         onChange={(e) => item.setter(e.target.value)}
                                                         className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
@@ -511,8 +672,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 </span>
                                                 <input
                                                     type="number"
+                                                    aria-label="Inline block left padding"
                                                     value={isNaN(localInlineBlockIndentWidth) ? '' : localInlineBlockIndentWidth}
                                                     onChange={(e) => setLocalInlineBlockIndentWidth(parseInt(e.target.value))}
+                                                    min="0"
+                                                    max="200"
                                                     className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
                                                 />
                                                 <span className="text-xs text-secondary ml-1">Left Padding/Indent</span>
@@ -523,6 +687,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 </span>
                                                 <input
                                                     type="number"
+                                                    aria-label="Inline title underline opacity"
                                                     value={isNaN(localInlineBlockTitleUnderlineOpacity) ? '' : localInlineBlockTitleUnderlineOpacity}
                                                     onChange={(e) => setLocalInlineBlockTitleUnderlineOpacity(parseInt(e.target.value))}
                                                     className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
@@ -546,6 +711,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden relative" style={{ backgroundColor: item.value }}>
                                                         <input
                                                             type="color"
+                                                            aria-label={`Standout ${item.label.toLowerCase()} color picker`}
                                                             value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#000000'}
                                                             onChange={(e) => item.setter(e.target.value)}
                                                             className="opacity-0 cursor-pointer w-10 h-10 absolute"
@@ -553,6 +719,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     </div>
                                                     <input
                                                         type="text"
+                                                        aria-label={`Standout ${item.label.toLowerCase()} hex color`}
                                                         value={item.value || ''}
                                                         onChange={(e) => item.setter(e.target.value)}
                                                         className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
@@ -566,8 +733,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 </span>
                                                 <input
                                                     type="number"
+                                                    aria-label="Standout block left padding"
                                                     value={isNaN(localStandoutBlockIndentWidth) ? '' : localStandoutBlockIndentWidth}
                                                     onChange={(e) => setLocalStandoutBlockIndentWidth(parseInt(e.target.value))}
+                                                    min="0"
+                                                    max="200"
                                                     className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
                                                 />
                                                 <span className="text-xs text-secondary ml-1">Left Padding/Indent</span>
@@ -585,8 +755,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                         <div key={item.key} className="flex gap-2 items-center">
                                                             <input
                                                                 type="number"
+                                                                aria-label={`Standout title ${item.label.toLowerCase()} padding`}
                                                                 value={isNaN(item.value) ? '' : item.value}
                                                                 onChange={(e) => item.setter(parseInt(e.target.value))}
+                                                                min="0"
+                                                                max="200"
                                                                 className="w-16 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
                                                             />
                                                             <span className="text-xs text-secondary">{item.label} (px)</span>
@@ -604,8 +777,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                         <div key={item.key} className="flex gap-2 items-center">
                                                             <input
                                                                 type="number"
+                                                                aria-label={`Standout content ${item.label.toLowerCase()} padding`}
                                                                 value={isNaN(item.value) ? '' : item.value}
                                                                 onChange={(e) => item.setter(parseInt(e.target.value))}
+                                                                min="0"
+                                                                max="200"
                                                                 className="w-16 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
                                                             />
                                                             <span className="text-xs text-secondary">{item.label} (px)</span>
@@ -622,6 +798,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                             <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden relative" style={{ backgroundColor: item.value }}>
                                                                 <input
                                                                     type="color"
+                                                                    aria-label={`${item.label} picker`}
                                                                     value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#ffffff'}
                                                                     onChange={(e) => item.setter(e.target.value)}
                                                                     className="opacity-0 cursor-pointer w-10 h-10 absolute"
@@ -629,6 +806,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                             </div>
                                                             <input
                                                                 type="text"
+                                                                aria-label={`${item.label} hex color`}
                                                                 value={item.value || ''}
                                                                 onChange={(e) => item.setter(e.target.value)}
                                                                 className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
@@ -651,6 +829,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                         <div key={item.key} className="flex gap-2 items-center">
                                                             <input
                                                                 type="number"
+                                                                aria-label={item.label}
                                                                 value={isNaN(item.value) ? '' : item.value}
                                                                 onChange={(e) => item.setter(parseInt(e.target.value))}
                                                                 className="w-16 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"
@@ -688,6 +867,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     <div className="w-6 h-6 rounded border border-outline shrink-0 flex items-center justify-center overflow-hidden relative" style={{ backgroundColor: item.value }}>
                                                         <input
                                                             type="color"
+                                                            aria-label={`${item.label} picker`}
                                                             value={item.value?.startsWith('#') ? item.value.slice(0, 7) : '#000000'}
                                                             onChange={(e) => item.setter(e.target.value)}
                                                             className="opacity-0 cursor-pointer w-10 h-10 absolute"
@@ -695,6 +875,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     </div>
                                                     <input
                                                         type="text"
+                                                        aria-label={`${item.label} hex color`}
                                                         value={item.value || ''}
                                                         onChange={(e) => item.setter(e.target.value)}
                                                         className="w-24 bg-base border border-outline rounded px-2 py-1 text-sm font-mono text-primary focus:outline-none focus:border-accent"

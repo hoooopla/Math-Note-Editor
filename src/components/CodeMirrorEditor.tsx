@@ -5,7 +5,7 @@ import { markdown, insertNewlineContinueMarkup } from "@codemirror/lang-markdown
 import { mathMarkdownExtension } from "../lib/editor/math-markdown-extension";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { history, defaultKeymap, historyKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
-import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField } from "../lib/editor/katex-plugin";
+import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, mathTooltipField, autoClosingDollarField, updateAutoClosingDollar, isDollarEscaped } from "../lib/editor/katex-plugin";
 import { blockNavigation } from "../lib/editor/navigation";
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, completionStatus, closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
@@ -173,7 +173,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
             }
         ]);
 
-        const blockquoteKeymap = keymap.of([
+        const markupContinuationKeymap = keymap.of([
             {
                 key: "Enter",
                 run: (view) => {
@@ -186,11 +186,17 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     const line = view.state.doc.lineAt(selection.from);
                     const lineText = line.text;
 
-                    const isBlockquote = /^\s*>/.test(lineText);
+                    const quoteMatch = lineText.match(/^(\s*)(>)(\s?)/);
+                    const bulletMatch = lineText.match(/^(\s*)([*+-])(\s+)/);
+                    const orderedMatch = lineText.match(/^(\s*)(\d+)([.)])(\s+)/);
+                    const markerMatch = quoteMatch || bulletMatch || orderedMatch;
 
-                    if (isBlockquote) {
-                        // Pressing Enter on an empty blockquote line (e.g. ">" or "> ") clears the ">" marker and exits to a blank line
-                        if (/^\s*>\s*$/.test(lineText)) {
+                    if (markerMatch) {
+                        const markerEnd = markerMatch[0].length;
+                        const content = lineText.slice(markerEnd);
+
+                        // A second Enter on an empty marker exits the quote/list.
+                        if (content.trim() === "") {
                             view.dispatch({
                                 changes: { from: line.from, to: line.to, insert: "" },
                                 selection: { anchor: line.from },
@@ -200,7 +206,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                             return true;
                         }
 
-                        // If cursor is at the very start of the line before '>', insert a plain newline before '>'
+                        // Enter before the marker inserts a plain line above it.
                         if (selection.empty && head === line.from) {
                             view.dispatch({
                                 changes: { from: line.from, insert: "\n" },
@@ -211,8 +217,15 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                             return true;
                         }
 
-                        const match = lineText.match(/^(\s*> ?)/);
-                        const prefix = match ? (match[1].endsWith(" ") ? match[1] : match[1] + " ") : "> ";
+                        let prefix: string;
+                        if (orderedMatch) {
+                            const nextNumber = Number.parseInt(orderedMatch[2], 10) + 1;
+                            prefix = `${orderedMatch[1]}${nextNumber}${orderedMatch[3]}${orderedMatch[4]}`;
+                        } else if (bulletMatch) {
+                            prefix = bulletMatch[0];
+                        } else {
+                            prefix = `${quoteMatch![1]}> `;
+                        }
 
                         view.dispatch({
                             changes: { from: selection.from, to: selection.to, insert: "\n" + prefix },
@@ -222,8 +235,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                         });
                         return true;
                     } else {
-                        // Original line does NOT start with '>'.
-                        // Prevent default markdown continuation (which auto-adds '>' for lazy blockquotes).
+                        // Preserve indentation without continuing a lazy quote.
                         const indentMatch = lineText.match(/^(\s*)/);
                         const indent = indentMatch ? indentMatch[1] : "";
 
@@ -249,7 +261,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 history(),
                 customKeymap,
                 Prec.highest(keymap.of(embedKeymap)),
-                Prec.highest(blockquoteKeymap),
+                Prec.highest(markupContinuationKeymap),
                 keymap.of([{
                     key: "[",
                     run: (view) => {
@@ -269,6 +281,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     key: "$",
                     run: (view) => {
                         const state = view.state;
+                        const replacedEscapedClosers: Array<{ remove: number; add: number }> = [];
                         const changes = state.changeByRange(range => {
                             if (!range.empty) {
                                 return {
@@ -285,6 +298,14 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                             const prevChar = state.doc.sliceString(pos - 1, pos);
                             
                             if (nextChar === "$") {
+                                const trackedClosers = state.field(autoClosingDollarField);
+                                if (trackedClosers.has(pos) && isDollarEscaped(state.doc.toString(), pos)) {
+                                    replacedEscapedClosers.push({ remove: pos, add: pos + 1 });
+                                    return {
+                                        changes: { insert: "$", from: pos + 1 },
+                                        range: EditorSelection.cursor(pos + 2)
+                                    };
+                                }
                                 return { range: EditorSelection.cursor(pos + 1) };
                             }
                             
@@ -305,11 +326,24 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                             view.dispatch(changes);
                             return true;
                         }
-                        
+
+                        const autoCloserChanges: Array<{ add?: number; remove?: number }> = [];
+                        changes.changes.iterChanges((_fromA, _toA, fromB, _toB, inserted) => {
+                            if (inserted.toString() === "$$") {
+                                autoCloserChanges.push({ add: fromB + 1 });
+                            }
+                        });
+                        autoCloserChanges.push(...replacedEscapedClosers);
+
                         view.dispatch(state.update(changes, {
                             scrollIntoView: true,
                             userEvent: "input.type"
                         }));
+                        if (autoCloserChanges.length > 0) {
+                            view.dispatch({
+                                effects: autoCloserChanges.map(change => updateAutoClosingDollar.of(change))
+                            });
+                        }
                         return true;
                     }
                 }]),
@@ -324,6 +358,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     EditorView.editable.of(!isReadOnly)
                 ]),
                 editorFocusField,
+                autoClosingDollarField,
                 parsedRangesField,
                 mathTooltipField,
                 mathPlugin,

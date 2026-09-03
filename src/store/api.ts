@@ -65,6 +65,18 @@ export interface BackendApi {
 let dirHandle: FileSystemDirectoryHandle | null = null;
 let useServer = true;
 
+const requireOk = async (response: Response, operation: string) => {
+    if (response.ok) return;
+    let detail = '';
+    try {
+        const body = await response.json();
+        detail = body?.error ? `: ${body.error}` : '';
+    } catch {
+        // The status still provides a useful error if the response is not JSON.
+    }
+    throw new Error(`${operation} failed (${response.status})${detail}`);
+};
+
 export const computeReferences = (content: string): string[] => {
     const regex = /\[\[@?([^\]\|∨]+)(?:\|\|[^\]∨]+)?∨?\]\]/g;
     const refs = new Set<string>();
@@ -199,7 +211,8 @@ export const api: BackendApi = {
         };
         if (useServer) {
             const res = await fetch('/api/settings');
-            return res.ok ? await res.json() : defaultSettings;
+            await requireOk(res, 'Loading settings');
+            return await res.json();
         }
         if (api.mode === "local" && dirHandle) {
             try {
@@ -215,11 +228,12 @@ export const api: BackendApi = {
     },
     saveSettings: async (settings) => {
         if (useServer) {
-            await fetch('/api/settings', {
+            const res = await fetch('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings),
             });
+            await requireOk(res, 'Saving settings');
         } else if (api.mode === "local" && dirHandle) {
             const settingDirHandle = await dirHandle.getDirectoryHandle('setting', { create: true });
             const fileHandle = await settingDirHandle.getFileHandle('settings.json', { create: true });
@@ -241,7 +255,9 @@ export const api: BackendApi = {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ filePath: 'assets/' + filename, content: base64 }),
             });
+            await requireOk(res, 'Saving asset');
             const json = await res.json();
+            if (!json.url) throw new Error('Saving asset failed: server returned no URL');
             return json.url;
         } else if (api.mode === "local" && dirHandle) {
             const assetsDir = await dirHandle.getDirectoryHandle('assets', { create: true });
@@ -262,6 +278,7 @@ export const api: BackendApi = {
         if (useServer) {
             try {
                 const res = await fetch('/api/assets-list');
+                await requireOk(res, 'Listing assets');
                 return await res.json();
             } catch {
                 return [];
@@ -319,6 +336,7 @@ export const api: BackendApi = {
     loadBlocks: async () => {
         if (useServer) {
             const res = await fetch('/api/blocks?metaOnly=true');
+            await requireOk(res, 'Loading blocks');
             return await res.json();
         }
         if (api.mode === "local" && dirHandle) {
@@ -382,6 +400,7 @@ export const api: BackendApi = {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
+            await requireOk(res, 'Creating block');
             return await res.json();
         }
         if (api.mode === "local" && dirHandle) {
@@ -408,16 +427,17 @@ export const api: BackendApi = {
             await writable.close();
             return block;
         }
-        const b = { id: uuidv4(), title: 'New', label: 'block', content: '', ...data };
-        return b;
+        throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot create blocks' : 'No writable backend is connected');
     },
     updateBlock: async (id, block, existingBlocks) => {
         if (useServer) {
             const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(block)
+                body: JSON.stringify(block),
+                keepalive: true
             });
+            await requireOk(res, 'Saving block');
             return await res.json();
         }
         if (api.mode === "local" && dirHandle) {
@@ -469,17 +489,22 @@ export const api: BackendApi = {
                 return { block };
             }
         }
-        block.references = computeReferences(block.content || "");
-        return { block };
+        if (api.mode === 'viewer') throw new Error('Read-only viewer cannot update blocks');
+        throw new Error('No writable backend is connected');
     },
     deleteBlock: async (id, blocks) => {
         if (useServer) {
-            await fetch(`/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            await requireOk(res, 'Deleting block');
         } else if (api.mode === "local" && dirHandle) {
             const entry = await getFileByBlockId(id);
             if (entry) {
                 await dirHandle.removeEntry(entry.name);
             }
+        } else if (api.mode === 'viewer') {
+            throw new Error('Read-only viewer cannot delete blocks');
+        } else {
+            throw new Error('No writable backend is connected');
         }
     }
 };

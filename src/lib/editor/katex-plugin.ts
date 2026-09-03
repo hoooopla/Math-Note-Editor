@@ -9,6 +9,35 @@ export const livePreviewMacros = Facet.define<Record<string, string>, Record<str
 
 export const setEditorFocus = StateEffect.define<boolean>();
 
+interface AutoClosingDollarChange {
+    add?: number;
+    remove?: number;
+}
+
+export const updateAutoClosingDollar = StateEffect.define<AutoClosingDollarChange>();
+
+export const autoClosingDollarField = StateField.define<Set<number>>({
+    create() {
+        return new Set();
+    },
+    update(value, tr) {
+        const next = new Set<number>();
+        for (const pos of value) {
+            const mapped = tr.changes.mapPos(pos, 1);
+            if (tr.state.doc.sliceString(mapped, mapped + 1) === "$") next.add(mapped);
+        }
+
+        for (const effect of tr.effects) {
+            if (!effect.is(updateAutoClosingDollar)) continue;
+            if (effect.value.remove !== undefined) next.delete(effect.value.remove);
+            if (effect.value.add !== undefined && tr.state.doc.sliceString(effect.value.add, effect.value.add + 1) === "$") {
+                next.add(effect.value.add);
+            }
+        }
+        return next;
+    }
+});
+
 export const editorFocusField = StateField.define<boolean>({
     create(state) { 
         // Initial value could be true if the DOM is already focused or we are just typing
@@ -27,12 +56,23 @@ export interface ParsedRange {
     from: number;
     to: number;
     text: string;
-    type: "blockMath" | "inlineMath" | "bold" | "italic" | "underline" | "list" | "quote";
+    type: "blockMath" | "inlineMath" | "bold" | "italic" | "underline" | "list" | "quote" | "link";
+    url?: string;
+    labelFrom?: number;
+    labelTo?: number;
 }
 
-function parseRanges(doc: string): ParsedRange[] {
+export function isDollarEscaped(doc: string, pos: number) {
+    let backslashes = 0;
+    for (let i = pos - 1; i >= 0 && doc[i] === "\\"; i--) backslashes++;
+    return backslashes % 2 === 1;
+}
+
+function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new Set()): ParsedRange[] {
     const ranges: ParsedRange[] = [];
-    
+
+    // Display math may span lines, so identify it before scanning individual
+    // lines for inline math.
     let i = 0;
     while (i < doc.length) {
         if (doc.startsWith("\\[", i)) {
@@ -51,72 +91,157 @@ function parseRanges(doc: string): ParsedRange[] {
                 }
             }
         }
-
-        if (doc[i] === '$' && doc[i - 1] !== '\\') {
-            let end = doc.indexOf("$", i + 1);
-            while (end !== -1 && doc[end - 1] === '\\') {
-                end = doc.indexOf("$", end + 1);
-            }
-            if (end !== -1) {
-                const text = doc.slice(i + 1, end).trim();
-                ranges.push({
-                    from: i, 
-                    to: end + 1, 
-                    text: text,
-                    type: "inlineMath"
-                });
-                i = end + 1;
-                continue;
-            }
-        }
         i++;
     }
 
-    const boldRegex = /\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*/g;
+    const blockMathRanges = ranges.filter(r => r.type === "blockMath");
+    let lineStart = 0;
+    while (lineStart <= doc.length) {
+        const newline = doc.indexOf("\n", lineStart);
+        const lineEnd = newline === -1 ? doc.length : newline;
+        const delimiters: number[] = [];
+
+        for (let pos = lineStart; pos < lineEnd; pos++) {
+            const blockRange = blockMathRanges.find(r => pos >= r.from && pos < r.to);
+            if (blockRange) {
+                pos = blockRange.to - 1;
+                continue;
+            }
+            if (doc[pos] === "$" && (autoClosingDollars.has(pos) || !isDollarEscaped(doc, pos))) {
+                delimiters.push(pos);
+            }
+        }
+
+        // With an odd delimiter count, the line is malformed. Leaving all math
+        // on that line visible is safer than guessing and stealing a delimiter
+        // from a later formula. A tracked auto-closer makes transient `\` input
+        // unambiguous while the user types a LaTeX command.
+        if (delimiters.length % 2 === 0) {
+            for (let delimiter = 0; delimiter < delimiters.length; delimiter += 2) {
+                const from = delimiters[delimiter];
+                const end = delimiters[delimiter + 1];
+                ranges.push({
+                    from,
+                    to: end + 1,
+                    text: doc.slice(from + 1, end).trim(),
+                    type: "inlineMath"
+                });
+            }
+        }
+
+        if (newline === -1) break;
+        lineStart = newline + 1;
+    }
+
+    const inlineMathRanges = ranges.filter(r => r.type === "inlineMath");
+    const mathRangeAt = (pos: number) => inlineMathRanges.find(r => pos >= r.from && pos < r.to);
+    const scanDelimitedFormatting = (marker: "*" | "**", type: "italic" | "bold") => {
+        for (let start = 0; start <= doc.length - marker.length; start++) {
+            if (!doc.startsWith(marker, start) || doc[start - 1] === "\\" || mathRangeAt(start)) continue;
+            if (marker === "*" && (doc[start - 1] === "*" || doc[start + 1] === "*")) continue;
+            if (marker === "**" && (doc[start - 1] === "*" || doc[start + 2] === "*")) continue;
+            if (/\s/.test(doc[start + marker.length] || "")) continue;
+
+            let closing = -1;
+            for (let pos = start + marker.length; pos < doc.length && doc[pos] !== "\n"; pos++) {
+                const mathRange = mathRangeAt(pos);
+                if (mathRange) {
+                    pos = mathRange.to - 1;
+                    continue;
+                }
+                if (!doc.startsWith(marker, pos) || doc[pos - 1] === "\\" || /\s/.test(doc[pos - 1] || "")) continue;
+                if (marker === "*" && (doc[pos - 1] === "*" || doc[pos + 1] === "*")) continue;
+                if (marker === "**" && (doc[pos - 1] === "*" || doc[pos + 2] === "*")) continue;
+                closing = pos;
+                break;
+            }
+            if (closing === -1) continue;
+
+            const end = closing + marker.length;
+            const conflictingRange = ranges.some(r => {
+                const overlaps = Math.max(start, r.from) < Math.min(end, r.to);
+                if (!overlaps) return false;
+                return !(r.type === "inlineMath" && start < r.from && end > r.to);
+            });
+            if (!conflictingRange) {
+                ranges.push({ from: start, to: end, text: doc.slice(start + marker.length, closing), type });
+                start = end - 1;
+            }
+        }
+    };
+    scanDelimitedFormatting("**", "bold");
+    scanDelimitedFormatting("*", "italic");
+
+    const markdownLinkRegex = /\[([^\]\n]+)\]\((https?:\/\/[^\s)\]">]+)\)/g;
     let match;
-    while ((match = boldRegex.exec(doc)) !== null) {
-        const start = match.index;
-        const end = match.index + match[0].length;
-        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
-        if (!overlapping) {
-            ranges.push({
-                from: start,
-                to: end,
-                text: match[1],
-                type: "bold"
-            });
-        }
+    while ((match = markdownLinkRegex.exec(doc)) !== null) {
+        const labelFrom = match.index + 1;
+        const labelTo = labelFrom + match[1].length;
+        ranges.push({
+            from: match.index,
+            to: match.index + match[0].length,
+            text: match[1],
+            type: "link",
+            url: match[2],
+            labelFrom,
+            labelTo
+        });
     }
+    const isWordCharacter = (value: string | undefined) => value !== undefined && /[\p{L}\p{N}]/u.test(value);
+    const isOpeningUnderline = (pos: number) =>
+        doc[pos] === "_" &&
+        doc[pos - 1] !== "\\" &&
+        doc[pos - 1] !== "_" &&
+        doc[pos + 1] !== "_" &&
+        !isWordCharacter(doc[pos - 1]) &&
+        !mathRangeAt(pos);
+    const isClosingUnderline = (pos: number) =>
+        doc[pos] === "_" &&
+        doc[pos - 1] !== "\\" &&
+        doc[pos - 1] !== "_" &&
+        doc[pos + 1] !== "_" &&
+        !/\s/.test(doc[pos - 1] || "") &&
+        !isWordCharacter(doc[pos + 1]) &&
+        !mathRangeAt(pos);
 
-    const italicRegex = /(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)/g;
-    while ((match = italicRegex.exec(doc)) !== null) {
-        const start = match.index;
-        const end = match.index + match[0].length;
-        const text = match[1];
-        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
-        if (!overlapping) {
-            ranges.push({
-                from: start,
-                to: end,
-                text: text,
-                type: "italic"
-            });
+    for (let start = 0; start < doc.length; start++) {
+        if (!isOpeningUnderline(start)) continue;
+
+        let closing = -1;
+        for (let pos = start + 1; pos < doc.length && doc[pos] !== "\n"; pos++) {
+            const mathRange = mathRangeAt(pos);
+            if (mathRange) {
+                pos = mathRange.to - 1;
+                continue;
+            }
+            if (isClosingUnderline(pos)) {
+                closing = pos;
+                break;
+            }
         }
-    }
+        if (closing === -1) continue;
 
-    const underlineRegex = /(?<!_)_(?!\s)([^_\n]+?)(?<!\s)_(?!_)/g;
-    while ((match = underlineRegex.exec(doc)) !== null) {
-        const start = match.index;
-        const end = match.index + match[0].length;
-        const text = match[1];
-        const overlapping = ranges.some(r => Math.max(start, r.from) < Math.min(end, r.to));
-        if (!overlapping) {
+        const end = closing + 1;
+        const text = doc.slice(start + 1, closing);
+        const conflictingRange = ranges.some(r => {
+            const overlaps = Math.max(start, r.from) < Math.min(end, r.to);
+            if (!overlaps) return false;
+
+            // Inline math may be nested inside an underline run. Other overlaps,
+            // including underline-like underscores inside math, remain excluded.
+            const nestedInlineRange =
+                (r.type === "inlineMath" || r.type === "italic" || r.type === "bold") &&
+                start < r.from && end > r.to;
+            return !nestedInlineRange;
+        });
+        if (!conflictingRange) {
             ranges.push({
                 from: start,
                 to: end,
                 text: text,
                 type: "underline"
             });
+            start = closing;
         }
     }
 
@@ -157,28 +282,40 @@ function parseRanges(doc: string): ParsedRange[] {
 
 export const parsedRangesField = StateField.define<ParsedRange[]>({
     create(state) {
-        return parseRanges(state.doc.toString());
+        return parseRanges(state.doc.toString(), state.field(autoClosingDollarField));
     },
     update(value, tr) {
-        if (tr.docChanged) return parseRanges(tr.state.doc.toString());
+        if (tr.docChanged || tr.effects.some(effect => effect.is(updateAutoClosingDollar))) {
+            return parseRanges(tr.state.doc.toString(), tr.state.field(autoClosingDollarField));
+        }
         return value;
     }
 });
 
 class MathWidget extends WidgetType {
-    constructor(public text: string, public isBlock: boolean, public macros: Record<string, string>) {
+    constructor(
+        public text: string,
+        public isBlock: boolean,
+        public macros: Record<string, string>,
+        public isLinked = false,
+        public isQuoted = false
+    ) {
         super();
     }
 
     eq(other: MathWidget) {
         return this.text === other.text && 
                this.isBlock === other.isBlock && 
+               this.isLinked === other.isLinked &&
+               this.isQuoted === other.isQuoted &&
                JSON.stringify(this.macros) === JSON.stringify(other.macros);
     }
 
     toDOM(view: EditorView) {
         const span = document.createElement(this.isBlock ? "div" : "span");
-        const baseClass = this.isBlock ? "cm-math-block text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all" : "cm-math-inline";
+        const baseClass = this.isBlock
+            ? "cm-math-block text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all"
+            : `cm-math-inline${this.isQuoted ? " cm-quote-math" : ""}`;
         span.className = baseClass;
         span.style.cursor = "text";
 
@@ -193,8 +330,10 @@ class MathWidget extends WidgetType {
             view.focus();
         };
 
-        span.addEventListener("mousedown", handleFocus);
-        span.addEventListener("touchstart", handleFocus, { passive: false });
+        if (!this.isLinked) {
+            span.addEventListener("mousedown", handleFocus);
+            span.addEventListener("touchstart", handleFocus, { passive: false });
+        }
 
         try {
             katex.render(this.text, span, {
@@ -365,15 +504,17 @@ function buildLiveDecorations(state: EditorState) {
         } else {
             if (r.type === "bold") {
                 decos.push({from: r.from, to: r.from + 2, deco: Decoration.replace({})});
-                decos.push({from: r.from + 2, to: r.to - 2, deco: Decoration.mark({ class: "font-bold text-primary" })});
+                decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: "cm-format-bold text-primary" })});
                 decos.push({from: r.to - 2, to: r.to, deco: Decoration.replace({})});
             } else if (r.type === "italic") {
                 decos.push({from: r.from, to: r.from + 1, deco: Decoration.replace({})});
-                decos.push({from: r.from + 1, to: r.to - 1, deco: Decoration.mark({ class: "italic text-primary" })});
+                decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: "cm-format-italic text-primary" })});
                 decos.push({from: r.to - 1, to: r.to, deco: Decoration.replace({})});
             } else if (r.type === "underline") {
                 decos.push({from: r.from, to: r.from + 1, deco: Decoration.replace({})});
-                decos.push({from: r.from + 1, to: r.to - 1, deco: Decoration.mark({ class: "underline underline-offset-2 text-primary not-italic" })});
+                // Include the hidden delimiters so a math widget at either edge
+                // stays inside the single shared underline container.
+                decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: "cm-underline-run text-primary" })});
                 decos.push({from: r.to - 1, to: r.to, deco: Decoration.replace({})});
             } else if (r.type === "list") {
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
@@ -381,16 +522,32 @@ function buildLiveDecorations(state: EditorState) {
                 })});
             } else if (r.type === "quote") {
                 decos.push({from: r.from, to: r.from + 2, deco: Decoration.replace({})});
-                if (r.to > r.from + 2) {
-                    decos.push({from: r.from + 2, to: r.to, deco: Decoration.mark({ class: "text-[#CBF0FF] font-bold" })});
-                }
+                decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: "cm-quote-run" })});
+            } else if (r.type === "link") {
+                decos.push({from: r.from, to: r.labelFrom!, deco: Decoration.replace({})});
+                decos.push({
+                    from: r.from,
+                    to: r.to,
+                    deco: Decoration.mark({
+                        tagName: "a",
+                        class: "cm-markdown-link",
+                        attributes: { href: r.url!, target: "_blank", rel: "noopener noreferrer" }
+                    })
+                });
+                decos.push({from: r.labelTo!, to: r.to, deco: Decoration.replace({})});
             } else if (r.type === "inlineMath" && r.text.trim().length === 0) {
                 decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: "cm-math-editing", inclusive: true })});
                 decos.push({ from: r.from, to: r.from + 1, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
                 decos.push({ from: r.to - 1, to: r.to, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
             } else {
+                const isLinked = r.type === "inlineMath" && ranges.some(candidate =>
+                    candidate.type === "link" && candidate.labelFrom! <= r.from && candidate.labelTo! >= r.to
+                );
+                const isQuoted = r.type === "inlineMath" && ranges.some(candidate =>
+                    candidate.type === "quote" && candidate.from <= r.from && candidate.to >= r.to
+                );
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
-                    widget: new MathWidget(r.text, r.type === "blockMath", macros),
+                    widget: new MathWidget(r.text, r.type === "blockMath", macros, isLinked, isQuoted),
                     block: r.type === "blockMath"
                 })});
             }

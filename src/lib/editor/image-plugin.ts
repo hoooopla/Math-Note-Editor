@@ -3,6 +3,9 @@ import { RangeSetBuilder } from "@codemirror/state";
 import { useStore } from "../../store";
 
 class ImageWidget extends WidgetType {
+    private objectUrl: string | null = null;
+    private disposed = false;
+
     constructor(readonly src: string, readonly width: string) {
         super();
     }
@@ -24,6 +27,13 @@ class ImageWidget extends WidgetType {
             img.src = this.src;
         } else {
             useStore.getState().getAssetUrl(this.src).then(url => {
+                if (url.startsWith("blob:")) {
+                    if (this.disposed) {
+                        URL.revokeObjectURL(url);
+                        return;
+                    }
+                    this.objectUrl = url;
+                }
                 img.src = url;
             });
         }
@@ -48,6 +58,14 @@ class ImageWidget extends WidgetType {
     }
 
     ignoreEvent() { return true; }
+
+    destroy() {
+        this.disposed = true;
+        if (this.objectUrl) {
+            URL.revokeObjectURL(this.objectUrl);
+            this.objectUrl = null;
+        }
+    }
 }
 
 function buildImageDecorations(view: EditorView) {
