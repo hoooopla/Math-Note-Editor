@@ -1,6 +1,18 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('mathNotesDesktop', {
+  updateShortcuts(shortcuts) {
+    ipcRenderer.send('update-shortcuts', shortcuts);
+  },
+  chooseWorkspace() {
+    return ipcRenderer.invoke('choose-workspace');
+  },
+  getWorkspacePath() {
+    return ipcRenderer.invoke('get-workspace-path');
+  },
+  showWorkspaceInFolder() {
+    return ipcRenderer.invoke('show-workspace-in-folder');
+  },
   onCommand(callback) {
     const listener = (_event, command) => callback(command);
     ipcRenderer.on('note-command', listener);

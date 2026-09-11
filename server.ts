@@ -248,11 +248,11 @@ app.post("/api/assets", express.json({limit: '20mb'}), async (req, res) => {
             const assetPath = filePath.replace(/^assets\//, '');
             const contentType = content.match(/^data:([^;]+);base64,/)?.[1] || 'application/octet-stream';
             testAssets.set(assetPath, { buffer, contentType });
-            return res.json({ success: true, url: `/api/assets/${assetPath}` });
+            return res.json({ success: true, url: `assets/${assetPath}` });
         }
         await ensureDir(path.dirname(absolutePath));
         await fs.writeFile(absolutePath, buffer);
-        res.json({ success: true, url: `/api/assets/${filePath.replace(/^assets\//, '')}` }); 
+        res.json({ success: true, url: `assets/${filePath.replace(/^assets\//, '')}` });
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }

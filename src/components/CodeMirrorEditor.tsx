@@ -10,7 +10,7 @@ import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, c
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { textCompletion } from "../lib/editor/text-autocomplete";
-import { embeddedAtomicRanges, embeddedBlockPlugin, embeddedObjectSelectionField, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, enterOpenEmbeddedAtEnd, runEmbeddedKey } from "../lib/editor/embedded-block-plugin";
+import { embeddedAtomicRanges, embeddedBlockPlugin, embeddedObjectSelectionField, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, enterOpenEmbeddedAtEnd, runEmbeddedKey, openEmbeddedTargetInTab } from "../lib/editor/embedded-block-plugin";
 import { ligaturePlugin } from "../lib/editor/ligature-plugin";
 import { imagePlugin } from "../lib/editor/image-plugin";
 import { urlPlugin } from "../lib/editor/url-plugin";
@@ -246,6 +246,10 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         };
 
         const navigationKeymap = Prec.highest(keymap.of([
+            {
+                key: "Mod-Enter",
+                run: openEmbeddedTargetInTab
+            },
             {
                 key: "Escape",
                 run: (view) => {

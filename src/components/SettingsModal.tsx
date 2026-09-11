@@ -17,22 +17,24 @@ const normalizeMathCommand = (value: string) => {
 
 const isValidShortcut = (value: string) => {
     const parts = value.toLowerCase().split('+').map(part => part.trim()).filter(Boolean);
+    if (parts.length === 1 && /^f(?:[1-9]|1[0-2])$/.test(parts[0])) return true;
     const modifiers = parts.slice(0, -1);
     const key = parts.at(-1) || '';
     return parts.length >= 2
-        && modifiers.every(modifier => ['ctrl', 'meta', 'cmd'].includes(modifier))
-        && modifiers.some(modifier => ['ctrl', 'meta', 'cmd'].includes(modifier))
+        && modifiers.every(modifier => ['ctrl', 'meta', 'cmd', 'mod', 'shift', 'alt'].includes(modifier))
+        && modifiers.some(modifier => ['ctrl', 'meta', 'cmd', 'mod'].includes(modifier))
         && new Set(modifiers).size === modifiers.length
-        && /^(?:[a-z0-9]|enter|space|escape|backspace|delete|arrow(?:up|down|left|right)|\/)$/.test(key);
+        && /^(?:[a-z0-9]|f(?:[1-9]|1[0-2])|tab|enter|space|escape|backspace|delete|arrow(?:up|down|left|right)|\/)$/.test(key);
 };
 
 const settingsTabs = [
-    { id: 'general', label: 'Keyboard Shortcuts' },
+    { id: 'general', label: 'General Setting' },
+    { id: 'keyboard', label: 'Keyboard Shortcuts' },
     { id: 'macros', label: 'Math Macros' },
     { id: 'commands', label: 'Autocomplete' },
     { id: 'text', label: 'Text Autocomplete' },
     { id: 'embedded', label: 'Embedded Blocks' },
-    { id: 'colors', label: 'LaTeX Highlight Colors' }
+    { id: 'colors', label: 'Math Visual' }
 ] as const;
 
 type SettingsTab = typeof settingsTabs[number]['id'];
@@ -49,6 +51,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localCommands, setLocalCommands] = useState<string[]>([]);
     const [localTextCommands, setLocalTextCommands] = useState<string[]>([]);
     const [localSearchShortcut, setLocalSearchShortcut] = useState<string>('meta+k');
+    const [localEditMetadataShortcut, setLocalEditMetadataShortcut] = useState<string>('f2');
+    const [localCloseTabShortcut, setLocalCloseTabShortcut] = useState<string>('mod+w');
+    const [localReopenTabShortcut, setLocalReopenTabShortcut] = useState<string>('mod+shift+t');
+    const [localNextTabShortcut, setLocalNextTabShortcut] = useState<string>('ctrl+tab');
+    const [localPreviousTabShortcut, setLocalPreviousTabShortcut] = useState<string>('ctrl+shift+tab');
+    const [workspacePath, setWorkspacePath] = useState<string | null>(null);
     const [localMathHighlightColor, setLocalMathHighlightColor] = useState<string>('#d19a66');
     const [localInlineBlockColorFilled, setLocalInlineBlockColorFilled] = useState<string>('#a8b5c2');
     const [localInlineBlockColorEmpty, setLocalInlineBlockColorEmpty] = useState<string>('#FF997D');
@@ -96,6 +104,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalCommands([...(settings.customCommands || [])]);
             setLocalTextCommands([...(settings.textCommands || [])]);
             setLocalSearchShortcut(settings.searchShortcut || 'meta+k');
+            setLocalEditMetadataShortcut(settings.editMetadataShortcut || 'f2');
+            setLocalCloseTabShortcut(settings.closeTabShortcut || 'mod+w');
+            setLocalReopenTabShortcut(settings.reopenClosedTabShortcut || 'mod+shift+t');
+            setLocalNextTabShortcut(settings.nextTabShortcut || 'ctrl+tab');
+            setLocalPreviousTabShortcut(settings.previousTabShortcut || 'ctrl+shift+tab');
+            if (window.mathNotesDesktop) {
+                void window.mathNotesDesktop.getWorkspacePath().then(setWorkspacePath).catch(() => setWorkspacePath(null));
+            } else {
+                setWorkspacePath(null);
+            }
             setLocalInlineBlockColorFilled(settings.inlineBlockTitleColorWithContent || '#a8b5c2');
             setLocalInlineBlockColorEmpty(settings.inlineBlockTitleColorEmpty || '#FF997D');
             setLocalInlineBlockTitleUnderlineOpacity(settings.inlineBlockTitleUnderlineOpacity ?? 100);
@@ -196,9 +214,20 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         if (newTextCommands.some(command => command.includes('\n'))) errors.push('Text autocomplete entries must use one line.');
         if (new Set(newTextCommands).size !== newTextCommands.length) errors.push('Text autocomplete entries must be unique.');
 
-        const normalizedShortcut = localSearchShortcut.trim().toLowerCase();
-        if (!isValidShortcut(normalizedShortcut)) {
-            errors.push('Search shortcut must contain Ctrl, Meta, or Cmd plus one supported key, for example meta+k.');
+        const normalizedShortcuts = {
+            search: localSearchShortcut.trim().toLowerCase(),
+            editMetadata: localEditMetadataShortcut.trim().toLowerCase(),
+            closeTab: localCloseTabShortcut.trim().toLowerCase(),
+            reopenTab: localReopenTabShortcut.trim().toLowerCase(),
+            nextTab: localNextTabShortcut.trim().toLowerCase(),
+            previousTab: localPreviousTabShortcut.trim().toLowerCase()
+        };
+        for (const [name, shortcut] of Object.entries(normalizedShortcuts)) {
+            if (!isValidShortcut(shortcut)) errors.push(`${({ search: 'Search', editMetadata: 'Edit block metadata', closeTab: 'Close tab', reopenTab: 'Reopen tab', nextTab: 'Next tab', previousTab: 'Previous tab' } as Record<string, string>)[name]} shortcut must be F1–F12 or contain Ctrl, Meta, Cmd, or Mod plus one supported key.`);
+        }
+        const shortcutValues = Object.values(normalizedShortcuts);
+        if (new Set(shortcutValues).size !== shortcutValues.length) {
+            errors.push('Keyboard shortcuts must be unique.');
         }
 
         const colorValues = [
@@ -255,7 +284,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             macros: newMacros,
             customCommands: newCommands,
             textCommands: newTextCommands,
-            searchShortcut: normalizedShortcut,
+            searchShortcut: normalizedShortcuts.search,
+            editMetadataShortcut: normalizedShortcuts.editMetadata,
+            closeTabShortcut: normalizedShortcuts.closeTab,
+            reopenClosedTabShortcut: normalizedShortcuts.reopenTab,
+            nextTabShortcut: normalizedShortcuts.nextTab,
+            previousTabShortcut: normalizedShortcuts.previousTab,
             inlineBlockTitleColorWithContent: localInlineBlockColorFilled.trim(),
             inlineBlockTitleColorEmpty: localInlineBlockColorEmpty.trim(),
             inlineBlockTitleUnderlineOpacity: localInlineBlockTitleUnderlineOpacity,
@@ -341,7 +375,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const handleTabKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
         if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
-        const currentIndex = settingsTabs.findIndex(tab => tab.id === activeTab);
+        const focusedTabId = event.target instanceof HTMLElement
+            ? event.target.id.replace('settings-tab-', '')
+            : activeTab;
+        const focusedIndex = settingsTabs.findIndex(tab => tab.id === focusedTabId);
+        const currentIndex = focusedIndex >= 0 ? focusedIndex : settingsTabs.findIndex(tab => tab.id === activeTab);
         const nextIndex = event.key === 'Home'
             ? 0
             : event.key === 'End'
@@ -593,41 +631,124 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                         {activeTab === 'general' && (
                             <div className="max-w-2xl">
+                                <h3 className="text-base font-semibold text-primary mb-1">General Setting</h3>
+                                <p className="text-sm text-secondary mb-6">Manage the workspace used by the desktop application.</p>
+                                <div className="rounded-lg border border-outline bg-base/40 p-4">
+                                    <h4 className="text-sm font-semibold text-primary">Workspace Folder</h4>
+                                    <p className="mt-1 text-xs text-secondary">Your Markdown notes, assets, macros, and settings are stored together in the selected workspace folder.</p>
+                                    {window.mathNotesDesktop ? (
+                                        <>
+                                            <div className="mt-4 rounded-md border border-outline bg-surface px-3 py-2">
+                                                <p className="text-[11px] font-medium uppercase tracking-wide text-secondary">Current path</p>
+                                                <p className="mt-1 break-all font-mono text-xs text-primary" aria-label="Current workspace path">
+                                                    {workspacePath || 'Loading…'}
+                                                </p>
+                                            </div>
+                                            <div className="mt-4 flex flex-wrap gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { void window.mathNotesDesktop?.chooseWorkspace(); }}
+                                                    className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90"
+                                                >
+                                                    Change Workspace Folder…
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { void window.mathNotesDesktop?.showWorkspaceInFolder(); }}
+                                                    disabled={!workspacePath}
+                                                    className="rounded-lg border border-outline bg-surface px-4 py-2 text-sm font-medium text-primary hover:bg-outline/40 disabled:cursor-not-allowed disabled:opacity-50"
+                                                >
+                                                    Show in Finder
+                                                </button>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <p className="mt-4 text-xs text-secondary">In the web version, close Settings and use <strong className="text-primary">Open Workspace</strong> on the main screen. The desktop version also provides File → Open Workspace….</p>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'keyboard' && (
+                            <div className="max-w-2xl">
                                 <h3 className="text-base font-semibold text-primary mb-1">Keyboard Shortcuts</h3>
                                 <p className="text-sm text-secondary mb-6">
-                                    Keyboard shortcuts for the application.
+                                    Configure application and navigation shortcuts for the web and desktop applications.
                                 </p>
                                 
                                 <div className="space-y-4">
-                                    <div className="flex flex-col gap-2">
-                                        <label htmlFor="settings-search-shortcut" className="text-sm font-medium text-primary">Global Search Shortcut</label>
-                                        <div className="flex gap-2 items-center">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-primary mb-3">Application shortcuts</h4>
+                                        <div className="space-y-3">
+                                        <div className="grid grid-cols-[minmax(180px,auto)_1fr] gap-3 rounded-lg border border-outline bg-base/40 px-3 py-3">
                                             <input
                                                 id="settings-search-shortcut"
+                                                aria-label="Global search shortcut"
                                                 type="text"
                                                 value={localSearchShortcut}
                                                 onChange={(e) => setLocalSearchShortcut(e.target.value)}
-                                                placeholder="e.g. meta+k or ctrl+k"
-                                                className="w-full max-w-xs bg-base border border-outline rounded px-3 py-2 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                                placeholder="e.g. mod+k"
+                                                className="w-full rounded border border-outline bg-surface px-3 py-2 text-xs font-mono text-primary focus:border-accent focus:outline-none"
                                             />
-                                            <span className="text-xs text-secondary ml-2">Use 'meta' for Cmd (Mac) / Win key. Use 'ctrl' for Control. Format: modifier+key.</span>
+                                            <div>
+                                                <label htmlFor="settings-search-shortcut" className="text-sm font-medium text-primary">Global search</label>
+                                                <p className="text-xs text-secondary">Opens note search from anywhere in the application.</p>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-[minmax(180px,auto)_1fr] gap-3 rounded-lg border border-outline bg-base/40 px-3 py-3">
+                                            <input
+                                                id="settings-edit-metadata-shortcut"
+                                                aria-label="Edit active block metadata shortcut"
+                                                type="text"
+                                                value={localEditMetadataShortcut}
+                                                onChange={(e) => setLocalEditMetadataShortcut(e.target.value)}
+                                                placeholder="e.g. f2"
+                                                className="w-full rounded border border-outline bg-surface px-3 py-2 text-xs font-mono text-primary focus:border-accent focus:outline-none"
+                                            />
+                                            <div>
+                                                <label htmlFor="settings-edit-metadata-shortcut" className="text-sm font-medium text-primary">Edit active block title and label</label>
+                                                <p className="text-xs text-secondary">Opens the same metadata editor as double-clicking the note header. On some Macs, press Fn+F2.</p>
+                                            </div>
+                                        </div>
                                         </div>
                                     </div>
-                                    
-                                    <div className="flex flex-col gap-2 mt-4">
-                                        <label htmlFor="settings-math-padding" className="text-sm font-medium text-primary">Math Block Vertical Padding (px)</label>
-                                        <div className="flex gap-2 items-center">
-                                            <input
-                                                id="settings-math-padding"
-                                                type="number"
-                                                value={localMathBlockPaddingY}
-                                                onChange={(e) => setLocalMathBlockPaddingY(Number(e.target.value))}
-                                                min="0"
-                                                max="100"
-                                                step="1"
-                                                className="w-full max-w-xs bg-base border border-outline rounded px-3 py-2 text-sm font-mono text-primary focus:outline-none focus:border-accent"
-                                            />
-                                            <span className="text-xs text-secondary ml-2">Padding above and below block math equations.</span>
+
+                                    <div className="border-t border-outline pt-4">
+                                        <h4 className="text-sm font-semibold text-primary mb-1">Note tab shortcuts</h4>
+                                        <p className="text-xs text-secondary mb-3"><code>mod</code> means Cmd on macOS and Ctrl on Windows/Linux. Desktop applies these shortcuts globally; a web browser may keep reserved combinations such as Ctrl+Tab.</p>
+                                        <div className="space-y-3">
+                                            {[
+                                                { id: 'settings-close-tab-shortcut', value: localCloseTabShortcut, setter: setLocalCloseTabShortcut, action: 'Close current note tab', detail: 'Closes the tab without deleting its note.' },
+                                                { id: 'settings-reopen-tab-shortcut', value: localReopenTabShortcut, setter: setLocalReopenTabShortcut, action: 'Reopen closed note tab', detail: 'Restores the most recently closed tab, including its former position and editor focus.' },
+                                                { id: 'settings-next-tab-shortcut', value: localNextTabShortcut, setter: setLocalNextTabShortcut, action: 'Next note tab', detail: 'Moves to the next open note and wraps after the last tab.' },
+                                                { id: 'settings-previous-tab-shortcut', value: localPreviousTabShortcut, setter: setLocalPreviousTabShortcut, action: 'Previous note tab', detail: 'Moves to the previous open note and wraps before the first tab.' }
+                                            ].map(shortcut => (
+                                                <div key={shortcut.id} className="grid grid-cols-[minmax(180px,auto)_1fr] gap-3 rounded-lg border border-outline bg-base/40 px-3 py-3">
+                                                    <input
+                                                        id={shortcut.id}
+                                                        aria-label={`${shortcut.action} shortcut`}
+                                                        type="text"
+                                                        value={shortcut.value}
+                                                        onChange={event => shortcut.setter(event.target.value)}
+                                                        className="w-full rounded border border-outline bg-surface px-3 py-2 text-xs font-mono text-primary focus:border-accent focus:outline-none"
+                                                    />
+                                                    <div>
+                                                        <label htmlFor={shortcut.id} className="text-sm font-medium text-primary">{shortcut.action}</label>
+                                                        <p className="text-xs text-secondary">{shortcut.detail}</p>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="border-t border-outline pt-4">
+                                        <h4 className="text-sm font-semibold text-primary mb-1">Focused tab-strip controls</h4>
+                                        <p className="text-xs text-secondary mb-3">Focus a tab with the Tab key, then use these controls in either version.</p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                                            <p><kbd className="font-mono text-primary">← / →</kbd><span className="text-secondary"> — focus the previous or next tab</span></p>
+                                            <p><kbd className="font-mono text-primary">Home / End</kbd><span className="text-secondary"> — focus the first or last tab</span></p>
+                                            <p><kbd className="font-mono text-primary">Enter / Space</kbd><span className="text-secondary"> — activate the focused tab</span></p>
+                                            <p><kbd className="font-mono text-primary">Delete / Backspace</kbd><span className="text-secondary"> — close the focused tab</span></p>
                                         </div>
                                     </div>
                                 </div>
@@ -847,8 +968,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                         {activeTab === 'colors' && (
                             <div className="max-w-2xl">
-                                <h3 className="text-base font-semibold text-primary mb-1">LaTeX Highlight Colors</h3>
-                                <p className="text-sm text-secondary mb-6">Configure syntax highlighting colors for raw LaTeX in the editor.</p>
+                                <h3 className="text-base font-semibold text-primary mb-1">Math Visual</h3>
+                                <p className="text-sm text-secondary mb-6">Configure raw LaTeX syntax colors and the spacing around displayed equations.</p>
                                 
                                 <div className="space-y-4">
                                     <div className="flex flex-col gap-2">
@@ -883,6 +1004,23 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     <span className="text-xs text-secondary ml-1">{item.label}</span>
                                                 </div>
                                             ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="flex flex-col gap-2 border-t border-outline pt-4">
+                                        <label htmlFor="settings-math-padding" className="text-sm font-medium text-primary">Math Block Vertical Padding (px)</label>
+                                        <div className="flex gap-2 items-center">
+                                            <input
+                                                id="settings-math-padding"
+                                                type="number"
+                                                value={localMathBlockPaddingY}
+                                                onChange={(e) => setLocalMathBlockPaddingY(Number(e.target.value))}
+                                                min="0"
+                                                max="100"
+                                                step="1"
+                                                className="w-full max-w-xs bg-base border border-outline rounded px-3 py-2 text-sm font-mono text-primary focus:outline-none focus:border-accent"
+                                            />
+                                            <span className="text-xs text-secondary ml-2">Padding above and below block math equations.</span>
                                         </div>
                                     </div>
                                 </div>

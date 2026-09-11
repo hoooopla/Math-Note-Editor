@@ -10,6 +10,11 @@ export interface EditorSettings {
     customCommands: string[];
     textCommands: string[];
     searchShortcut?: string;
+    editMetadataShortcut?: string;
+    closeTabShortcut?: string;
+    reopenClosedTabShortcut?: string;
+    nextTabShortcut?: string;
+    previousTabShortcut?: string;
     inlineBlockTitleColorWithContent?: string;
     inlineBlockTitleColorEmpty?: string;
     inlineBlockTitleUnderlineOpacity?: number;
@@ -81,6 +86,11 @@ const requireOk = async (response: Response, operation: string) => {
     throw new Error(`${operation} failed (${response.status})${detail}`);
 };
 
+const portableAssetPath = (value: string): string | null => {
+    const match = value.match(/^(?:\/api\/)?assets\/(.+)$/);
+    return match ? `assets/${match[1]}` : null;
+};
+
 const getFileByBlockId = async (id: string, currentHandle: FileSystemDirectoryHandle | null = dirHandle): Promise<FileSystemFileHandle | null> => {
     if (!currentHandle) return null;
     try {
@@ -136,6 +146,11 @@ export const api: BackendApi = {
             customCommands: [], 
             textCommands: [], 
             searchShortcut: "meta+k",
+            editMetadataShortcut: "f2",
+            closeTabShortcut: "mod+w",
+            reopenClosedTabShortcut: "mod+shift+t",
+            nextTabShortcut: "ctrl+tab",
+            previousTabShortcut: "ctrl+shift+tab",
             inlineBlockTitleColorWithContent: "#a8b5c2",
             inlineBlockTitleColorEmpty: "#FF997D",
             inlineBlockTitleUnderlineOpacity: 100,
@@ -263,19 +278,17 @@ export const api: BackendApi = {
         return [];
     },
     getAssetUrl: async (path) => {
-        if (/^https?:\/\//.test(path)) return path;
+        if (/^(?:https?:|data:|blob:)/.test(path)) return path;
+        const assetPath = portableAssetPath(path);
         if (useServer) {
-            if (path.startsWith('assets/')) {
-                return `/api/${path}`;
-            }
-            if (path.startsWith('/api/assets/')) return path;
+            if (assetPath) return `/api/${assetPath}`;
             return path; // fallback
         }
         if (api.mode === "local" && dirHandle) {
-            if (path.startsWith('assets/')) {
+            if (assetPath) {
                 try {
                     const assetsDir = await dirHandle.getDirectoryHandle('assets', { create: false });
-                    const pathParts = path.replace('assets/', '').split('/');
+                    const pathParts = assetPath.replace('assets/', '').split('/');
                     let currentDir = assetsDir;
                     for (let i = 0; i < pathParts.length - 1; i++) {
                         currentDir = await currentDir.getDirectoryHandle(pathParts[i], { create: false });

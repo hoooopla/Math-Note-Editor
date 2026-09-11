@@ -23,7 +23,7 @@ class ImageWidget extends WidgetType {
         
         const img = document.createElement("img");
         
-        if (this.src.startsWith("http://") || this.src.startsWith("https://") || this.src.startsWith("data:") || this.src.startsWith("/api/")) {
+        if (this.src.startsWith("http://") || this.src.startsWith("https://") || this.src.startsWith("data:") || this.src.startsWith("blob:")) {
             img.src = this.src;
         } else {
             useStore.getState().getAssetUrl(this.src).then(url => {
@@ -35,7 +35,7 @@ class ImageWidget extends WidgetType {
                     this.objectUrl = url;
                 }
                 img.src = url;
-            });
+            }).catch(() => { img.src = this.src; });
         }
 
         if (this.width) {

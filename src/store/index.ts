@@ -68,6 +68,7 @@ export interface AppState {
   cycleTab: (direction: 1 | -1) => void;
   activateRootBlock: (id: string, dir?: "start" | "end" | null) => void;
   openBlockInTab: (id: string, activate: boolean) => void;
+  openBlockNextToActive: (id: string) => void;
   initSync: () => void;
   saveAsset: (file: File, filename: string) => Promise<string>;
   listAssets: () => Promise<string[]>;
@@ -172,6 +173,11 @@ export const useStore = create<AppState>((set, get) => ({
     customCommands: [],
     textCommands: [],
     searchShortcut: "meta+k",
+    editMetadataShortcut: "f2",
+    closeTabShortcut: "mod+w",
+    reopenClosedTabShortcut: "mod+shift+t",
+    nextTabShortcut: "ctrl+tab",
+    previousTabShortcut: "ctrl+shift+tab",
     inlineBlockTitleColorWithContent: "#a8b5c2", // or whatever secondary is
     inlineBlockTitleColorEmpty: "#FF997D",
     inlineBlockTitleUnderlineOpacity: 100,
@@ -637,6 +643,16 @@ export const useStore = create<AppState>((set, get) => ({
       const newTabs = state.openTabs.includes(id) ? state.openTabs : [...state.openTabs, id];
       return { openTabs: newTabs, closedTabs: state.closedTabs.filter(tab => tab.id !== id) };
     });
+  },
+  openBlockNextToActive: (id) => {
+    set((state) => {
+      if (state.openTabs.includes(id)) return state;
+      const openTabs = [...state.openTabs];
+      const activeIndex = state.activeTab ? openTabs.indexOf(state.activeTab) : -1;
+      openTabs.splice(activeIndex >= 0 ? activeIndex + 1 : openTabs.length, 0, id);
+      return { openTabs, closedTabs: state.closedTabs.filter(tab => tab.id !== id) };
+    });
+    get().activateRootBlock(id, "start");
   },
   initSync: () => {
     if (backendApi.mode !== "server") return;

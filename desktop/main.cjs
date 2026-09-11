@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -7,10 +7,45 @@ const path = require('node:path');
 
 let mainWindow = null;
 let serverProcess = null;
+let activeWorkspace = null;
 let nextFlushRequestId = 1;
 let quitStarted = false;
 let allowQuit = false;
 const flushRequests = new Map();
+let noteShortcuts = {
+  closeTab: 'mod+w',
+  reopenTab: 'mod+shift+t',
+  nextTab: 'ctrl+tab',
+  previousTab: 'ctrl+shift+tab'
+};
+
+function toAccelerator(value, fallback) {
+  const parts = String(value || fallback).toLowerCase().split('+').map(part => part.trim()).filter(Boolean);
+  const key = parts.pop();
+  if (!key || !/^(?:[a-z0-9]|tab|enter|space|escape|backspace|delete|arrow(?:up|down|left|right)|\/)$/.test(key)) {
+    return toAccelerator(fallback, fallback);
+  }
+  const modifiers = parts.map(part => ({
+    mod: 'CmdOrCtrl',
+    cmd: 'Command',
+    meta: 'Command',
+    ctrl: 'Control',
+    shift: 'Shift',
+    alt: 'Alt'
+  })[part]).filter(Boolean);
+  if (modifiers.length !== parts.length || modifiers.length === 0) return toAccelerator(fallback, fallback);
+  const electronKey = ({
+    tab: 'Tab', enter: 'Enter', space: 'Space', escape: 'Escape', backspace: 'Backspace', delete: 'Delete',
+    arrowup: 'Up', arrowdown: 'Down', arrowleft: 'Left', arrowright: 'Right', '/': '/'
+  })[key] || key.toUpperCase();
+  return [...modifiers, electronKey].join('+');
+}
+
+ipcMain.on('update-shortcuts', (_event, shortcuts) => {
+  if (!shortcuts || typeof shortcuts !== 'object') return;
+  noteShortcuts = { ...noteShortcuts, ...shortcuts };
+  installMenu();
+});
 
 ipcMain.on('workspace-flush-complete', (_event, requestId, errorMessage) => {
   const request = flushRequests.get(requestId);
@@ -118,6 +153,7 @@ function waitForServer(port, timeoutMs = 15000) {
 }
 
 async function startServer(workspace) {
+  activeWorkspace = path.resolve(workspace);
   const port = await availablePort();
   const paths = runtimePaths();
   serverProcess = spawn(process.execPath, [paths.server, '--production', '--port', String(port)], {
@@ -144,6 +180,34 @@ function sendNoteCommand(command) {
   mainWindow?.webContents.send('note-command', command);
 }
 
+async function chooseAndOpenWorkspace() {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose your Math Notes workspace',
+    buttonLabel: 'Use Workspace',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled || !result.filePaths[0]) return false;
+  try {
+    await flushRenderer();
+  } catch (error) {
+    dialog.showErrorBox('Workspace could not be changed', error instanceof Error ? error.message : String(error));
+    return false;
+  }
+  saveWorkspace(result.filePaths[0]);
+  stopServer();
+  const port = await startServer(result.filePaths[0]);
+  await mainWindow.loadURL(`http://127.0.0.1:${port}`);
+  return true;
+}
+
+ipcMain.handle('choose-workspace', () => chooseAndOpenWorkspace());
+ipcMain.handle('get-workspace-path', () => activeWorkspace);
+ipcMain.handle('show-workspace-in-folder', () => {
+  if (!activeWorkspace || !fs.existsSync(activeWorkspace)) return false;
+  shell.showItemInFolder(activeWorkspace);
+  return true;
+});
+
 function installMenu() {
   const template = [
     ...(process.platform === 'darwin' ? [{
@@ -156,28 +220,11 @@ function installMenu() {
         {
           label: 'Open Workspace…',
           accelerator: 'CmdOrCtrl+O',
-          click: async () => {
-            const result = await dialog.showOpenDialog(mainWindow, {
-              title: 'Choose your Math Notes workspace',
-              buttonLabel: 'Use Workspace',
-              properties: ['openDirectory', 'createDirectory']
-            });
-            if (result.canceled || !result.filePaths[0]) return;
-            try {
-              await flushRenderer();
-            } catch (error) {
-              dialog.showErrorBox('Workspace could not be changed', error instanceof Error ? error.message : String(error));
-              return;
-            }
-            saveWorkspace(result.filePaths[0]);
-            stopServer();
-            const port = await startServer(result.filePaths[0]);
-            await mainWindow.loadURL(`http://127.0.0.1:${port}`);
-          }
+          click: () => { void chooseAndOpenWorkspace(); }
         },
         { type: 'separator' },
-        { label: 'Close Note Tab', accelerator: 'CmdOrCtrl+W', click: () => sendNoteCommand('close-tab') },
-        { label: 'Reopen Closed Note Tab', accelerator: 'CmdOrCtrl+Shift+T', click: () => sendNoteCommand('reopen-tab') },
+        { label: 'Close Note Tab', accelerator: toAccelerator(noteShortcuts.closeTab, 'mod+w'), click: () => sendNoteCommand('close-tab') },
+        { label: 'Reopen Closed Note Tab', accelerator: toAccelerator(noteShortcuts.reopenTab, 'mod+shift+t'), click: () => sendNoteCommand('reopen-tab') },
         { type: 'separator' },
         { label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W', role: 'close' }
       ]
@@ -185,8 +232,8 @@ function installMenu() {
     {
       label: 'Navigate',
       submenu: [
-        { label: 'Next Note Tab', accelerator: 'Ctrl+Tab', click: () => sendNoteCommand('next-tab') },
-        { label: 'Previous Note Tab', accelerator: 'Ctrl+Shift+Tab', click: () => sendNoteCommand('previous-tab') }
+        { label: 'Next Note Tab', accelerator: toAccelerator(noteShortcuts.nextTab, 'ctrl+tab'), click: () => sendNoteCommand('next-tab') },
+        { label: 'Previous Note Tab', accelerator: toAccelerator(noteShortcuts.previousTab, 'ctrl+shift+tab'), click: () => sendNoteCommand('previous-tab') }
       ]
     },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },

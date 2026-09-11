@@ -5,6 +5,10 @@ declare global {
     mathNotesDesktop?: {
       onCommand(callback: (command: 'close-tab' | 'reopen-tab' | 'next-tab' | 'previous-tab') => void): () => void;
       onPrepareWorkspaceChange(callback: () => Promise<void>): () => void;
+      updateShortcuts(shortcuts: { closeTab: string; reopenTab: string; nextTab: string; previousTab: string }): void;
+      chooseWorkspace(): Promise<boolean>;
+      getWorkspacePath(): Promise<string | null>;
+      showWorkspaceInFolder(): Promise<boolean>;
     };
   }
 }

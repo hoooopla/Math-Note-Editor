@@ -67,6 +67,24 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
 
     const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
+    const beginMetaEdit = useCallback(() => {
+        if (backendMode === "viewer") return;
+        setActive(block.id, null, [block.label]);
+        setTitleInput(block.title);
+        setLabelInput(block.label);
+        setError(null);
+        setIsEditingMeta(true);
+    }, [backendMode, block.id, block.label, block.title, setActive]);
+
+    useEffect(() => {
+        const handleEditRequest = (event: Event) => {
+            const blockId = (event as CustomEvent<{ blockId?: string }>).detail?.blockId;
+            if (blockId === block.id) beginMetaEdit();
+        };
+        window.addEventListener('math-notes-edit-block-metadata', handleEditRequest);
+        return () => window.removeEventListener('math-notes-edit-block-metadata', handleEditRequest);
+    }, [beginMetaEdit, block.id]);
+
     const handleContentChange = useCallback((val: string) => {
         updateBlock(block.id, { content: val });
     }, [block.id, updateBlock]);
@@ -133,10 +151,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                 }}
                 onDoubleClick={(e) => {
                     e.stopPropagation();
-                    if (backendMode === "viewer") return;
-                    setTitleInput(block.title);
-                    setLabelInput(block.label);
-                    setIsEditingMeta(true);
+                    beginMetaEdit();
                 }}
             >
                 <div className="flex-1">

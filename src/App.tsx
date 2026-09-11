@@ -16,6 +16,23 @@ const GraphModal = React.lazy(() =>
     import("./components/GraphModal").then(module => ({ default: module.GraphModal }))
 );
 
+const shortcutMatches = (event: KeyboardEvent, shortcut: string) => {
+    const parts = shortcut.toLowerCase().split('+').map(part => part.trim()).filter(Boolean);
+    const key = parts.at(-1);
+    const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+    const requiresMod = parts.includes('mod');
+    const requiresCtrl = parts.includes('ctrl') || (requiresMod && !isMac);
+    const requiresMeta = parts.includes('cmd') || parts.includes('meta') || (requiresMod && isMac);
+    const requiresShift = parts.includes('shift');
+    const requiresAlt = parts.includes('alt');
+    const pressedKey = event.key === ' ' ? 'space' : event.key.toLowerCase();
+    return pressedKey === key
+        && event.ctrlKey === requiresCtrl
+        && event.metaKey === requiresMeta
+        && event.shiftKey === requiresShift
+        && event.altKey === requiresAlt;
+};
+
 export default function App() {
     const fileInputRef = React.useRef<HTMLInputElement>(null);
     const loadViewerFiles = useStore(state => state.loadViewerFiles);
@@ -126,24 +143,54 @@ export default function App() {
     }, [blocks, openTabs.length, activateRootBlock]);
 
     useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            const shortcut = settings.searchShortcut || 'meta+k';
-            const parts = shortcut.toLowerCase().split('+');
-            const requiresCtrl = parts.includes('ctrl');
-            const requiresMeta = parts.includes('cmd') || parts.includes('meta');
-            const key = parts[parts.length - 1];
+        window.mathNotesDesktop?.updateShortcuts({
+            closeTab: settings.closeTabShortcut || 'mod+w',
+            reopenTab: settings.reopenClosedTabShortcut || 'mod+shift+t',
+            nextTab: settings.nextTabShortcut || 'ctrl+tab',
+            previousTab: settings.previousTabShortcut || 'ctrl+shift+tab'
+        });
+    }, [settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut]);
 
-            const matchesModifiers = (requiresCtrl ? e.ctrlKey : true) && (requiresMeta ? e.metaKey : true);
-            
-            if (matchesModifiers && e.key.toLowerCase() === key) {
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (shortcutMatches(e, settings.searchShortcut || 'meta+k')) {
                 e.preventDefault();
                 setIsSearchModalOpen(true);
+                return;
             }
+
+            if (!isMacroModalOpen && !isSearchModalOpen && !isGraphModalOpen
+                && shortcutMatches(e, settings.editMetadataShortcut || 'f2')) {
+                const rootBlockId = useStore.getState().activeTab;
+                if (rootBlockId) {
+                    e.preventDefault();
+                    window.dispatchEvent(new CustomEvent('math-notes-edit-block-metadata', {
+                        detail: { blockId: rootBlockId }
+                    }));
+                }
+                return;
+            }
+
+            // Electron owns these accelerators so they continue working even
+            // when an editor input has focus. The browser fallback supports
+            // custom combinations that are not reserved by the browser.
+            if (window.mathNotesDesktop) return;
+            const state = useStore.getState();
+            if (shortcutMatches(e, settings.closeTabShortcut || 'mod+w')) {
+                if (state.activeTab) void state.closeTab(state.activeTab);
+            } else if (shortcutMatches(e, settings.reopenClosedTabShortcut || 'mod+shift+t')) {
+                state.reopenClosedTab();
+            } else if (shortcutMatches(e, settings.nextTabShortcut || 'ctrl+tab')) {
+                state.cycleTab(1);
+            } else if (shortcutMatches(e, settings.previousTabShortcut || 'ctrl+shift+tab')) {
+                state.cycleTab(-1);
+            } else return;
+            e.preventDefault();
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [settings.searchShortcut]);
+    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen]);
 
     const closeTab = (id: string, e?: React.SyntheticEvent) => {
         e?.stopPropagation();

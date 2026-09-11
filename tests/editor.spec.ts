@@ -199,6 +199,31 @@ test('validates header metadata and accepts brackets and math in labels', async 
     }).toBe(validLabel);
 });
 
+test('edits active block metadata with F2 and a customized shortcut', async ({ page }) => {
+    await openEditor(page);
+
+    await page.keyboard.press('F2');
+    await expect(page.getByLabel('Block title')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(page.getByLabel('Block title')).toBeHidden();
+
+    await page.getByLabel('Open settings').click();
+    await page.getByRole('tab', { name: 'Keyboard Shortcuts' }).click();
+    const shortcutInput = page.getByLabel('Edit active block metadata shortcut');
+    await expect(shortcutInput).toHaveValue('f2');
+    await shortcutInput.fill('mod+shift+e');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+
+    await page.keyboard.press('ControlOrMeta+Shift+E');
+    await expect(page.getByLabel('Block title')).toBeFocused();
+    await page.keyboard.press('Escape');
+
+    await page.getByLabel('Open settings').click();
+    await page.getByRole('tab', { name: 'Keyboard Shortcuts' }).click();
+    await page.getByLabel('Edit active block metadata shortcut').fill('f2');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+});
+
 test('renders an embedded block whose label contains math bars and brackets', async ({ page }) => {
     const suffix = Date.now();
     const targetLabel = `Norms/$||x[${suffix}]||$`;
@@ -313,7 +338,40 @@ test('opens and preserves label autocomplete when entering a broken embed', asyn
     await page.getByText(`Create new block: "${label}"`, { exact: true }).click();
     await expect(editor).toBeFocused();
     await expect(completion).toBeHidden();
-    await expect(page.getByText(/Press\s+Enter\s+to open\/close/)).toBeVisible();
+    await expect(page.getByText(/Enter\s+to toggle.*Cmd\/Ctrl \+ Enter.*for new tab/)).toBeVisible();
+});
+
+test('opens an existing embedded label in a tab next to the current tab with Mod-Enter', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:mod-enter-target-${suffix}`;
+    const currentLabel = `test:mod-enter-current-${suffix}`;
+    const trailingLabel = `test:mod-enter-trailing-${suffix}`;
+    await page.request.post('/api/blocks', { data: { title: 'Mod Enter target', label: targetLabel, content: 'target' } });
+    const currentBlock = await (await page.request.post('/api/blocks', { data: { title: 'Mod Enter current', label: currentLabel, content: `[[${targetLabel}]]` } })).json();
+    await page.request.post('/api/blocks', { data: { title: 'Mod Enter trailing', label: trailingLabel, content: 'trailing' } });
+    await openEditor(page);
+
+    for (const label of [currentLabel, trailingLabel]) {
+        await page.getByRole('button', { name: /Search/ }).click();
+        const search = page.getByPlaceholder('Search blocks or create new...');
+        await search.fill(label);
+        await search.press('Enter');
+    }
+    await page.getByRole('tab').filter({ hasText: 'Mod Enter current' }).click();
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await editor.focus();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ControlOrMeta+Enter');
+
+    const tabs = page.getByRole('tab');
+    const titles = await tabs.allTextContents();
+    const currentIndex = titles.findIndex(title => title.includes('Mod Enter current'));
+    expect(titles[currentIndex + 1]).toContain('Mod Enter target');
+    await expect(tabs.filter({ hasText: 'Mod Enter target' })).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(async () => (await (await page.request.get(`/api/blocks/${currentBlock.id}`)).json()).content)
+        .toBe(`[[${targetLabel}]]`);
 });
 
 test('keeps absolute autocomplete titles and derives relative titles from their leaf', async ({ page }) => {
@@ -508,6 +566,10 @@ test('handles desktop close, reopen, next, and previous note commands', async ({
     await page.addInitScript(() => {
         let commandListener: ((command: 'close-tab' | 'reopen-tab' | 'next-tab' | 'previous-tab') => void) | null = null;
         window.mathNotesDesktop = {
+            updateShortcuts() {},
+            chooseWorkspace: async () => false,
+            getWorkspacePath: async () => '/tmp/math-notes-test-workspace',
+            showWorkspaceInFolder: async () => true,
             onCommand(callback) {
                 commandListener = callback;
                 return () => { commandListener = null; };
@@ -1049,6 +1111,31 @@ test('renders image previews as their lines enter the viewport', async ({ page }
     await expect(page.locator('.cm-image-widget')).toBeVisible();
 });
 
+test('stores portable image paths and renders portable and legacy asset references', async ({ page }) => {
+    const assetName = `test-image-${Date.now()}.gif`;
+    const upload = await page.request.post('/api/assets', {
+        data: {
+            filePath: `assets/${assetName}`,
+            content: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+        }
+    });
+    expect(upload.ok()).toBeTruthy();
+    expect(await upload.json()).toMatchObject({ url: `assets/${assetName}` });
+
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, [
+        `<img src="assets/${assetName}" width="1"/>`,
+        `<img src="/api/assets/${assetName}" width="1"/>`,
+        'after images'
+    ].join('\n'));
+    await page.getByLabel('Open settings').click();
+
+    const images = page.locator('.cm-image-widget img');
+    await expect(images).toHaveCount(2);
+    await expect.poll(() => images.evaluateAll(elements => elements.map(element => (element as HTMLImageElement).naturalWidth)))
+        .toEqual([1, 1]);
+});
+
 test('creates an open embedded editor only when it approaches the viewport', async ({ page }) => {
     const suffix = Date.now();
     const targetLabel = `test:lazy-editor-target-${suffix}`;
@@ -1179,19 +1266,27 @@ test('validates settings and supports keyboard dialog navigation', async ({ page
     await expect(dialog).toBeVisible();
     await expect(page.getByLabel('Close settings')).toBeFocused();
 
-    const generalTab = page.getByRole('tab', { name: 'Keyboard Shortcuts' });
-    await generalTab.focus();
+    const keyboardTab = page.getByRole('tab', { name: 'Keyboard Shortcuts' });
+    await keyboardTab.focus();
     await page.keyboard.press('ArrowDown');
     await expect(page.getByRole('tab', { name: 'Math Macros' })).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('Home');
-    await expect(generalTab).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tab', { name: 'General Setting' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText(/File → Open Workspace/)).toBeVisible();
+    await keyboardTab.click();
 
     await page.getByLabel('Global Search Shortcut').fill('k');
     await page.getByRole('button', { name: 'Save Settings' }).click();
-    await expect(page.getByRole('alert')).toContainText('Search shortcut must contain');
+    await expect(page.getByRole('alert')).toContainText('Search shortcut must be F1–F12 or contain');
     await expect(dialog).toBeVisible();
+    await expect(page.getByLabel('Close current note tab shortcut')).toHaveValue('mod+w');
+    await expect(page.getByLabel('Edit active block metadata shortcut')).toHaveValue('f2');
+    await expect(page.getByLabel('Reopen closed note tab shortcut')).toHaveValue('mod+shift+t');
+    await expect(page.getByText('Restores the most recently closed tab, including its former position and editor focus.')).toBeVisible();
+    await expect(page.getByLabel('Math Block Vertical Padding (px)')).toHaveCount(0);
 
     await page.getByLabel('Global Search Shortcut').fill('meta+k');
+    await page.getByRole('tab', { name: 'Math Visual' }).click();
     await page.getByLabel('Math Block Vertical Padding (px)').fill('-1');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect(page.getByRole('alert')).toContainText('Math block vertical padding must be between 0 and 100');
@@ -1204,7 +1299,7 @@ test('validates settings and supports keyboard dialog navigation', async ({ page
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect(page.getByRole('alert')).toContainText('must be a backslash followed by letters');
 
-    await page.getByRole('tab', { name: 'LaTeX Highlight Colors' }).click();
+    await page.getByRole('tab', { name: 'Math Visual' }).click();
     await page.getByLabel('Default Text hex color').fill('red');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect(page.getByRole('alert')).toContainText('must be a six-digit hex color');
@@ -1212,4 +1307,25 @@ test('validates settings and supports keyboard dialog navigation', async ({ page
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
     await expect(settingsButton).toBeFocused();
+});
+
+test('shows and reveals the current desktop workspace from settings', async ({ page }) => {
+    await page.addInitScript(() => {
+        let revealCount = 0;
+        window.mathNotesDesktop = {
+            updateShortcuts() {},
+            chooseWorkspace: async () => false,
+            getWorkspacePath: async () => '/Users/test/Math Notes Workspace',
+            showWorkspaceInFolder: async () => { revealCount += 1; return true; },
+            onCommand() { return () => {}; },
+            onPrepareWorkspaceChange() { return () => {}; }
+        };
+        (window as any).__workspaceRevealCount = () => revealCount;
+    });
+
+    await openEditor(page);
+    await page.getByLabel('Open settings').click();
+    await expect(page.getByLabel('Current workspace path')).toHaveText('/Users/test/Math Notes Workspace');
+    await page.getByRole('button', { name: 'Show in Finder' }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__workspaceRevealCount())).toBe(1);
 });

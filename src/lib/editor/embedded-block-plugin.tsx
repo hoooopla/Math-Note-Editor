@@ -376,7 +376,7 @@ function getEmbedTooltip(state: import("@codemirror/state").EditorState): Toolti
                         
                         const textObj = document.createElement("span");
                         textObj.className = "text-sm text-secondary font-medium";
-                        textObj.innerHTML = `Press <kbd class="px-[5px] py-[2px] bg-neutral-800 rounded mx-1 text-xs text-primary border border-neutral-700 shadow-sm font-sans mx-1">Enter</kbd> to open/close`;
+                        textObj.innerHTML = `<kbd class="px-[5px] py-[2px] bg-neutral-800 rounded mx-1 text-xs text-primary border border-neutral-700 shadow-sm font-sans mx-1">Enter</kbd> to toggle · <kbd class="px-[5px] py-[2px] bg-neutral-800 rounded mx-1 text-xs text-primary border border-neutral-700 shadow-sm font-sans mx-1">Cmd/Ctrl + Enter</kbd> for new tab`;
                         
                         dom.appendChild(textObj);
 
@@ -748,6 +748,21 @@ export const embedKeymap: KeyBinding[] = [
 export function runEmbeddedKey(view: EditorView, key: "Enter" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight"): boolean {
     const binding = embedKeymap.find(candidate => candidate.key === key);
     return binding?.run ? binding.run(view) : false;
+}
+
+export function openEmbeddedTargetInTab(view: EditorView): boolean {
+    if (!view.hasFocus || !view.state.selection.main.empty || completionStatus(view.state) === "active") return false;
+    const selection = view.state.selection.main;
+    const parentLabel = view.state.facet(parentLabelFacet);
+    const link = view.state.field(parsedLinksField).find(candidate =>
+        selection.head >= candidate.from + 2 && selection.head <= candidate.to - 2
+    );
+    if (!link) return false;
+    const store = useStore.getState();
+    const targetId = store.blockIdByLabel[resolveEmbeddedLabel(link, parentLabel)];
+    if (!targetId) return false;
+    store.openBlockNextToActive(targetId);
+    return true;
 }
 
 /**
