@@ -1,19 +1,20 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useStore } from '../store';
+import { getOrderedBlocks, useStore } from '../store';
 import { Search, FolderOpen, Plus } from 'lucide-react';
 import { MathTitle } from './MathTitle';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from '../lib/label-policy';
 
 export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
-        const blocks = useStore(state => state.blocks);
+    const blocksRevision = useStore(state => state.blocksRevision);
+    const blocks = useMemo(() => getOrderedBlocks(useStore.getState()), [blocksRevision]);
     const addBlock = useStore(state => state.addBlock);
-    const setOpenTabs = useStore(state => state.setOpenTabs);
-    const openTabs = useStore(state => state.openTabs);
-    const setActiveTab = useStore(state => state.setActiveTab);
+    const activateRootBlock = useStore(state => state.activateRootBlock);
     const settings = useStore(state => state.settings);
     const backendMode = useStore(state => state.backendMode);
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
+    const [creationError, setCreationError] = useState<string | null>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const parentRef = useRef<HTMLDivElement>(null);
 
@@ -28,6 +29,10 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
         );
     }, [blocks, searchQuery]);
 
+    const createTitle = normalizeBlockTitle(searchQuery);
+    const createLabel = normalizeBlockLabel(searchQuery);
+    const createValidationError = searchQuery ? validateBlockMetadata(createTitle, createLabel) : null;
+
     const rowVirtualizer = useVirtualizer({
         count: searchResults.length,
         getScrollElement: () => parentRef.current,
@@ -39,12 +44,14 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
         if (isOpen) {
             setSearchQuery('');
             setSelectedIndex(0);
+            setCreationError(null);
             setTimeout(() => inputRef.current?.focus(), 50);
         }
     }, [isOpen]);
 
     useEffect(() => {
         setSelectedIndex(0);
+        setCreationError(null);
     }, [searchQuery]);
 
     useEffect(() => {
@@ -55,19 +62,21 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
 
     const handleSelect = async (id?: string) => {
         if (id) {
-            if (!openTabs.includes(id)) {
-                setOpenTabs([...openTabs, id]);
-            }
-            setActiveTab(id);
+            activateRootBlock(id);
+            onClose();
         } else if (searchQuery && backendMode !== 'viewer') {
-            // create new block with this title
-            const newBlock = await addBlock(undefined, { title: searchQuery.trim(), label: searchQuery.trim().toLowerCase().replace(/\s+/g, '-') });
+            if (createValidationError) {
+                setCreationError(createValidationError);
+                return;
+            }
+            const newBlock = await addBlock({ title: createTitle, label: createLabel });
             if (newBlock) {
-                setOpenTabs([...openTabs, newBlock.id]);
-                setActiveTab(newBlock.id);
+                activateRootBlock(newBlock.id, 'start');
+                onClose();
+            } else {
+                setCreationError(useStore.getState().persistenceError || 'Block could not be created');
             }
         }
-        onClose();
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -145,7 +154,7 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                             })}
                         </div>
                     ) : (
-                        searchQuery && backendMode !== 'viewer' ? (
+                        searchQuery && backendMode !== 'viewer' && !createValidationError && !creationError ? (
                             <div 
                                 onClick={() => handleSelect()}
                                 className="px-3 py-3 cursor-pointer rounded bg-accent/20 text-accent flex flex-col items-center justify-center text-center"
@@ -153,7 +162,9 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                                 <span className="font-semibold flex items-center gap-2"><Plus size={16} /> Create "{searchQuery}"</span>
                             </div>
                         ) : (
-                            <div className="p-4 text-center text-secondary text-sm">No blocks found</div>
+                            <div className={`p-4 text-center text-sm ${createValidationError || creationError ? 'text-red-400' : 'text-secondary'}`} role={createValidationError || creationError ? 'alert' : undefined}>
+                                {creationError || createValidationError || 'No blocks found'}
+                            </div>
                         )
                     )}
                 </div>

@@ -70,27 +70,46 @@ class ImageWidget extends WidgetType {
 
 function buildImageDecorations(view: EditorView) {
     const decos: {from: number, to: number, deco: Decoration}[] = [];
-    const doc = view.state.doc.toString();
     const regex = /<img\s+[^>]*src="([^"]+)"(?:[^>]*width="([^"]+)")?[^>]*\s*\/?>|!\[.*?\]\((.*?)\)/g;
-    
-    let match;
-    while ((match = regex.exec(doc)) !== null) {
-        const start = match.index;
-        const end = start + match[0].length;
-        const src = match[1] || match[3];
-        const width = match[2] || "";
+    const doc = view.state.doc;
+    const selection = view.state.selection.main;
+    const windows = [...view.visibleRanges, { from: selection.from, to: selection.to }]
+        .map(range => {
+            const firstLine = doc.lineAt(Math.max(0, range.from));
+            const lastLine = doc.lineAt(Math.min(doc.length, range.to));
+            return {
+                from: firstLine.number > 1 ? doc.line(firstLine.number - 1).from : firstLine.from,
+                to: lastLine.number < doc.lines ? doc.line(lastLine.number + 1).to : lastLine.to
+            };
+        })
+        .sort((a, b) => a.from - b.from)
+        .reduce<{from: number, to: number}[]>((merged, current) => {
+            const previous = merged[merged.length - 1];
+            if (previous && current.from <= previous.to) previous.to = Math.max(previous.to, current.to);
+            else merged.push({ ...current });
+            return merged;
+        }, []);
 
-        const selection = view.state.selection.main;
-        const hasSelectionInside = selection.from <= end && selection.to >= start;
+    for (const window of windows) {
+        const text = doc.sliceString(window.from, window.to);
+        regex.lastIndex = 0;
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+            const start = window.from + match.index;
+            const end = start + match[0].length;
+            const src = match[1] || match[3];
+            const width = match[2] || "";
+            const hasSelectionInside = selection.from <= end && selection.to >= start;
 
-        if (!hasSelectionInside) {
-            decos.push({
-                from: start,
-                to: end,
-                deco: Decoration.replace({
-                    widget: new ImageWidget(src, width)
-                })
-            });
+            if (!hasSelectionInside) {
+                decos.push({
+                    from: start,
+                    to: end,
+                    deco: Decoration.replace({
+                        widget: new ImageWidget(src, width)
+                    })
+                });
+            }
         }
     }
     
@@ -104,7 +123,7 @@ export const imagePlugin = ViewPlugin.fromClass(class {
         this.decorations = buildImageDecorations(view);
     }
     update(update: ViewUpdate) {
-        if (update.docChanged || update.selectionSet || update.focusChanged) {
+        if (update.docChanged || update.selectionSet || update.focusChanged || update.viewportChanged) {
             this.decorations = buildImageDecorations(update.view);
         }
     }

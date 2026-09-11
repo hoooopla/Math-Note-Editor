@@ -24,8 +24,8 @@ export default defineConfig(({mode}) => {
           name: 'Math Note Editor',
           short_name: 'MathNotes',
           description: 'A mathematical note taking app.',
-          theme_color: '#ffffff',
-          background_color: '#ffffff',
+          theme_color: '#0f1115',
+          background_color: '#0f1115',
           display: 'standalone',
           start_url: base,
           icons: [
@@ -37,7 +37,8 @@ export default defineConfig(({mode}) => {
             {
               src: 'pwa-512x512.png',
               sizes: '512x512',
-              type: 'image/png'
+              type: 'image/png',
+              purpose: 'any maskable'
             }
           ]
         }

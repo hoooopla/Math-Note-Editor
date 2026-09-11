@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import { api as backendApi, EditorSettings, parseFrontmatter, computeReferences } from './api';
+import { metadataText } from '../lib/block-metadata';
+import { normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 
 export interface BlockData {
   id: string;
@@ -12,17 +14,37 @@ export interface BlockData {
   _fileMeta?: any;
 }
 
-interface AppState {
-  isLoaded: boolean;
-  isLoadingFiles?: boolean;
-  blocks: BlockData[];
+interface TabFocusState {
   activeBlockId: string | null;
   activePath: string[] | null;
   activeFocusPos: number | null;
+  activeFocusX: number | null;
+  focusDirection: "start" | "end" | null;
+}
+
+interface ClosedTab {
+  id: string;
+  index: number;
+  focusState?: TabFocusState;
+}
+
+export interface AppState {
+  isLoaded: boolean;
+  isLoadingFiles?: boolean;
+  blockOrder: string[];
+  blocksById: Record<string, BlockData>;
+  blockIdByLabel: Record<string, string>;
+  blocksRevision: number;
+  activeBlockId: string | null;
+  activePath: string[] | null;
+  activeFocusPos: number | null;
+  activeFocusX: number | null;
   focusDirection: "start" | "end" | null;
   settings: EditorSettings;
   openTabs: string[];
   activeTab: string | null;
+  tabFocusStates: Record<string, TabFocusState>;
+  closedTabs: ClosedTab[];
   backendMode: "server" | "local" | "viewer" | "none";
   loadViewerFiles: (files: FileList) => Promise<void>;
   initBackend: () => Promise<void>;
@@ -31,15 +53,20 @@ interface AppState {
   loadSettings: () => Promise<void>;
   saveSettings: (settings: EditorSettings) => Promise<void>;
   loadBlockContent: (id: string) => Promise<void>;
-  addBlock: (index?: number, data?: Partial<BlockData>) => Promise<BlockData | void>;
+  addBlock: (data?: Partial<BlockData>) => Promise<BlockData | void>;
   updateBlock: (id: string, data: Partial<BlockData>) => void;
   flushBlock: (id: string) => Promise<void>;
   flushPendingSaves: () => Promise<void>;
   deleteBlock: (id: string) => Promise<void>;
-  setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null) => void;
+  setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null, x?: number | null) => void;
   setSettings: (settings: EditorSettings) => void;
   setOpenTabs: (tabs: string[]) => void;
   setActiveTab: (id: string | null) => void;
+  activateTab: (id: string) => void;
+  closeTab: (id: string) => Promise<void>;
+  reopenClosedTab: () => void;
+  cycleTab: (direction: 1 | -1) => void;
+  activateRootBlock: (id: string, dir?: "start" | "end" | null) => void;
   openBlockInTab: (id: string, activate: boolean) => void;
   initSync: () => void;
   saveAsset: (file: File, filename: string) => Promise<string>;
@@ -56,6 +83,7 @@ interface AppState {
 const syncTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
 const dirtyBlockVersions = new Map<string, number>();
 const blockSaveChains = new Map<string, Promise<void>>();
+const pendingBlockLabels = new Set<string>();
 
 let eventSource: EventSource | null = null;
 
@@ -77,16 +105,55 @@ const savedActiveTab = localStorage.getItem("activeTab");
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+function cloneLabelIndex(source?: Record<string, string>): Record<string, string> {
+  return Object.assign(Object.create(null), source || {});
+}
+
+function labelIndexWith(source: Record<string, string>, label: string, id: string): Record<string, string> {
+  const next = cloneLabelIndex(source);
+  next[label] = id;
+  return next;
+}
+
+function normalizeBlocks(blocks: BlockData[]) {
+  const blockOrder: string[] = [];
+  const blocksById: Record<string, BlockData> = {};
+  const blockIdByLabel = cloneLabelIndex();
+  for (const block of blocks) {
+    blockOrder.push(block.id);
+    blocksById[block.id] = block;
+    blockIdByLabel[block.label] = block.id;
+  }
+  return { blockOrder, blocksById, blockIdByLabel };
+}
+
+export function getOrderedBlocks(state: Pick<AppState, "blockOrder" | "blocksById">): BlockData[] {
+  return state.blockOrder.map(id => state.blocksById[id]).filter((block): block is BlockData => !!block);
+}
+
+function hasMetadataChange(current: BlockData, data: Partial<BlockData>) {
+  return (data.title !== undefined && data.title !== current.title) ||
+    (data.label !== undefined && data.label !== current.label) ||
+    (data.hasContent !== undefined && data.hasContent !== current.hasContent) ||
+    (data.references !== undefined && data.references !== current.references);
+}
+
 export const useStore = create<AppState>((set, get) => ({
   isLoaded: false,
   isLoadingFiles: false,
-  blocks: [],
+  blockOrder: [],
+  blocksById: {},
+  blockIdByLabel: cloneLabelIndex(),
+  blocksRevision: 0,
   activeBlockId: null,
   activePath: null,
   activeFocusPos: null,
+  activeFocusX: null,
   focusDirection: null,
   openTabs: savedTabs,
   activeTab: savedActiveTab,
+  tabFocusStates: {},
+  closedTabs: [],
   backendMode: "none",
   viewOnlyBlocks: {},
   toggleViewOnly: (id) => set(state => {
@@ -166,10 +233,10 @@ export const useStore = create<AppState>((set, get) => ({
         const { data, content } = parseFrontmatter(text);
         const id = data.id || file.name.replace('.md', '');
         newBlocks.push({
-          id,
-          title: data.title || '',
-          label: data.label || '',
-          references: data.references || computeReferences(content),
+          id: metadataText(id),
+          title: normalizeBlockTitle(metadataText(data.title)),
+          label: normalizeBlockLabel(metadataText(data.label)),
+          references: computeReferences(content),
           content,
           hasContent: content.trim().length > 0
         });
@@ -181,7 +248,13 @@ export const useStore = create<AppState>((set, get) => ({
     }
     
     backendApi.mode = 'viewer';
-    set({ blocks: newBlocks, backendMode: 'viewer', isLoaded: true, persistenceError: null });
+    set(state => ({
+      ...normalizeBlocks(newBlocks),
+      blocksRevision: state.blocksRevision + 1,
+      backendMode: 'viewer',
+      isLoaded: true,
+      persistenceError: null
+    }));
     
     if (loadedSettings) {
       set(state => ({ settings: { ...state.settings, ...loadedSettings } }));
@@ -231,7 +304,11 @@ export const useStore = create<AppState>((set, get) => ({
   loadBlocks: async () => {
     try {
       const blocks = await backendApi.loadBlocks();
-      set({ blocks, persistenceError: null });
+      set(state => ({
+        ...normalizeBlocks(blocks),
+        blocksRevision: state.blocksRevision + 1,
+        persistenceError: null
+      }));
     } catch (e) {
       console.warn("Failed to load blocks", e);
       set({ persistenceError: errorMessage(e) });
@@ -239,55 +316,111 @@ export const useStore = create<AppState>((set, get) => ({
   },
   loadBlockContent: async (id: string) => {
     try {
-      const block = get().blocks.find(b => b.id === id);
+      const block = get().blocksById[id];
       if (block && block.content !== undefined) return; // already loaded
       
-      const fullBlock = await backendApi.loadBlockContent(id, get().blocks);
+      const fullBlock = await backendApi.loadBlockContent(id);
       if (!fullBlock) return;
-      set(state => ({
-        blocks: state.blocks.map(b => b.id === id ? { ...b, content: fullBlock.content } : b)
-      }));
+      set(state => {
+        const current = state.blocksById[id];
+        if (!current || current.content !== undefined) return state;
+        return {
+          blocksById: {
+            ...state.blocksById,
+            [id]: { ...current, content: fullBlock.content }
+          }
+        };
+      });
     } catch (e) {
       console.warn("Failed to load block content", e);
     }
   },
-  addBlock: async (index, data) => {
-    let baseLabel = data?.label || 'block';
+  addBlock: async (data) => {
+    const title = normalizeBlockTitle(metadataText(data?.title, 'New Block'));
+    let baseLabel = normalizeBlockLabel(metadataText(data?.label, 'block'));
+    const metadataError = validateBlockMetadata(title, baseLabel);
+    if (metadataError) {
+      set({ persistenceError: metadataError });
+      return;
+    }
     let label = baseLabel;
     
-    const { blocks } = get();
-    if (blocks.some(b => b.label === label)) {
+    const { blockIdByLabel } = get();
+    if ((blockIdByLabel[label] || pendingBlockLabels.has(label)) && data?.label !== undefined) {
+        set({ persistenceError: `Label "${label}" already exists` });
+        return;
+    }
+    if (blockIdByLabel[label] || pendingBlockLabels.has(label)) {
         let counter = 1;
-        while (blocks.some(b => b.label === `${baseLabel}-${counter}`)) {
+        while (blockIdByLabel[`${baseLabel}-${counter}`] || pendingBlockLabels.has(`${baseLabel}-${counter}`)) {
             counter++;
         }
         label = `${baseLabel}-${counter}`;
     }
 
-    const newBlockData = { title: 'New Block', label, content: '', ...data };
+    const newBlockData = { ...data, title, label, content: data?.content || '' };
+    pendingBlockLabels.add(label);
     try {
-      const newBlock = await backendApi.addBlock(newBlockData, get().blocks);
+      const newBlock = await backendApi.addBlock(newBlockData);
       
       set((state) => {
-        const withoutNew = state.blocks.filter(b => b.id !== newBlock.id);
-        if (index !== undefined && index !== -1) {
-          const newBlocks = [...withoutNew];
-          const insertIdx = index >= withoutNew.length ? withoutNew.length : index + 1;
-          newBlocks.splice(insertIdx, 0, newBlock);
-          return { blocks: newBlocks, activeBlockId: newBlock.id, focusDirection: "start", persistenceError: null };
-        }
-        return { blocks: [...withoutNew, newBlock], activeBlockId: newBlock.id, focusDirection: "start", persistenceError: null };
+        const withoutNew = state.blockOrder.filter(id => id !== newBlock.id);
+        const blockOrder = [...withoutNew, newBlock.id];
+        return {
+          blockOrder,
+          blocksById: { ...state.blocksById, [newBlock.id]: newBlock },
+          blockIdByLabel: labelIndexWith(state.blockIdByLabel, newBlock.label, newBlock.id),
+          blocksRevision: state.blocksRevision + 1,
+          persistenceError: null
+        };
       });
       return newBlock;
     } catch (e) {
       console.warn("Failed to add block", e);
       set({ persistenceError: errorMessage(e) });
+    } finally {
+      pendingBlockLabels.delete(label);
     }
   },
   updateBlock: (id, data) => {
-    set((state) => ({
-      blocks: state.blocks.map(b => b.id === id ? { ...b, ...data } : b)
-    }));
+    const current = get().blocksById[id];
+    if (!current) return;
+    const normalizedData = { ...data };
+    if (data.title !== undefined) {
+      normalizedData.title = normalizeBlockTitle(metadataText(data.title));
+      const titleError = validateBlockTitle(normalizedData.title);
+      if (titleError) {
+        set({ persistenceError: titleError });
+        return;
+      }
+    }
+    if (data.label !== undefined) {
+      normalizedData.label = normalizeBlockLabel(metadataText(data.label));
+      const labelError = validateBlockLabel(normalizedData.label);
+      const duplicateId = get().blockIdByLabel[normalizedData.label];
+      if (labelError || (duplicateId && duplicateId !== id)) {
+        set({ persistenceError: labelError || `Label "${normalizedData.label}" already exists` });
+        return;
+      }
+    }
+    data = normalizedData;
+    set((state) => {
+      const current = state.blocksById[id];
+      if (!current) return state;
+      const next = { ...current, ...data };
+      const metadataChanged = hasMetadataChange(current, data);
+      let blockIdByLabel = state.blockIdByLabel;
+      if (data.label !== undefined && data.label !== current.label) {
+        blockIdByLabel = cloneLabelIndex(state.blockIdByLabel);
+        if (blockIdByLabel[current.label] === id) delete blockIdByLabel[current.label];
+        blockIdByLabel[data.label] = id;
+      }
+      return {
+        blocksById: { ...state.blocksById, [id]: next },
+        blockIdByLabel,
+        blocksRevision: metadataChanged ? state.blocksRevision + 1 : state.blocksRevision
+      };
+    });
 
     dirtyBlockVersions.set(id, (dirtyBlockVersions.get(id) || 0) + 1);
     scheduleBlockSave(id);
@@ -307,37 +440,202 @@ export const useStore = create<AppState>((set, get) => ({
     if (activeSave) await activeSave;
     dirtyBlockVersions.delete(id);
     try {
-      await backendApi.deleteBlock(id, get().blocks);
+      await backendApi.deleteBlock(id);
       set((state) => {
-        const idx = state.blocks.findIndex(b => b.id === id);
+        const idx = state.blockOrder.indexOf(id);
         if (idx === -1) return state;
-        const newBlocks = state.blocks.filter(b => b.id !== id);
-        let nextActive = state.activeBlockId;
-        if (state.activeBlockId === id) {
-            if (newBlocks.length > 0) {
-                nextActive = newBlocks[Math.max(0, idx - 1)].id;
-            } else {
-                nextActive = null;
-            }
-        }
-        return { blocks: newBlocks, activeBlockId: nextActive, focusDirection: "end", persistenceError: null };
+        const blockOrder = state.blockOrder.filter(blockId => blockId !== id);
+        const blocksById = { ...state.blocksById };
+        const removed = blocksById[id];
+        delete blocksById[id];
+        const blockIdByLabel = cloneLabelIndex(state.blockIdByLabel);
+        if (removed && blockIdByLabel[removed.label] === id) delete blockIdByLabel[removed.label];
+        const openTabs = state.openTabs.filter(tabId => tabId !== id);
+        const activeTab = state.activeTab === id ? (openTabs.at(-1) || null) : state.activeTab;
+        const activeBlockId = state.activeBlockId === id ? activeTab : state.activeBlockId;
+        const activeBlock = activeBlockId ? blocksById[activeBlockId] : undefined;
+        const rootFocusChanged = state.activeBlockId === id;
+        return {
+          blockOrder,
+          blocksById,
+          blockIdByLabel,
+          blocksRevision: state.blocksRevision + 1,
+          openTabs,
+          closedTabs: state.closedTabs.filter(tab => tab.id !== id),
+          activeTab,
+          activeBlockId,
+          activePath: rootFocusChanged ? (activeBlock ? [activeBlock.label] : null) : state.activePath,
+          activeFocusPos: rootFocusChanged ? null : state.activeFocusPos,
+          activeFocusX: rootFocusChanged ? null : state.activeFocusX,
+          focusDirection: rootFocusChanged ? "start" : state.focusDirection,
+          persistenceError: null
+        };
       });
     } catch (e) {
       console.warn("Failed to delete block", e);
       set({ persistenceError: errorMessage(e) });
     }
   },
-  setActiveBlock: (id, dir, path, pos) => set({ activeBlockId: id, focusDirection: dir || null, activePath: path || null, activeFocusPos: pos ?? null }),
+  setActiveBlock: (id, dir, path, pos, x) => set(state => {
+    const focusState = {
+      activeBlockId: id,
+      focusDirection: dir || null,
+      activePath: path || null,
+      activeFocusPos: pos ?? null,
+      activeFocusX: x ?? null
+    };
+    return {
+      ...focusState,
+      tabFocusStates: state.activeTab
+        ? { ...state.tabFocusStates, [state.activeTab]: focusState }
+        : state.tabFocusStates
+    };
+  }),
   setSettings: (settings) => set({ settings }),
   setOpenTabs: (tabs) => set({ openTabs: tabs }),
   setActiveTab: (id) => set({ activeTab: id }),
+  activateTab: (id) => set((state) => {
+    const block = state.blocksById[id];
+    if (!block || !state.openTabs.includes(id)) return state;
+    const outgoing = state.activeTab ? {
+      activeBlockId: state.activeBlockId,
+      activePath: state.activePath,
+      activeFocusPos: state.activeFocusPos,
+      activeFocusX: state.activeFocusX,
+      focusDirection: state.focusDirection
+    } : null;
+    const tabFocusStates = outgoing && state.activeTab
+      ? { ...state.tabFocusStates, [state.activeTab]: outgoing }
+      : state.tabFocusStates;
+    const restored = tabFocusStates[id] || {
+      activeBlockId: id,
+      activePath: [block.label],
+      activeFocusPos: null,
+      activeFocusX: null,
+      focusDirection: null
+    };
+    return { activeTab: id, tabFocusStates, ...restored, focusDirection: null };
+  }),
+  closeTab: async (id) => {
+    await get().flushPendingSaves();
+    set(state => {
+      const index = state.openTabs.indexOf(id);
+      if (index < 0) return state;
+      const openTabs = state.openTabs.filter(tabId => tabId !== id);
+      const activeFocusState: TabFocusState = {
+        activeBlockId: state.activeBlockId,
+        activePath: state.activePath,
+        activeFocusPos: state.activeFocusPos,
+        activeFocusX: state.activeFocusX,
+        focusDirection: state.focusDirection
+      };
+      const focusState = state.activeTab === id ? activeFocusState : state.tabFocusStates[id];
+      const closedTabs = [
+        { id, index, focusState },
+        ...state.closedTabs.filter(tab => tab.id !== id)
+      ].slice(0, 20);
+      const tabFocusStates = { ...state.tabFocusStates };
+      delete tabFocusStates[id];
+      if (state.activeTab !== id) return { openTabs, tabFocusStates, closedTabs };
+      const fallback = openTabs[index] || openTabs[index - 1] || null;
+      if (!fallback) return {
+        openTabs,
+        tabFocusStates,
+        closedTabs,
+        activeTab: null,
+        activeBlockId: null,
+        activePath: null,
+        activeFocusPos: null,
+        activeFocusX: null,
+        focusDirection: null
+      };
+      const block = state.blocksById[fallback];
+      const restored = tabFocusStates[fallback] || {
+        activeBlockId: fallback,
+        activePath: block ? [block.label] : null,
+        activeFocusPos: null,
+        activeFocusX: null,
+        focusDirection: null
+      };
+      return { openTabs, tabFocusStates, closedTabs, activeTab: fallback, ...restored, focusDirection: null };
+    });
+  },
+  reopenClosedTab: () => set(state => {
+    const [closed, ...remaining] = state.closedTabs;
+    if (!closed) return state;
+    const block = state.blocksById[closed.id];
+    if (!block) return { closedTabs: remaining };
+    if (state.openTabs.includes(closed.id)) return { closedTabs: remaining };
+    const openTabs = [...state.openTabs];
+    openTabs.splice(Math.min(closed.index, openTabs.length), 0, closed.id);
+    const restored = closed.focusState || {
+      activeBlockId: closed.id,
+      activePath: [block.label],
+      activeFocusPos: null,
+      activeFocusX: null,
+      focusDirection: null
+    };
+    return {
+      openTabs,
+      closedTabs: remaining,
+      activeTab: closed.id,
+      tabFocusStates: { ...state.tabFocusStates, [closed.id]: restored },
+      ...restored,
+      focusDirection: null
+    };
+  }),
+  cycleTab: (direction) => set(state => {
+    if (state.openTabs.length < 2) return state;
+    const currentIndex = Math.max(0, state.activeTab ? state.openTabs.indexOf(state.activeTab) : 0);
+    const nextIndex = (currentIndex + direction + state.openTabs.length) % state.openTabs.length;
+    const id = state.openTabs[nextIndex];
+    const block = state.blocksById[id];
+    if (!block) return state;
+    const outgoing = state.activeTab ? {
+      activeBlockId: state.activeBlockId,
+      activePath: state.activePath,
+      activeFocusPos: state.activeFocusPos,
+      activeFocusX: state.activeFocusX,
+      focusDirection: state.focusDirection
+    } : null;
+    const tabFocusStates = outgoing && state.activeTab
+      ? { ...state.tabFocusStates, [state.activeTab]: outgoing }
+      : state.tabFocusStates;
+    const restored = tabFocusStates[id] || {
+      activeBlockId: id,
+      activePath: [block.label],
+      activeFocusPos: null,
+      activeFocusX: null,
+      focusDirection: null
+    };
+    return { activeTab: id, tabFocusStates, ...restored, focusDirection: null };
+  }),
+  activateRootBlock: (id, dir = null) => set((state) => {
+    const block = state.blocksById[id];
+    if (!block) return state;
+    const focusState = {
+      activeBlockId: id,
+      activePath: [block.label],
+      activeFocusPos: null,
+      activeFocusX: null,
+      focusDirection: dir
+    };
+    return {
+      openTabs: state.openTabs.includes(id) ? state.openTabs : [...state.openTabs, id],
+      closedTabs: state.closedTabs.filter(tab => tab.id !== id),
+      activeTab: id,
+      ...focusState,
+      tabFocusStates: { ...state.tabFocusStates, [id]: focusState }
+    };
+  }),
   openBlockInTab: (id, activate) => {
+    if (activate) {
+      get().activateRootBlock(id, "start");
+      return;
+    }
     set((state) => {
       const newTabs = state.openTabs.includes(id) ? state.openTabs : [...state.openTabs, id];
-      return { 
-        openTabs: newTabs, 
-        activeTab: activate ? id : state.activeTab 
-      };
+      return { openTabs: newTabs, closedTabs: state.closedTabs.filter(tab => tab.id !== id) };
     });
   },
   initSync: () => {
@@ -353,41 +651,70 @@ export const useStore = create<AppState>((set, get) => ({
             // An acknowledgement or external event must not replace newer local input
             // while that block is still waiting to be persisted.
             if (dirtyBlockVersions.has(msg.block.id)) return state;
-            const idx = state.blocks.findIndex(b => b.id === msg.block.id);
-            if (idx !== -1) {
-              const current = state.blocks[idx];
+            const current = state.blocksById[msg.block.id];
+            if (current) {
               // Only update if something changed
-              if (current.content !== msg.block.content || current.title !== msg.block.title || current.label !== msg.block.label) {
-                const newBlocks = [...state.blocks];
-                newBlocks[idx] = { ...current, ...msg.block, content: current.content !== undefined ? msg.block.content : undefined };
-                // Also update content if it was loaded
-                return { blocks: newBlocks };
+              if (current.content !== msg.block.content || current.title !== msg.block.title || current.label !== msg.block.label || current.references !== msg.block.references) {
+                const next = { ...current, ...msg.block, content: current.content !== undefined ? msg.block.content : undefined };
+                const blockIdByLabel = cloneLabelIndex(state.blockIdByLabel);
+                if (current.label !== next.label && blockIdByLabel[current.label] === current.id) delete blockIdByLabel[current.label];
+                blockIdByLabel[next.label] = next.id;
+                return {
+                  blocksById: { ...state.blocksById, [next.id]: next },
+                  blockIdByLabel,
+                  blocksRevision: state.blocksRevision + 1
+                };
               }
             } else {
-              return { blocks: [...state.blocks, { ...msg.block, content: undefined }] };
+              const next = { ...msg.block, content: undefined };
+              return {
+                blockOrder: [...state.blockOrder, next.id],
+                blocksById: { ...state.blocksById, [next.id]: next },
+                blockIdByLabel: labelIndexWith(state.blockIdByLabel, next.label, next.id),
+                blocksRevision: state.blocksRevision + 1
+              };
             }
             return state;
           });
         } else if (msg.type === 'delete' && msg.id) {
           set(state => {
-            const idx = state.blocks.findIndex(b => b.id === msg.id);
+            const idx = state.blockOrder.indexOf(msg.id);
             if (idx === -1) return state;
-            const newBlocks = state.blocks.filter(b => b.id !== msg.id);
-            let nextActive = state.activeBlockId;
-            let newTabs = state.openTabs.filter(t => t !== msg.id);
-            let newActiveTab = state.activeTab === msg.id ? (newTabs.length > 0 ? newTabs[newTabs.length - 1] : null) : state.activeTab;
-            
-            if (state.activeBlockId === msg.id) {
-                if (newBlocks.length > 0) {
-                    nextActive = newBlocks[Math.max(0, idx - 1)].id;
-                } else {
-                    nextActive = null;
-                }
-            }
-            return { blocks: newBlocks, activeBlockId: nextActive, openTabs: newTabs, activeTab: newActiveTab };
+            const blockOrder = state.blockOrder.filter(id => id !== msg.id);
+            const blocksById = { ...state.blocksById };
+            const removed = blocksById[msg.id];
+            delete blocksById[msg.id];
+            const blockIdByLabel = cloneLabelIndex(state.blockIdByLabel);
+            if (removed && blockIdByLabel[removed.label] === msg.id) delete blockIdByLabel[removed.label];
+            const newTabs = state.openTabs.filter(t => t !== msg.id);
+            const newActiveTab = state.activeTab === msg.id ? (newTabs.at(-1) || null) : state.activeTab;
+            const nextActive = state.activeBlockId === msg.id ? newActiveTab : state.activeBlockId;
+            const activeBlock = nextActive ? blocksById[nextActive] : undefined;
+            const rootFocusChanged = state.activeBlockId === msg.id;
+            return {
+              blockOrder,
+              blocksById,
+              blockIdByLabel,
+              blocksRevision: state.blocksRevision + 1,
+              activeBlockId: nextActive,
+              activePath: rootFocusChanged ? (activeBlock ? [activeBlock.label] : null) : state.activePath,
+              activeFocusPos: rootFocusChanged ? null : state.activeFocusPos,
+              activeFocusX: rootFocusChanged ? null : state.activeFocusX,
+              focusDirection: rootFocusChanged ? "start" : state.focusDirection,
+              openTabs: newTabs,
+              activeTab: newActiveTab
+            };
           });
         }
       } catch (err) {}
+    };
+    eventSource.onopen = () => {
+      set(state => state.persistenceError === 'Workspace connection lost. Your latest changes may not be saved.'
+        ? { persistenceError: null }
+        : state);
+    };
+    eventSource.onerror = () => {
+      set({ persistenceError: 'Workspace connection lost. Your latest changes may not be saved.' });
     };
   }
 }));
@@ -413,14 +740,14 @@ async function flushBlockSave(id: string): Promise<void> {
     while (dirtyBlockVersions.has(id)) {
       const version = dirtyBlockVersions.get(id)!;
       const state = useStore.getState();
-      const block = state.blocks.find(candidate => candidate.id === id);
+      const block = state.blocksById[id];
       if (!block) {
         dirtyBlockVersions.delete(id);
         return;
       }
 
       try {
-        const result = await backendApi.updateBlock(id, block as BlockData, state.blocks);
+        const result = await backendApi.updateBlock(id, block as BlockData);
         useStore.setState({ persistenceError: null });
 
         if (dirtyBlockVersions.get(id) === version) {
@@ -429,21 +756,32 @@ async function flushBlockSave(id: string): Promise<void> {
 
         if (result.updatedBlocks?.length) {
           useStore.setState(currentState => {
-            const nextBlocks = [...currentState.blocks];
+            const blocksById = { ...currentState.blocksById };
+            const blockIdByLabel = cloneLabelIndex(currentState.blockIdByLabel);
+            let changed = false;
             for (const updatedBlock of result.updatedBlocks!) {
               // Never let a server response overwrite newer unsaved local input.
               if (dirtyBlockVersions.has(updatedBlock.id)) continue;
-              const index = nextBlocks.findIndex(candidate => candidate.id === updatedBlock.id);
-              if (index === -1) continue;
-              const current = nextBlocks[index];
-              nextBlocks[index] = {
+              const current = blocksById[updatedBlock.id];
+              if (!current) continue;
+              if (current.label !== updatedBlock.label && blockIdByLabel[current.label] === current.id) {
+                delete blockIdByLabel[current.label];
+              }
+              blockIdByLabel[updatedBlock.label] = updatedBlock.id;
+              blocksById[updatedBlock.id] = {
                 ...current,
                 label: updatedBlock.label,
                 title: updatedBlock.title,
+                references: updatedBlock.references,
                 ...(current.content !== undefined ? { content: updatedBlock.content } : {})
               };
+              changed = true;
             }
-            return { blocks: nextBlocks };
+            return changed ? {
+              blocksById,
+              blockIdByLabel,
+              blocksRevision: currentState.blocksRevision + 1
+            } : currentState;
           });
         }
       } catch (error) {

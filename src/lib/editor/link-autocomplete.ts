@@ -1,53 +1,39 @@
-import { CompletionContext, CompletionResult, Completion } from "@codemirror/autocomplete";
+import { CompletionContext, CompletionResult, Completion, closeCompletion } from "@codemirror/autocomplete";
 import { Transaction } from "@codemirror/state";
 import { useStore } from "../../store";
 import { parentLabelFacet } from "./embedded-block-plugin";
+import { encodeEmbeddedLabel, findActiveEmbeddedTarget } from "../embedded-link-syntax";
+import { normalizeBlockLabel, validateBlockMetadata } from "../label-policy";
+import { splitPath } from "../utils/path";
 
 export function linkCompletion(context: CompletionContext): CompletionResult | null {
-    // Match anything after `[[` until the cursor (and only if we are typing inside `[[ ... `)
-    const beforeRegex = /\[\[([^\]]*)$/;
-    const beforeStr = context.state.doc.sliceString(Math.max(0, context.pos - 100), context.pos);
-    const beforeMatch = beforeStr.match(beforeRegex);
-    if (!beforeMatch) return null;
+    const activeTarget = findActiveEmbeddedTarget(context.state.doc.toString(), context.pos, { allowUnclosed: false });
+    if (!activeTarget) return null;
 
-    const textBeforeCursor = beforeMatch[1];
-    
-    // If the cursor is past `||`, we are typing the alias formatting, so no block autocomplete
-    if (textBeforeCursor.includes("||")) {
-        return null;
-    }
-
-    const afterRegex = /^([^\]]*)/;
-    const afterStr = context.state.doc.sliceString(context.pos, Math.min(context.pos + 100, context.state.doc.length));
-    const afterMatch = afterStr.match(afterRegex);
-    const textAfterCursor = afterMatch ? afterMatch[1] : "";
-
-    // The alias divider might be in the text after the cursor
-    const pipeIdxAfter = textAfterCursor.indexOf("||");
-    const labelAfterCursor = pipeIdxAfter !== -1 ? textAfterCursor.slice(0, pipeIdxAfter) : textAfterCursor;
-
-    let queryLabel = textBeforeCursor + labelAfterCursor;
-    const from = context.pos - textBeforeCursor.length;
-    const to = context.pos + labelAfterCursor.length;
-
-    const hasAt = queryLabel.startsWith("@");
-    if (hasAt) {
-        queryLabel = queryLabel.slice(1);
-    }
+    const queryLabel = activeTarget.label;
+    const from = activeTarget.from;
+    const to = activeTarget.to;
     
     const store = useStore.getState();
-    const blocks = store.blocks;
     const parentLabel = context.state.facet(parentLabelFacet);
     
     const options: Completion[] = [];
 
-    const isRelative = queryLabel.startsWith("/");
+    const isRelative = activeTarget.relative;
     const fullQueryLabel = isRelative ? parentLabel + queryLabel : queryLabel;
     
-    const exactMatch = blocks.some(b => b.label === fullQueryLabel);
-    if (queryLabel.trim().length > 0 && queryLabel !== "/" && !exactMatch) {
-        let applyText = queryLabel;
-        if (hasAt) applyText = "@" + applyText;
+    const exactMatch = !!store.blockIdByLabel[fullQueryLabel];
+    const normalizedCreateLabel = normalizeBlockLabel(fullQueryLabel);
+    const relativeTitle = splitPath(normalizedCreateLabel)
+        .map(segment => segment.trim())
+        .filter(Boolean)
+        .at(-1);
+    // An absolute label is the name the user explicitly entered, so mirror
+    // search creation and retain it as the initial title. Only relative syntax
+    // intentionally supplies parent-path context that should be omitted.
+    const newTitle = isRelative ? (relativeTitle || normalizedCreateLabel) : normalizedCreateLabel;
+    if (queryLabel.trim().length > 0 && queryLabel !== "/" && !exactMatch && !validateBlockMetadata(newTitle, normalizedCreateLabel)) {
+        const applyText = encodeEmbeddedLabel(queryLabel, { relative: isRelative });
 
         options.push({
             label: applyText,
@@ -60,24 +46,28 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
                     changes: { from: applyFrom, to: applyTo, insert: applyText },
                     annotations: Transaction.userEvent.of("input.complete")
                 });
-                const strippedQuery = fullQueryLabel.replace(/\$\$[\s\S]*?\$\$|\$[\s\S]*?\$/g, match => ' '.repeat(match.length));
-                const slashIdx = strippedQuery.lastIndexOf("/");
-                const newTitle = slashIdx !== -1 ? fullQueryLabel.slice(slashIdx + 1) : fullQueryLabel;
-                store.addBlock(undefined, { title: newTitle, label: fullQueryLabel });
+                void store.addBlock({ title: newTitle, label: normalizedCreateLabel }).then(created => {
+                    if (!created || !view.dom.isConnected) return;
+                    view.focus();
+                    closeCompletion(view);
+                    // The block index changed outside CodeMirror. Re-dispatch
+                    // the retained caret so the embedded-link tooltip can now
+                    // recognize the target as existing.
+                    view.dispatch({ selection: view.state.selection });
+                });
             }
         });
     }
 
-    for (const b of blocks) {
+    for (const id of store.blockOrder) {
+        const b = store.blocksById[id];
+        if (!b) continue;
         // filter blocks so we only suggest ones matching query
         if (queryLabel && !b.label.toLowerCase().includes(fullQueryLabel.toLowerCase()) && !b.title.toLowerCase().includes(queryLabel.toLowerCase())) {
             continue;
         }
 
-        let applyText = b.label;
-        if (hasAt) {
-            applyText = "@" + applyText;
-        }
+        const applyText = encodeEmbeddedLabel(b.label);
 
         options.push({
             label: applyText, // `label` is the primary searchable string and default insertion text
@@ -96,10 +86,7 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
         if (parentLabel && b.label.startsWith(parentLabel + "/")) {
             const relText = b.label.slice(parentLabel.length); // starts with "/"
             if (!queryLabel || relText.toLowerCase().includes(queryLabel.toLowerCase()) || b.title.toLowerCase().includes(queryLabel.toLowerCase())) {
-                let applyRelText = relText;
-                if (hasAt) {
-                    applyRelText = "@" + applyRelText;
-                }
+                const applyRelText = encodeEmbeddedLabel(relText, { relative: true });
                 
                 options.push({
                     label: applyRelText,
@@ -118,12 +105,17 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
     }
 
     // Make sure we apply based on the calculated full range inside brackets
+    const sourceDocument = context.state.doc;
     return {
         from: from,
         to: to,
         options: options,
         filter: false,
         update: (current: CompletionResult, from: number, to: number, context: CompletionContext) => {
+            // Cursor-only movement keeps the same immutable document object.
+            // Reuse the exact result so CodeMirror does not put the menu into
+            // a pending/rebuild cycle (the visible Left/Right flicker).
+            if (context.state.doc === sourceDocument) return current;
             return linkCompletion(context);
         }
     };

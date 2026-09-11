@@ -1,12 +1,13 @@
 import React, { useMemo, useRef, useEffect } from 'react';
-import { useStore } from '../store';
+import { getOrderedBlocks, useStore } from '../store';
 import { X } from 'lucide-react';
 import ForceGraph2D from 'react-force-graph-2d';
 import { SidebarTree } from './LabelTree';
 import { splitPath } from '../lib/utils/path';
 
 export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
-        const blocks = useStore(state => state.blocks);
+    const blocksRevision = useStore(state => state.blocksRevision);
+    const blocks = useMemo(() => getOrderedBlocks(useStore.getState()), [blocksRevision]);
     const openBlockInTab = useStore(state => state.openBlockInTab);
     const containerRef = useRef<HTMLDivElement>(null);
     const fgRef = useRef<any>(null);

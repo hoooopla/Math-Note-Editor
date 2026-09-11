@@ -1,10 +1,16 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import type { EditorView } from "@codemirror/view";
+import { EditorSelection } from "@codemirror/state";
 import { setEditorFocus } from "../lib/editor/katex-plugin";
+import { setEmbeddedObjectSelection } from "../lib/editor/embedded-object-selection";
 import { MathTitle } from "./MathTitle";
 import { ExternalLink, ChevronRight, ChevronDown } from "lucide-react";
+import { parseEmbeddedText, resolveEmbeddedLabel } from "../lib/embedded-link-syntax";
+import { handOffEditorBoundary } from "../lib/editor/editor-boundary-registry";
+import { startCompletion } from "@codemirror/autocomplete";
+import { findActiveEmbeddedTarget } from "../lib/embedded-link-syntax";
 
 export interface EmbeddedBlockUIProps {
     text: string;
@@ -16,62 +22,88 @@ export interface EmbeddedBlockUIProps {
     
     isAtEndOfLine?: boolean;
     isAtStartOfLine?: boolean;
+    isKeyboardSelected?: boolean;
 }
 
-export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleOpen, view, stateRef, isAtEndOfLine = false, isAtStartOfLine = false }: EmbeddedBlockUIProps) {
+export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleOpen, view, stateRef, isAtEndOfLine = false, isAtStartOfLine = false, isKeyboardSelected = false }: EmbeddedBlockUIProps) {
     const pos = stateRef?.pos;
     const length = stateRef?.length;
-    let displayStyle: "standout" | "inline" = "inline";
-    let ifToggled: "open" | "closed" = "closed";
+    const parsedEmbed = parseEmbeddedText(text);
+    const displayStyle: "standout" | "inline" = parsedEmbed.standout ? "standout" : "inline";
+    const ifToggled: "open" | "closed" = parsedEmbed.open ? "open" : "closed";
+    const keyboardSelectionStyle: React.CSSProperties = isKeyboardSelected ? {
+        outline: "1px dotted rgba(96, 165, 250, 0.92)",
+        outlineOffset: "1px",
+        borderRadius: 0
+    } : {};
     
         const activePath = useStore(state => state.activePath);
     const focusDirection = useStore(state => state.focusDirection);
     const activeFocusPos = useStore(state => state.activeFocusPos);
+    const activeFocusX = useStore(state => state.activeFocusX);
     const loadBlockContent = useStore(state => state.loadBlockContent);
     const settings = useStore(state => state.settings);
 
-    let rawText = text;
-    if (rawText.startsWith("@")) {
-        displayStyle = "standout";
-        rawText = rawText.slice(1);
-    }
-    if (rawText.endsWith("∨")) {
-        ifToggled = "open";
-        rawText = rawText.slice(0, -1);
-    }
+    let displayTitle: string | null = parsedEmbed.alias;
+    const fullLabel = resolveEmbeddedLabel(parsedEmbed, parentLabel);
 
-    let rawLabel = rawText;
-    let displayTitle: string | null = null;
-    const pipeIdx = rawText.indexOf("||");
-    if (pipeIdx !== -1) {
-        rawLabel = rawText.slice(0, pipeIdx).trim();
-        displayTitle = rawText.slice(pipeIdx + 2).trim();
-    } else {
-        rawLabel = rawLabel.trim();
-    }
-
-    let fullLabel = rawLabel;
-    if (rawLabel.startsWith("/")) {
-        fullLabel = parentLabel + rawLabel;
-    }
-
-    const blocks = useStore(state => state.blocks);
-    const targetBlock = blocks.find(b => b.label === fullLabel);
+    const targetBlockId = useStore(state => state.blockIdByLabel[fullLabel]);
+    const targetBlock = useStore(state => targetBlockId ? state.blocksById[targetBlockId] : undefined);
     const isLabelExisted = !!targetBlock;
     
     const backendMode = useStore(state => state.backendMode);
-    const rootBlock = blocks.find(b => b.label === visitedLabels[0]);
+    const rootBlockId = useStore(state => state.blockIdByLabel[visitedLabels[0]]);
+    const rootBlock = useStore(state => rootBlockId ? state.blocksById[rootBlockId] : undefined);
     const viewOnlyBlocks = useStore(state => state.viewOnlyBlocks);
     
     const targetViewOnly = targetBlock ? (viewOnlyBlocks[targetBlock.id] ?? (backendMode === "viewer")) : false;
     const rootViewOnly = rootBlock ? (viewOnlyBlocks[rootBlock.id] ?? (backendMode === "viewer")) : false;
     const isReadOnly = targetViewOnly || rootViewOnly || !!view?.state.readOnly;
 
+    const instancePath = [...visitedLabels, fullLabel];
+    const pathMatches = activePath && activePath.length === instancePath.length && activePath.every((l, i) => l === instancePath[i]);
+    const activeIsMe = pathMatches && (activeFocusPos === null || activeFocusPos === pos);
+    const isFocused = activeIsMe ?? false;
+    const globalFocusDirection = activeIsMe ? focusDirection : null;
+    const editorHostRef = useRef<HTMLDivElement>(null);
+    const titleNavigationRef = useRef<HTMLElement>(null);
+    const bodyNavigationRef = useRef<HTMLElement>(null);
+    const [editorActivated, setEditorActivated] = useState(false);
+
     useEffect(() => {
-        if (targetBlock && targetBlock.content === undefined && ifToggled === "open") {
+        if (ifToggled === "closed") {
+            setEditorActivated(false);
+        } else if (isFocused) {
+            // Keyboard navigation must be able to focus the destination editor
+            // even before its viewport observer runs.
+            setEditorActivated(true);
+        }
+    }, [ifToggled, isFocused]);
+
+    useEffect(() => {
+        if (ifToggled !== "open" || editorActivated) return;
+        const host = editorHostRef.current;
+        if (typeof IntersectionObserver === "undefined") {
+            setEditorActivated(true);
+            return;
+        }
+        if (!host) return;
+
+        const observer = new IntersectionObserver(entries => {
+            if (entries.some(entry => entry.isIntersecting)) {
+                setEditorActivated(true);
+                observer.disconnect();
+            }
+        }, { rootMargin: "600px 0px" });
+        observer.observe(host);
+        return () => observer.disconnect();
+    }, [ifToggled, editorActivated]);
+
+    useEffect(() => {
+        if (targetBlock && targetBlock.content === undefined && ifToggled === "open" && editorActivated) {
             loadBlockContent(targetBlock.id);
         }
-    }, [targetBlock, ifToggled, loadBlockContent]);
+    }, [targetBlock, ifToggled, editorActivated, loadBlockContent]);
 
     if (visitedLabels.includes(fullLabel)) {
         return (
@@ -82,20 +114,31 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         );
     }
 
-    const instancePath = [...visitedLabels, fullLabel];
-    const pathMatches = activePath && activePath.length === instancePath.length && activePath.every((l, i) => l === instancePath[i]);
-
-    const activeIsMe = pathMatches && (activeFocusPos === null || activeFocusPos === pos);
-    const isFocused = activeIsMe ?? false;
-    const globalFocusDirection = activeIsMe ? focusDirection : null;
-
     if (isLabelExisted && displayTitle === null) {
         displayTitle = targetBlock!.title;
     }
 
     if (!isLabelExisted) {
+        const handleMissingClick = (event: React.MouseEvent) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!view || pos === undefined || length === undefined || isReadOnly) return;
+            const target = findActiveEmbeddedTarget(view.state.doc.toString(), Math.max(pos + 2, pos + length - 2));
+            if (!target) return;
+            view.focus();
+            view.dispatch({
+                selection: EditorSelection.cursor(target.to),
+                effects: setEditorFocus.of(true),
+                scrollIntoView: true
+            });
+            startCompletion(view);
+        };
         return (
-            <span className="text-red-400 bg-red-400/10 px-1 rounded mx-1">
+            <span
+                className="text-red-400 bg-red-400/10 px-1 rounded mx-1 cursor-text"
+                onMouseDown={event => { event.preventDefault(); event.stopPropagation(); }}
+                onClick={handleMissingClick}
+            >
                 [[{text}]]
             </span>
         );
@@ -158,7 +201,13 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                              paddingBottom: `${titlePb}px` 
                          }}>
                         <div className="flex items-center gap-2.5">
-                            <div className="flex items-center gap-1.5" style={{ color, fontSize: `${fontSize}px` }}>
+                            <div
+                                ref={titleNavigationRef as React.RefObject<HTMLDivElement>}
+                                data-embed-nav-title="true"
+                                className="flex items-center gap-1.5"
+                                data-embed-keyboard-selected={isKeyboardSelected ? "true" : undefined}
+                                style={{ color, fontSize: `${fontSize}px`, ...keyboardSelectionStyle }}
+                            >
                                 <ChevronRight size={fontSize * 0.8} className="opacity-70" />
                                 <MathTitle text={displayTitle} className="font-semibold" />
                             </div>
@@ -178,8 +227,11 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
             const color = hasContent ? filledColor : emptyColor;
             return (
                 <span 
+                    ref={titleNavigationRef as React.RefObject<HTMLSpanElement>}
+                    data-embed-nav-title="true"
                     className="inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors opacity-90 hover:opacity-100"
-                    style={{ color, borderColor: `color-mix(in srgb, ${color} ${underlineOpacity}%, transparent)` }}
+                    data-embed-keyboard-selected={isKeyboardSelected ? "true" : undefined}
+                    style={{ color, borderColor: `color-mix(in srgb, ${color} ${underlineOpacity}%, transparent)`, ...keyboardSelectionStyle }}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
@@ -192,17 +244,21 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
     // if_toggled = open
     const macros = useStore.getState().settings?.macros || {};
 
-    const handleUp = () => {
+    const handleUp = (x?: number) => {
         if (view && pos !== undefined) {
+            const titleRect = titleNavigationRef.current?.getBoundingClientRect();
+            const anchor = typeof x === "number" && titleRect && x > (titleRect.left + titleRect.right) / 2
+                ? pos + (length ?? 0)
+                : pos;
             view.dispatch({
-                selection: { anchor: pos },
+                selection: { anchor },
                 effects: setEditorFocus.of(true)
             });
             view.focus();
         }
     };
     
-    const handleDown = () => {
+    const handleDown = (x?: number) => {
         if (view && pos !== undefined && length !== undefined) {
             let nextPos = pos + length;
             if (isAtEndOfLine) {
@@ -210,15 +266,88 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                 const currentLine = doc.lineAt(nextPos);
                 if (currentLine.number < doc.lines) {
                     nextPos = doc.line(currentLine.number + 1).from;
+                } else if (handOffEditorBoundary(view, "down", x)) {
+                    // This embedded block is the final visible row of its
+                    // parent editor. Continue the same Down movement through
+                    // the parent's boundary instead of landing on this title
+                    // boundary, which would re-enter the child on the next Down.
+                    return;
+                }
+            }
+            if (typeof x === "number") {
+                const targetCoords = view.coordsAtPos(nextPos, 1);
+                if (targetCoords) {
+                    nextPos = view.posAtCoords({
+                        x,
+                        y: (targetCoords.top + targetCoords.bottom) / 2
+                    }, false);
                 }
             }
             view.dispatch({
-                selection: { anchor: nextPos },
-                effects: setEditorFocus.of(true)
+                selection: EditorSelection.cursor(nextPos, 1),
+                effects: [
+                    setEditorFocus.of(true),
+                    setEmbeddedObjectSelection.of(null)
+                ]
             });
             view.focus();
         }
     };
+
+    const activateEmbeddedEditor = () => {
+        setEditorActivated(true);
+        if (!activeIsMe) {
+            useStore.getState().setActiveBlock(targetBlock.id, "start", instancePath, pos);
+            view?.contentDOM.blur();
+        }
+    };
+
+    const embeddedEditorSurface = (
+        <div ref={editorHostRef} data-testid={`embedded-editor-host-${targetBlock.id}`}>
+            {editorActivated && targetBlock.content !== undefined ? (
+                <CodeMirrorEditor
+                    isReadOnly={isReadOnly}
+                    content={targetBlock.content}
+                    onBlur={(val) => {
+                        useStore.getState().updateBlock(targetBlock.id, { content: val });
+                        void useStore.getState().flushBlock(targetBlock.id);
+                    }}
+                    onChange={(val) => {
+                        useStore.getState().updateBlock(targetBlock.id, { content: val });
+                    }}
+                    onUp={handleUp}
+                    onDown={handleDown}
+                    isFocused={isFocused}
+                    macros={macros}
+                    focusDirection={globalFocusDirection}
+                    focusX={activeIsMe ? activeFocusX : null}
+                    parentLabel={fullLabel}
+                    visitedLabels={instancePath}
+                    onImagePaste={(file, insertContent) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent })}
+                    onEsc={() => toggleOpen()}
+                    onFocus={() => {
+                        if (!activeIsMe) {
+                            useStore.getState().setActiveBlock(targetBlock.id, null, instancePath, pos);
+                        }
+                    }}
+                />
+            ) : (
+                <button
+                    type="button"
+                    className="block min-h-12 w-full cursor-text whitespace-pre-wrap rounded-md px-2 py-2 text-left font-sans text-sm text-secondary/70 hover:bg-accent/5"
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        activateEmbeddedEditor();
+                    }}
+                    aria-label={`Activate embedded editor ${displayTitle || fullLabel}`}
+                >
+                    {editorActivated
+                        ? "Loading embedded note…"
+                        : (targetBlock.content?.slice(0, 240) || "Preparing embedded note…")}
+                </button>
+            )}
+        </div>
+    );
 
     if (displayStyle === "standout") {
         const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
@@ -253,7 +382,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         const bgOpacityOpenHover = settings?.standoutBlockBgOpacityOpenHover ?? 90;
         
         return (
-            <div 
+            <div
                 className={`inline-block align-top ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1.5' : 'mb-3'} select-none overflow-visible w-full`}
                 style={{ 
                     marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
@@ -273,7 +402,12 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                     onClick={handleClick}
                 >
                     <div className="flex items-center gap-2.5">
-                        <div style={{ color, fontSize: `${fontSize}px` }}>
+                        <div
+                            ref={titleNavigationRef as React.RefObject<HTMLDivElement>}
+                            data-embed-nav-title="true"
+                            data-embed-keyboard-selected={isKeyboardSelected ? "true" : undefined}
+                            style={{ color, fontSize: `${fontSize}px`, ...keyboardSelectionStyle }}
+                        >
                             <MathTitle text={displayTitle} className="font-semibold" />
                         </div>
                     </div>
@@ -289,7 +423,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                         </span>
                     </div>
                 </div>
-                <div className="border-l-2 border-accent/30 bg-[var(--standout-inner-bg)] rounded-r-xl font-sans text-primary relative overflow-visible mt-1" 
+                <div ref={bodyNavigationRef as React.RefObject<HTMLDivElement>} data-embed-nav-body="true" className="border-l-2 border-accent/30 bg-[var(--standout-inner-bg)] rounded-r-xl font-sans text-primary relative overflow-visible mt-1"
                      style={{ 
                          paddingLeft: `${contentPl}px`, 
                          paddingRight: `${contentPr}px`, 
@@ -303,31 +437,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
                          e.stopPropagation();
                      }}
                 >
-                    <CodeMirrorEditor 
-                        isReadOnly={isReadOnly}
-                        content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
-                        onBlur={(val) => {
-                            useStore.getState().updateBlock(targetBlock!.id, { content: val });
-                            void useStore.getState().flushBlock(targetBlock!.id);
-                        }}
-                        onChange={(val) => {
-                            useStore.getState().updateBlock(targetBlock!.id, { content: val });
-                        }}
-                        onUp={handleUp}
-                        onDown={handleDown}
-                        isFocused={isFocused}
-                        macros={macros}
-                        focusDirection={globalFocusDirection}
-                        parentLabel={fullLabel}
-                        visitedLabels={[...visitedLabels, fullLabel]}
-                        onImagePaste={(file, insertContent) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent })}
-                        onEsc={() => toggleOpen()}
-                        onFocus={() => {
-                            if (!activeIsMe) {
-                                useStore.getState().setActiveBlock(targetBlock!.id, null, [...visitedLabels, fullLabel], pos);
-                            }
-                        }}
-                    />
+                    {embeddedEditorSurface}
                 </div>
             </div>
         );
@@ -341,42 +451,21 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], toggleO
         return (
             <span className="inline align-top">
                 <span 
+                    ref={titleNavigationRef as React.RefObject<HTMLSpanElement>}
+                    data-embed-nav-title="true"
                     className="inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors opacity-90 hover:opacity-100"
-                    style={{ color, borderColor: `color-mix(in srgb, ${color} ${underlineOpacity}%, transparent)` }}
+                    data-embed-keyboard-selected={isKeyboardSelected ? "true" : undefined}
+                    style={{ color, borderColor: `color-mix(in srgb, ${color} ${underlineOpacity}%, transparent)`, ...keyboardSelectionStyle }}
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                     title={`Close ${displayTitle}`}
                 >
                     <MathTitle text={displayTitle} />
                 </span>
-                <span className={`inline-block w-full py-2 border-l-2 border-accent/30 select-text bg-surface/30 rounded-r-lg relative overflow-visible mt-1 mb-1`} 
+                <span ref={bodyNavigationRef as React.RefObject<HTMLSpanElement>} data-embed-nav-body="true" className={`inline-block w-full py-2 border-l-2 border-accent/30 select-text bg-surface/30 rounded-r-lg relative overflow-visible mt-1 mb-1`}
                      style={{ paddingLeft: `${indentWidth}px` }}
                      onClick={e => e.stopPropagation()}>
-                    <CodeMirrorEditor 
-                        isReadOnly={isReadOnly}
-                        content={targetBlock!.content !== undefined ? targetBlock!.content : ""}
-                        onBlur={(val) => {
-                            useStore.getState().updateBlock(targetBlock!.id, { content: val });
-                            void useStore.getState().flushBlock(targetBlock!.id);
-                        }}
-                        onChange={(val) => {
-                            useStore.getState().updateBlock(targetBlock!.id, { content: val });
-                        }}
-                        onUp={handleUp}
-                        onDown={handleDown}
-                        isFocused={isFocused}
-                        macros={macros}
-                        focusDirection={globalFocusDirection}
-                        parentLabel={fullLabel}
-                        visitedLabels={[...visitedLabels, fullLabel]}
-                        onImagePaste={(file, insertContent) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent })}
-                        onEsc={() => toggleOpen()}
-                        onFocus={() => {
-                            if (!activeIsMe) {
-                                useStore.getState().setActiveBlock(targetBlock!.id, null, [...visitedLabels, fullLabel], pos);
-                            }
-                        }}
-                    />
+                    {embeddedEditorSurface}
                 </span>
             </span>
         );

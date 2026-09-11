@@ -4,19 +4,23 @@
  */
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { useStore } from "./store";
+import { getOrderedBlocks, useStore } from "./store";
 import { BlockContainer } from "./components/Block";
 import { SettingsModal } from "./components/SettingsModal";
 import { ImageUploadModal } from "./components/ImageUploadModal";
 import { SearchModal } from "./components/SearchModal";
-import { GraphModal } from "./components/GraphModal";
 import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical } from "lucide-react";
 import "./index.css";
+
+const GraphModal = React.lazy(() =>
+    import("./components/GraphModal").then(module => ({ default: module.GraphModal }))
+);
 
 export default function App() {
     const fileInputRef = React.useRef<HTMLInputElement>(null);
     const loadViewerFiles = useStore(state => state.loadViewerFiles);
-    const blocks = useStore(state => state.blocks);
+    const blocksRevision = useStore(state => state.blocksRevision);
+    const blocks = useMemo(() => getOrderedBlocks(useStore.getState()), [blocksRevision]);
     const backendMode = useStore(state => state.backendMode);
     const isLoaded = useStore(state => state.isLoaded);
     const isLoadingFiles = useStore(state => state.isLoadingFiles);
@@ -28,6 +32,9 @@ export default function App() {
     const activeTab = useStore(state => state.activeTab);
     const setOpenTabs = useStore(state => state.setOpenTabs);
     const setActiveTab = useStore(state => state.setActiveTab);
+    const activateRootBlock = useStore(state => state.activateRootBlock);
+    const activateTab = useStore(state => state.activateTab);
+    const closeStoreTab = useStore(state => state.closeTab);
     const settings = useStore(state => state.settings);
     const persistenceError = useStore(state => state.persistenceError);
     const clearPersistenceError = useStore(state => state.clearPersistenceError);
@@ -37,6 +44,7 @@ export default function App() {
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
     const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
     const [isTestMode, setIsTestMode] = useState(false);
+    const [isDesktop, setIsDesktop] = useState(false);
     
     // Drag state for tabs
     const [draggedTab, setDraggedTab] = useState<string | null>(null);
@@ -48,8 +56,33 @@ export default function App() {
     useEffect(() => {
         fetch('/api/runtime')
             .then(response => response.ok ? response.json() : null)
-            .then(runtime => setIsTestMode(runtime?.testMode === true))
-            .catch(() => setIsTestMode(false));
+            .then(runtime => {
+                setIsTestMode(runtime?.testMode === true);
+                setIsDesktop(runtime?.desktop === true);
+            })
+            .catch(() => {
+                setIsTestMode(false);
+                setIsDesktop(false);
+            });
+    }, []);
+
+    useEffect(() => {
+        return window.mathNotesDesktop?.onCommand(command => {
+            if (command === 'close-tab') {
+                const current = useStore.getState().activeTab;
+                if (current) void useStore.getState().closeTab(current);
+            } else if (command === 'reopen-tab') {
+                useStore.getState().reopenClosedTab();
+            } else if (command === 'next-tab') {
+                useStore.getState().cycleTab(1);
+            } else if (command === 'previous-tab') {
+                useStore.getState().cycleTab(-1);
+            }
+        });
+    }, []);
+
+    useEffect(() => {
+        return window.mathNotesDesktop?.onPrepareWorkspaceChange(() => useStore.getState().flushPendingSaves());
     }, []);
 
     useEffect(() => {
@@ -72,21 +105,25 @@ export default function App() {
         if (validTabs.length !== openTabs.length) {
             setOpenTabs(validTabs);
             if (activeTab && !validTabs.includes(activeTab)) {
-                setActiveTab(validTabs.length > 0 ? validTabs[validTabs.length - 1] : null);
+                const fallback = validTabs[validTabs.length - 1];
+                if (fallback) activateRootBlock(fallback);
+                else {
+                    setActiveTab(null);
+                    setActiveBlock(null);
+                }
             }
         }
-    }, [isLoaded, blocks, openTabs, activeTab, setOpenTabs, setActiveTab]);
+    }, [isLoaded, blocks, openTabs, activeTab, setOpenTabs, setActiveTab, setActiveBlock, activateRootBlock]);
 
     useEffect(() => {
         if (openTabs.length === 0 && blocks.length > 0) {
             const welcome = blocks.find(b => b.label === "showcase:main");
             const first = welcome || blocks[0];
             if (first) {
-                setOpenTabs([first.id]);
-                setActiveTab(first.id);
+                activateRootBlock(first.id);
             }
         }
-    }, [blocks, openTabs.length, setOpenTabs, setActiveTab]);
+    }, [blocks, openTabs.length, activateRootBlock]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -108,13 +145,30 @@ export default function App() {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [settings.searchShortcut]);
 
-    const closeTab = (id: string, e: React.MouseEvent) => {
-        e.stopPropagation();
-        void flushBlock(id);
-        const newTabs = openTabs.filter(t => t !== id);
-        setOpenTabs(newTabs);
-        if (activeTab === id) {
-            setActiveTab(newTabs.length > 0 ? newTabs[newTabs.length - 1] : null);
+    const closeTab = (id: string, e?: React.SyntheticEvent) => {
+        e?.stopPropagation();
+        void closeStoreTab(id);
+    };
+
+    const tabRefs = useRef(new Map<string, HTMLDivElement>());
+    const handleTabKeyDown = (event: React.KeyboardEvent<HTMLDivElement>, id: string) => {
+        const currentIndex = openTabs.indexOf(id);
+        let nextIndex: number | null = null;
+        if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + openTabs.length) % openTabs.length;
+        if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % openTabs.length;
+        if (event.key === 'Home') nextIndex = 0;
+        if (event.key === 'End') nextIndex = openTabs.length - 1;
+        if (nextIndex !== null) {
+            event.preventDefault();
+            tabRefs.current.get(openTabs[nextIndex])?.focus();
+            return;
+        }
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            activateTab(id);
+        } else if (event.key === 'Delete' || event.key === 'Backspace') {
+            event.preventDefault();
+            closeTab(id, event);
         }
     };
 
@@ -188,6 +242,11 @@ export default function App() {
                                 <FlaskConical size={13} aria-hidden="true" /> TEST
                             </span>
                         )}
+                        {isDesktop && (
+                            <span className="rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wider text-accent" aria-label="Desktop application">
+                                DESKTOP
+                            </span>
+                        )}
                         NoteFlow
                     </h1>
                 </div>
@@ -253,8 +312,7 @@ export default function App() {
                             onClick={async () => {
                                 const newBlock = await addBlock();
                                 if (newBlock) {
-                                    setOpenTabs([...openTabs, newBlock.id]);
-                                    setActiveTab(newBlock.id);
+                                    activateRootBlock(newBlock.id, "start");
                                 }
                             }}
                             className="p-1.5 hover:bg-accent/20 rounded text-accent transition-colors"
@@ -270,15 +328,23 @@ export default function App() {
             {persistenceError && (
                 <div className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300" role="alert">
                     <span>Changes may not have been saved: {persistenceError}</span>
-                    <button onClick={clearPersistenceError} className="shrink-0 rounded p-1 hover:bg-red-500/20" aria-label="Dismiss save error">
-                        <X size={16} />
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                        <button
+                            onClick={() => { clearPersistenceError(); void initBackend(); }}
+                            className="rounded px-2 py-1 font-medium hover:bg-red-500/20"
+                        >
+                            Reconnect
+                        </button>
+                        <button onClick={clearPersistenceError} className="rounded p-1 hover:bg-red-500/20" aria-label="Dismiss save error">
+                            <X size={16} />
+                        </button>
+                    </div>
                 </div>
             )}
 
             <div className="flex flex-1 min-h-0 overflow-hidden">
                 <div className="flex-1 flex flex-col min-w-0 h-full">
-                <div className="flex overflow-x-auto border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[42px] px-2 pt-2 gap-1">
+                <div role="tablist" aria-label="Open blocks" className="flex overflow-x-auto border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[42px] px-2 pt-2 gap-1">
                     {openTabs.map(id => {
                         const b = blocks.find(x => x.id === id);
                         if (!b) return null;
@@ -286,18 +352,26 @@ export default function App() {
                         return (
                             <div 
                                 key={id}
+                                ref={element => { if (element) tabRefs.current.set(id, element); else tabRefs.current.delete(id); }}
+                                role="tab"
+                                aria-selected={isActive}
+                                aria-controls={`block-tab-panel-${id}`}
+                                tabIndex={isActive ? 0 : -1}
                                 draggable
                                 onDragStart={(e) => handleDragStart(e, id)}
                                 onDragOver={handleDragOver}
                                 onDrop={(e) => handleDrop(e, id)}
                                 onDragEnd={handleDragEnd}
-                                onClick={() => setActiveTab(id)}
+                                onClick={() => activateTab(id)}
+                                onKeyDown={(event) => handleTabKeyDown(event, id)}
                                 className={`flex items-center gap-2 px-3 py-1.5 rounded-t-lg min-w-[100px] max-w-[200px] cursor-pointer text-sm transition-colors border-t border-x ${isActive ? 'bg-base border-outline z-10 text-primary font-semibold' : 'bg-surface border-transparent text-secondary hover:bg-accent/10 hover:text-primary z-0 border-b-outline'}`}
                                 style={isActive ? { borderBottomColor: 'transparent', marginBottom: '-1px' } : { borderBottomWidth: '1px' }}
                             >
                                 <span className="truncate flex-1 select-none pointer-events-none">{b.title || b.label}</span>
                                 <button 
                                     onClick={(e) => closeTab(id, e)} 
+                                    aria-label={`Close ${b.title || b.label}`}
+                                    tabIndex={-1}
                                     className="p-1 hover:bg-red-500/20 hover:text-red-500 rounded text-secondary transition-colors"
                                 >
                                     <X size={12} />
@@ -307,18 +381,26 @@ export default function App() {
                     })}
                 </div>
 
-                <div 
-                    className="flex-1 overflow-y-auto p-4 md:p-8 bg-base"
-                    onClick={(e) => {
-                        if (e.target === e.currentTarget) {
-                            setActiveBlock(null);
-                        }
-                    }}
-                >
-                    <div className="max-w-4xl mx-auto pb-64">
-                        {activeTab ? (
-                            <BlockContainer key={activeTab} id={activeTab} index={0} />
-                        ) : (
+                <div className="relative flex-1 min-h-0 bg-base">
+                    {openTabs.map(id => (
+                        <div
+                            key={id}
+                            id={`block-tab-panel-${id}`}
+                            role="tabpanel"
+                            aria-hidden={activeTab !== id}
+                            className={`absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base ${activeTab === id ? 'visible pointer-events-auto' : 'invisible pointer-events-none'}`}
+                            onClick={(e) => {
+                                if (e.target === e.currentTarget) setActiveBlock(null);
+                            }}
+                        >
+                            <div className="max-w-4xl mx-auto pb-64">
+                                <BlockContainer id={id} />
+                            </div>
+                        </div>
+                    ))}
+                    {!activeTab && (
+                        <div className="absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base">
+                          <div className="max-w-4xl mx-auto pb-64">
                             <div className="text-center text-secondary h-full flex flex-col items-center justify-center pt-24">
                                 {isLoadingFiles ? (
                                     <>
@@ -362,14 +444,23 @@ export default function App() {
                                     </>
                                 )}
                             </div>
-                        )}
-                    </div>
+                          </div>
+                        </div>
+                    )}
                 </div>
             </div>
             </div>
             
             <SearchModal isOpen={isSearchModalOpen} onClose={() => setIsSearchModalOpen(false)} />
-            <GraphModal isOpen={isGraphModalOpen} onClose={() => setIsGraphModalOpen(false)} />
+            {isGraphModalOpen && (
+                <React.Suspense fallback={
+                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" role="status" aria-label="Loading graph view">
+                        <Loader2 size={32} className="animate-spin text-accent" aria-hidden="true" />
+                    </div>
+                }>
+                    <GraphModal isOpen onClose={() => setIsGraphModalOpen(false)} />
+                </React.Suspense>
+            )}
             <SettingsModal isOpen={isMacroModalOpen} onClose={() => setIsMacroModalOpen(false)} />
             <ImageUploadModal />
         </div>

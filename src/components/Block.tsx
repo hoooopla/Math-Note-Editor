@@ -1,20 +1,20 @@
 import React, { useState, useCallback, useEffect } from "react";
-import type { PointerEvent } from "react";
 import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import { Trash2, FileText, Check, X, Lock, Unlock } from "lucide-react";
 import { MathTitle } from "./MathTitle";
+import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from "../lib/label-policy";
 
-export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, index }) => {
-    const block = useStore(state => state.blocks.find(b => b.id === id));
-    const blocks = useStore(state => state.blocks);
+export const BlockContainer: React.FC<{ id: string }> = ({ id }) => {
+    const block = useStore(state => state.blocksById[id]);
     const activeBlockId = useStore(state => state.activeBlockId);
     const activePath = useStore(state => state.activePath);
+    const activeFocusX = useStore(state => state.activeFocusX);
     const isFocused = activeBlockId === id && (!activePath || (activePath.length === 1 && activePath[0] === block?.label));
     const focusDirection = useStore(state => state.focusDirection);
     const macros = useStore(state => state.settings?.macros) || {};
 
-        const setActiveBlock = useStore(state => state.setActiveBlock);
+    const setActiveBlock = useStore(state => state.setActiveBlock);
     const updateBlock = useStore(state => state.updateBlock);
     const flushBlock = useStore(state => state.flushBlock);
     const deleteBlock = useStore(state => state.deleteBlock);
@@ -27,26 +27,15 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
         }
     }, [block, id, loadBlockContent]);
 
-    const onUp = useCallback(() => {
-        if (index > 0) setActiveBlock(blocks[index - 1].id, "end", [blocks[index - 1].label]);
-    }, [index, blocks, setActiveBlock]);
-
-    const onDown = useCallback(() => {
-        if (index < blocks.length - 1) setActiveBlock(blocks[index + 1].id, "start", [blocks[index + 1].label]);
-        else if (index === blocks.length - 1) useStore.getState().addBlock(index);
-    }, [index, blocks, setActiveBlock]);
-
     if (!block || block.content === undefined) return <div className="h-24 animate-pulse bg-surface/50 rounded-lg mb-6 border border-outline"></div>;
 
     return <Block 
         block={block} 
-        blocks={blocks}
         isFocused={isFocused} 
         focusDirection={isFocused ? focusDirection : null}
+        focusX={isFocused ? activeFocusX : null}
         macros={macros}
         setActive={setActiveBlock} 
-        onUp={onUp} 
-        onDown={onDown} 
         updateBlock={updateBlock} 
         flushBlock={flushBlock}
         deleteBlock={deleteBlock} 
@@ -55,19 +44,17 @@ export const BlockContainer: React.FC<{ id: string, index: number }> = ({ id, in
 
 interface BlockProps {
     block: any;
-    blocks: any[];
     isFocused: boolean;
     focusDirection: "start" | "end" | null;
+    focusX: number | null;
     macros: Record<string, string>;
     setActive: (id: string | null, dir?: "start"| "end"|null, path?: string[]|null, pos?: number|null) => void;
-    onUp: () => void;
-    onDown: () => void;
     updateBlock: (id: string, data: any) => void;
     flushBlock: (id: string) => Promise<void>;
     deleteBlock: (id: string) => void;
 }
 
-export function Block({ block, blocks, isFocused, focusDirection, macros, setActive, onUp, onDown, updateBlock, flushBlock, deleteBlock }: BlockProps) {
+export function Block({ block, isFocused, focusDirection, focusX, macros, setActive, updateBlock, flushBlock, deleteBlock }: BlockProps) {
     const isViewOnlyState = useStore(state => state.viewOnlyBlocks[block.id]);
     const backendMode = useStore(state => state.backendMode);
     const isViewOnly = isViewOnlyState ?? (backendMode === "viewer");
@@ -76,6 +63,7 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
     const [titleInput, setTitleInput] = useState(block.title);
     const [labelInput, setLabelInput] = useState(block.label);
     const [error, setError] = useState<string | null>(null);
+    const [focusRequestKey, setFocusRequestKey] = useState(0);
 
     const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
@@ -95,16 +83,23 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
     }, [isFocused, block.id, block.label, setActive]);
 
     const submitMeta = () => {
-        let finalLabel = labelInput.trim() || block.id.substring(0, 8);
+        const finalTitle = normalizeBlockTitle(titleInput);
+        const finalLabel = normalizeBlockLabel(labelInput);
+        const metadataError = validateBlockMetadata(finalTitle, finalLabel);
+        if (metadataError) {
+            setError(metadataError);
+            return;
+        }
         if (finalLabel !== block.label) {
-            const isDuplicate = blocks.some(b => b.id !== block.id && b.label === finalLabel);
+            const duplicateId = useStore.getState().blockIdByLabel[finalLabel];
+            const isDuplicate = !!duplicateId && duplicateId !== block.id;
             if (isDuplicate) {
                 setError(`Label "${finalLabel}" already exists`);
                 return;
             }
         }
         setError(null);
-        updateBlock(block.id, { title: titleInput.trim(), label: finalLabel });
+        updateBlock(block.id, { title: finalTitle, label: finalLabel });
         setIsEditingMeta(false);
     };
 
@@ -127,10 +122,14 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
 
 
             <div 
+                data-testid={`block-metadata-header-${block.id}`}
                 className="flex items-center justify-between px-4 py-2 bg-transparent border-b border-outline text-sm text-secondary cursor-text select-none rounded-t-[8px] relative z-10"
                 onClick={(e) => {
                     e.stopPropagation();
-                    if (!isEditingMeta) setActive(block.id, null);
+                    if (!isEditingMeta) {
+                        setActive(block.id, null, [block.label]);
+                        setFocusRequestKey(key => key + 1);
+                    }
                 }}
                 onDoubleClick={(e) => {
                     e.stopPropagation();
@@ -152,24 +151,29 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                         >
                             <input 
                                 autoFocus
+                                aria-label="Block title"
+                                maxLength={512}
                                 className="bg-base text-primary px-2 py-1 rounded outline-none border border-outline text-[16px] font-sans font-semibold max-w-[200px] focus:border-accent"
                                 value={titleInput}
-                                onChange={e => setTitleInput(e.target.value.replace(/[\[\]]/g, ''))}
+                                onChange={e => setTitleInput(e.target.value)}
                                 onKeyDown={handleMetaKeyDown}
                                 placeholder="Title"
                             />
                             <div className="relative flex items-center gap-2">
                                 <input 
+                                    aria-label="Block label"
+                                    maxLength={512}
                                     className={`bg-base text-secondary px-2 py-1 rounded outline-none border ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} text-xs tracking-widest font-sans max-w-[150px]`}
                                     value={labelInput}
                                     onChange={e => {
                                         setError(null);
-                                        setLabelInput(e.target.value.replace(/[\[\]]/g, ''))
+                                        setLabelInput(e.target.value)
                                     }}
                                     onKeyDown={handleMetaKeyDown}
                                     placeholder="Label"
                                 />
                                 <button 
+                                    aria-label="Save block metadata"
                                     onMouseDown={e => { e.preventDefault(); submitMeta(); }}
                                     className="p-1 hover:bg-surface/50 text-emerald-500 rounded transition-colors"
                                 >
@@ -243,12 +247,12 @@ export function Block({ block, blocks, isFocused, focusDirection, macros, setAct
                     content={block.content} 
                     onBlur={handleContentBlur}
                     onChange={handleContentChange}
-                    onUp={onUp} 
-                    onDown={onDown} 
                     isFocused={isFocused && !isEditingMeta}
                     isReadOnly={isViewOnly} 
                     macros={macros}
                     focusDirection={focusDirection}
+                    focusX={focusX}
+                    focusRequestKey={focusRequestKey}
                     onFocus={handleFocus}
                     parentLabel={block.label}
                     visitedLabels={[block.label]}

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useStore } from '../store';
+import { getOrderedBlocks, useStore } from '../store';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import { splitPath } from '../lib/utils/path';
 
@@ -18,7 +18,8 @@ export function SidebarTree({
     hoveredNodeId?: string | null;
     onNodeHover?: (id: string | null) => void;
 }) {
-    const blocks = useStore(state => state.blocks);
+    const blocksRevision = useStore(state => state.blocksRevision);
+    const blocks = useMemo(() => getOrderedBlocks(useStore.getState()), [blocksRevision]);
         const openBlockInTab = useStore(state => state.openBlockInTab);
     const activeTab = useStore(state => state.activeTab);
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});

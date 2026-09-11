@@ -1,5 +1,5 @@
-import { Decoration, DecorationSet, EditorView, WidgetType, showTooltip, Tooltip } from "@codemirror/view";
-import { RangeSetBuilder, StateField, EditorState, Facet, StateEffect } from "@codemirror/state";
+import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType, showTooltip, Tooltip } from "@codemirror/view";
+import { RangeSetBuilder, StateField, EditorState, Facet, StateEffect, Transaction } from "@codemirror/state";
 import katex from "katex";
 import "katex/dist/katex.min.css"; 
 
@@ -95,6 +95,18 @@ function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new 
     }
 
     const blockMathRanges = ranges.filter(r => r.type === "blockMath");
+    const rangeAt = (candidates: ParsedRange[], pos: number) => {
+        let low = 0;
+        let high = candidates.length - 1;
+        while (low <= high) {
+            const middle = (low + high) >> 1;
+            const candidate = candidates[middle];
+            if (pos < candidate.from) high = middle - 1;
+            else if (pos >= candidate.to) low = middle + 1;
+            else return candidate;
+        }
+        return undefined;
+    };
     let lineStart = 0;
     while (lineStart <= doc.length) {
         const newline = doc.indexOf("\n", lineStart);
@@ -102,7 +114,7 @@ function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new 
         const delimiters: number[] = [];
 
         for (let pos = lineStart; pos < lineEnd; pos++) {
-            const blockRange = blockMathRanges.find(r => pos >= r.from && pos < r.to);
+            const blockRange = rangeAt(blockMathRanges, pos);
             if (blockRange) {
                 pos = blockRange.to - 1;
                 continue;
@@ -134,7 +146,7 @@ function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new 
     }
 
     const inlineMathRanges = ranges.filter(r => r.type === "inlineMath");
-    const mathRangeAt = (pos: number) => inlineMathRanges.find(r => pos >= r.from && pos < r.to);
+    const mathRangeAt = (pos: number) => rangeAt(inlineMathRanges, pos);
     const scanDelimitedFormatting = (marker: "*" | "**", type: "italic" | "bold") => {
         for (let start = 0; start <= doc.length - marker.length; start++) {
             if (!doc.startsWith(marker, start) || doc[start - 1] === "\\" || mathRangeAt(start)) continue;
@@ -280,12 +292,90 @@ function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new 
     return ranges;
 }
 
+type ChangedRegion = { from: number; to: number };
+
+// Only \[ and \] delimit display math in this editor. Adjacent dollars are
+// deliberately parsed as an empty inline-math pair, so typing $$ within a line
+// never expands incremental reparsing to the full document.
+function containsBlockMathDelimiter(text: string) {
+    return /\\\[|\\\]/.test(text);
+}
+
+function mergeRegions(regions: ChangedRegion[]) {
+    const sorted = regions.sort((a, b) => a.from - b.from);
+    return sorted.reduce<ChangedRegion[]>((merged, region) => {
+        const previous = merged[merged.length - 1];
+        if (previous && region.from <= previous.to + 1) previous.to = Math.max(previous.to, region.to);
+        else merged.push({ ...region });
+        return merged;
+    }, []);
+}
+
+function updateParsedRanges(value: ParsedRange[], tr: Transaction): ParsedRange[] {
+    const oldRegions: ChangedRegion[] = [];
+    const newRegions: ChangedRegion[] = [];
+    tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        const oldStart = tr.startState.doc.lineAt(fromA);
+        const oldEnd = tr.startState.doc.lineAt(Math.min(tr.startState.doc.length, toA));
+        const newStart = tr.state.doc.lineAt(fromB);
+        const newEnd = tr.state.doc.lineAt(Math.min(tr.state.doc.length, toB));
+        oldRegions.push({ from: oldStart.from, to: oldEnd.to });
+        newRegions.push({ from: newStart.from, to: newEnd.to });
+    });
+
+    const mergedOld = mergeRegions(oldRegions);
+    const mergedNew = mergeRegions(newRegions);
+    const overlaps = (range: ChangedRegion, region: ChangedRegion) => range.from <= region.to && range.to >= region.from;
+
+    // Display math can cross line boundaries. Changes inside it, or changes that
+    // create/remove its delimiters, use the full parser for correctness.
+    const touchesBlockMath = value.some(range => range.type === "blockMath" && mergedOld.some(region => overlaps(range, region)));
+    const touchesBlockDelimiter = mergedOld.some(region => containsBlockMathDelimiter(tr.startState.doc.sliceString(region.from, region.to))) ||
+        mergedNew.some(region => containsBlockMathDelimiter(tr.state.doc.sliceString(region.from, region.to)));
+    if (touchesBlockMath || touchesBlockDelimiter) {
+        return parseRanges(tr.state.doc.toString(), tr.state.field(autoClosingDollarField));
+    }
+
+    const mapped = value
+        .filter(range => !mergedOld.some(region => overlaps(range, region)))
+        .map(range => ({
+            ...range,
+            from: tr.changes.mapPos(range.from, 1),
+            to: tr.changes.mapPos(range.to, -1),
+            ...(range.labelFrom !== undefined ? { labelFrom: tr.changes.mapPos(range.labelFrom, 1) } : {}),
+            ...(range.labelTo !== undefined ? { labelTo: tr.changes.mapPos(range.labelTo, -1) } : {})
+        }));
+
+    const autoClosers = tr.state.field(autoClosingDollarField);
+    for (const region of mergedNew) {
+        const localAutoClosers = new Set<number>();
+        for (const pos of autoClosers) {
+            if (pos >= region.from && pos <= region.to) localAutoClosers.add(pos - region.from);
+        }
+        const parsed = parseRanges(tr.state.doc.sliceString(region.from, region.to), localAutoClosers);
+        for (const range of parsed) {
+            mapped.push({
+                ...range,
+                from: range.from + region.from,
+                to: range.to + region.from,
+                ...(range.labelFrom !== undefined ? { labelFrom: range.labelFrom + region.from } : {}),
+                ...(range.labelTo !== undefined ? { labelTo: range.labelTo + region.from } : {})
+            });
+        }
+    }
+    mapped.sort((a, b) => a.from - b.from || a.to - b.to);
+    return mapped;
+}
+
 export const parsedRangesField = StateField.define<ParsedRange[]>({
     create(state) {
         return parseRanges(state.doc.toString(), state.field(autoClosingDollarField));
     },
     update(value, tr) {
-        if (tr.docChanged || tr.effects.some(effect => effect.is(updateAutoClosingDollar))) {
+        if (tr.docChanged) {
+            return updateParsedRanges(value, tr);
+        }
+        if (tr.effects.some(effect => effect.is(updateAutoClosingDollar))) {
             return parseRanges(tr.state.doc.toString(), tr.state.field(autoClosingDollarField));
         }
         return value;
@@ -394,16 +484,140 @@ class ListWidget extends WidgetType {
     ignoreEvent() { return true; }
 }
 
-function buildLiveDecorations(state: EditorState) {
+type DecorationEntry = { from: number; to: number; deco: Decoration };
+
+function appendMathSyntaxDecorations(doc: string, range: ParsedRange, decos: DecorationEntry[]) {
+    const mathText = doc.slice(range.from, range.to);
+    const tokens: { from: number; to: number; class: string }[] = [];
+
+    let match;
+    const commentRegex = /%.*/g;
+    while ((match = commentRegex.exec(mathText)) !== null) {
+        tokens.push({ from: match.index, to: match.index + match[0].length, class: "cm-math-comment italic" });
+    }
+
+    const inComment = (index: number) => tokens.some(token =>
+        token.class.includes("comment") && index >= token.from && index < token.to
+    );
+
+    const tokenPatterns: Array<[RegExp, string]> = [
+        [/\\[a-zA-Z]+/g, "cm-math-command"],
+        [/\\([{}%$_\\])/g, "cm-math-escaped"],
+        [/[{}]/g, "cm-math-brace"],
+        [/[_^]/g, "cm-math-script"],
+        [/&/g, "cm-math-align"]
+    ];
+    for (const [pattern, className] of tokenPatterns) {
+        while ((match = pattern.exec(mathText)) !== null) {
+            if (!inComment(match.index)) {
+                tokens.push({ from: match.index, to: match.index + match[0].length, class: className });
+            }
+        }
+    }
+
+    for (const token of tokens) {
+        decos.push({
+            from: range.from + token.from,
+            to: range.from + token.to,
+            deco: Decoration.mark({ class: token.class })
+        });
+    }
+
+    const delimiterLength = range.type === "blockMath" ? 2 : 1;
+    decos.push({
+        from: range.from,
+        to: range.from + delimiterLength,
+        deco: Decoration.mark({ class: "cm-math-delimiter" })
+    });
+    decos.push({
+        from: range.to - delimiterLength,
+        to: range.to,
+        deco: Decoration.mark({ class: "cm-math-delimiter" })
+    });
+}
+
+function decorationSet(entries: DecorationEntry[]) {
+    entries.sort((a, b) => {
+        if (a.from !== b.from) return a.from - b.from;
+        if (a.to !== b.to) return b.to - a.to;
+        const aClass = (a.deco.spec as any)?.class || "";
+        const bClass = (b.deco.spec as any)?.class || "";
+        if (aClass.includes("cm-math-editing")) return -1;
+        if (bClass.includes("cm-math-editing")) return 1;
+        return 0;
+    });
+    return Decoration.set(entries.map(entry => entry.deco.range(entry.from, entry.to)), true);
+}
+
+function buildBlockMathDecorations(state: EditorState) {
+    const doc = state.doc.toString();
+    const macros = state.facet(livePreviewMacros);
+    const isFocused = state.field(editorFocusField, false);
+    const selection = state.selection.main;
+    const decos: DecorationEntry[] = [];
+
+    for (const range of state.field(parsedRangesField).filter(range => range.type === "blockMath")) {
+        const overlapping = isFocused !== false && selection.from <= range.to && selection.to >= range.from;
+        if (overlapping) {
+            decos.push({
+                from: range.from,
+                to: range.to,
+                deco: Decoration.mark({ class: "cm-math-editing", inclusive: true })
+            });
+            appendMathSyntaxDecorations(doc, range, decos);
+            decos.push({
+                from: range.to,
+                to: range.to,
+                deco: Decoration.widget({
+                    widget: new BlockMathEditingPreviewWidget(range.text, macros),
+                    block: true,
+                    side: 1
+                })
+            });
+        } else {
+            decos.push({
+                from: range.from,
+                to: range.to,
+                deco: Decoration.replace({
+                    widget: new MathWidget(range.text, true, macros),
+                    block: true
+                })
+            });
+        }
+    }
+
+    return decorationSet(decos);
+}
+
+export const blockMathDecorationField = StateField.define<DecorationSet>({
+    create: buildBlockMathDecorations,
+    update(_value, transaction) {
+        // Block math is normally sparse, so rebuilding this small set on each
+        // transaction is both predictable and keeps selection/facet changes in sync.
+        return buildBlockMathDecorations(transaction.state);
+    },
+    provide: field => EditorView.decorations.from(field)
+});
+
+function buildLiveDecorations(view: EditorView) {
+    const state = view.state;
     const doc = state.doc.toString();
     const macros = state.facet(livePreviewMacros);
     const isFocused = state.field(editorFocusField, false);
     const ranges = state.field(parsedRangesField);
     
     const selection = state.selection.main;
-    const decos: {from: number, to: number, deco: Decoration}[] = [];
+    const decos: DecorationEntry[] = [];
 
     for (const r of ranges) {
+        // CodeMirror only permits block decorations from a StateField. Display
+        // math is handled by blockMathDecorationField below; this ViewPlugin
+        // remains viewport-aware for inline decorations.
+        if (r.type === "blockMath") continue;
+        const isVisible = view.visibleRanges.some(visible => r.from <= visible.to && r.to >= visible.from);
+        const containsSelection = selection.from <= r.to && selection.to >= r.from;
+        if (!isVisible && !containsSelection) continue;
+
         let overlapping = false;
         if (isFocused !== false) {
             if (r.type === "quote") {
@@ -427,79 +641,7 @@ function buildLiveDecorations(state: EditorState) {
             decos.push({from: r.from, to: r.to, deco: Decoration.mark({ class: editClass, inclusive: true })});
 
             // 2. Syntax highlighting specifically for math zones
-            if (r.type === "blockMath" || r.type === "inlineMath") {
-                const mathText = doc.slice(r.from, r.to);
-                const tokens: {from: number, to: number, class: string}[] = [];
-                
-                let m;
-                // Comments %
-                const commentRegex = /%.*/g;
-                while ((m = commentRegex.exec(mathText)) !== null) {
-                    tokens.push({ from: m.index, to: m.index + m[0].length, class: "cm-math-comment italic" });
-                }
-
-                const inComment = (index: number) => tokens.some(t => t.class.includes('comment') && index >= t.from && index < t.to);
-
-                // Commands \something
-                const cmdRegex = /\\[a-zA-Z]+/g;
-                while ((m = cmdRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + m[0].length, class: "cm-math-command" });
-                }
-
-                // Escaped symbols (\%, \{, \_)
-                const escRegex = /\\([{}%$_\\])/g;
-                while ((m = escRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 2, class: "cm-math-escaped" });
-                }
-
-                // Braces {}
-                const braceRegex = /[{}]/g;
-                while ((m = braceRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "cm-math-brace" });
-                }
-
-                // Sub/superscript _ ^
-                const scriptRegex = /[_^]/g;
-                while ((m = scriptRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "cm-math-script" });
-                }
-
-                // Alignment &
-                const ampRegex = /&/g;
-                while ((m = ampRegex.exec(mathText)) !== null) {
-                    if (!inComment(m.index)) tokens.push({ from: m.index, to: m.index + 1, class: "cm-math-align" });
-                }
-
-                for (const t of tokens) {
-                    decos.push({
-                        from: r.from + t.from,
-                        to: r.from + t.to,
-                        deco: Decoration.mark({ class: t.class })
-                    });
-                }
-
-                // Math Delimiters ($ and \[\])
-                if (r.type === "blockMath") {
-                    decos.push({ from: r.from, to: r.from + 2, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
-                    decos.push({ from: r.to - 2, to: r.to, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
-                } else if (r.type === "inlineMath") {
-                    decos.push({ from: r.from, to: r.from + 1, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
-                    decos.push({ from: r.to - 1, to: r.to, deco: Decoration.mark({ class: "cm-math-delimiter" }) });
-                }
-            }
-
-            // 3. Inject live-preview below block math edits while focused!
-            if (r.type === "blockMath") {
-                decos.push({
-                    from: r.to,
-                    to: r.to,
-                    deco: Decoration.widget({
-                        widget: new BlockMathEditingPreviewWidget(r.text, macros),
-                        block: true,
-                        side: 1 // underneath
-                    })
-                });
-            }
+            if (r.type === "inlineMath") appendMathSyntaxDecorations(doc, r, decos);
 
         } else {
             if (r.type === "bold") {
@@ -547,38 +689,31 @@ function buildLiveDecorations(state: EditorState) {
                     candidate.type === "quote" && candidate.from <= r.from && candidate.to >= r.to
                 );
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
-                    widget: new MathWidget(r.text, r.type === "blockMath", macros, isLinked, isQuoted),
-                    block: r.type === "blockMath"
+                    widget: new MathWidget(r.text, false, macros, isLinked, isQuoted)
                 })});
             }
         }
     }
 
-    decos.sort((a, b) => {
-        if (a.from !== b.from) return a.from - b.from;
-        if (a.to !== b.to) return b.to - a.to; // For equal from, put larger 'to' encompassing ranges first
-        // If exact same range, editing wrapper should go first
-        const aClass = (a.deco.spec as any)?.class || "";
-        const bClass = (b.deco.spec as any)?.class || "";
-        if (aClass.includes("cm-math-editing")) return -1;
-        if (bClass.includes("cm-math-editing")) return 1;
-        return 0;
-    });
-    return Decoration.set(decos.map(d => d.deco.range(d.from, d.to)), true);
+    return decorationSet(decos);
 }
 
-export const mathPlugin = StateField.define<DecorationSet>({
-    create(state) {
-        return buildLiveDecorations(state);
-    },
-    update(decorations, tr) {
-        const macrosChanged = tr.state.facet(livePreviewMacros) !== tr.startState.facet(livePreviewMacros);
-        if (tr.docChanged || tr.selection || macrosChanged || tr.effects.some(e => e.is(setEditorFocus))) {
-            return buildLiveDecorations(tr.state);
+export const mathPlugin = ViewPlugin.fromClass(class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+        this.decorations = buildLiveDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+        const macrosChanged = update.state.facet(livePreviewMacros) !== update.startState.facet(livePreviewMacros);
+        const focusChanged = update.transactions.some(transaction => transaction.effects.some(effect => effect.is(setEditorFocus)));
+        if (update.docChanged || update.selectionSet || update.viewportChanged || macrosChanged || focusChanged) {
+            this.decorations = buildLiveDecorations(update.view);
         }
-        return decorations;
-    },
-    provide: f => EditorView.decorations.from(f)
+    }
+}, {
+    decorations: plugin => plugin.decorations
 });
 
 function getMathTooltip(state: EditorState): Tooltip | null {

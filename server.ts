@@ -1,46 +1,10 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
-
-const parseFrontmatter = (text: string) => {
-    const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)/);
-    if (!match) return { data: {} as any, content: text };
-    
-    const data: any = {};
-    match[1].split('\n').forEach(line => {
-        const idx = line.indexOf(':');
-        if (idx > -1) {
-            const key = line.substring(0, idx).trim();
-            const val = line.substring(idx + 1).trim();
-            if (val.startsWith('[') && val.endsWith(']')) {
-                try {
-                    data[key] = JSON.parse(val.replace(/'/g, '"'));
-                } catch (e) {
-                    data[key] = val;
-                }
-            } else {
-                data[key] = val;
-            }
-        }
-    });
-    return { data, content: match[2] };
-};
-
-const stringifyFrontmatter = (data: Record<string, any>, content: string) => {
-    let fm = '---\n';
-    for (const [k, v] of Object.entries(data)) {
-        if (Array.isArray(v)) {
-            fm += `${k}: ${JSON.stringify(v)}\n`;
-        } else {
-            fm += `${k}: ${v}\n`;
-        }
-    }
-    fm += '---\n';
-    return fm + content;
-};
+import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from "./src/lib/block-metadata";
+import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from "./src/lib/label-policy";
 
 const app = express();
 const portArgumentIndex = process.argv.indexOf("--port");
@@ -51,13 +15,20 @@ const isProduction = process.env.NODE_ENV === "production" || process.argv.inclu
 const isTestMode = process.argv.includes("--test-mode");
 app.use(express.json({ limit: '20mb' }));
 
-const BLOCKS_DIR = path.join(process.cwd(), "blocks");
+// A workspace is portable between the web server and desktop app. Markdown
+// notes live at its root, with shared settings in setting/settings.json and
+// pasted files in assets/. Keep the repository's blocks/ folder as the web
+// default for backwards compatibility.
+const WORKSPACE_DIR = path.resolve(process.env.MATH_NOTE_WORKSPACE || path.join(process.cwd(), "blocks"));
+const BLOCKS_DIR = WORKSPACE_DIR;
+const DIST_DIR = path.resolve(process.env.MATH_NOTE_DIST_DIR || path.join(process.cwd(), "dist"));
 
 interface BlockData {
     id: string;
     title: string;
     label: string;
-    content: string;
+    content?: string;
+    hasContent?: boolean;
     references?: string[];
 }
 
@@ -67,7 +38,7 @@ let testSettings: Record<string, unknown> | null = null;
 const testAssets = new Map<string, { buffer: Buffer; contentType: string }>();
 
 app.get("/api/runtime", (_req, res) => {
-    res.json({ testMode: isTestMode });
+    res.json({ testMode: isTestMode, desktop: process.env.MATH_NOTE_DESKTOP === "true" });
 });
 
 function notifyClients(message: any) {
@@ -84,12 +55,25 @@ async function ensureDir(dir: string) {
     } catch (e) {}
 }
 
+async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+    const worker = async () => {
+        while (nextIndex < items.length) {
+            const index = nextIndex++;
+            results[index] = await mapper(items[index]);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+    return results;
+}
+
 const INITIAL_BLOCKS = [
     {
         id: uuidv4(),
         title: '0. Welcome to Math Notes 🚀',
         label: 'showcase:main',
-        content: "Welcome to **Math Notes**!\n\nThis editor is designed to break down long, complex mathematical treatises into small, composable blocks. You can reference blocks inside other blocks.\n\nTry clicking on the chip below, or moving your cursor inside it and pressing `Enter`:\n[[showcase:embed-1]]\n\nWhen a block is toggled 'open', it expands inline so you can read and edit it directly within the parent block context. Like this:\n[[showcase:embed-2∨]]\n\nYou can also click the empty space below this block to create a new one!",
+        content: "Welcome to **Math Notes**!\n\nThis editor is designed to break down long, complex mathematical treatises into small, composable blocks. You can reference blocks inside other blocks.\n\nTry clicking on the chip below, or moving your cursor inside it and pressing `Enter`:\n[[showcase:embed-1]]\n\nWhen a block is toggled 'open', it expands inline so you can read and edit it directly within the parent block context. Like this:\n[[showcase:embed-2∨]]\n\nUse the + button to create a new root block in its own tab.",
     },
     {
         id: uuidv4(),
@@ -119,7 +103,7 @@ const INITIAL_BLOCKS = [
         id: uuidv4(),
         title: '2. Aliases and Block Creation 🪄',
         label: 'showcase:aliases',
-        content: "Sometimes you want to reference a block, but its label doesn't flow correctly in your sentence. Use the `||` double pipe character to set a custom alias!\n\nFor example: For more details, check out the [[showcase:math || math examples]]!\n\n**Creating on the fly:**\nWhat if you want to reference a block that doesn't exist yet?\nJust type it out, e.g., `[[showcase:new-idea || My Brilliant Idea]]`, close the brackets, and then put your cursor on the chip and hit `Enter` (or click on the alias). A new block will seamlessly be created for you! Try it here on this non-existent block:\n[[test:create-me]]"
+        content: "Sometimes you want to reference a block, but its label doesn't flow correctly in your sentence. Use the `||` double pipe character to set a custom alias!\n\nFor example: For more details, check out the [[showcase:math || math examples]]!\n\n**Creating on the fly:**\nWhat if you want to reference a block that doesn't exist yet?\nType its label inside `[[...]]` and choose the `Create new block` autocomplete option. The new target is created while your focus remains in the source note."
     },
     {
         id: uuidv4(),
@@ -130,40 +114,29 @@ const INITIAL_BLOCKS = [
 ];
 
 const blockIdToFileMap = new Map<string, string>();
-
-function computeReferences(content: string): string[] {
-    const regex = /\[\[@?([^\]\|∨]+)(?:\|\|[^\]∨]+)?∨?\]\]/g;
-    const refs = new Set<string>();
-    let match;
-    while ((match = regex.exec(content)) !== null) {
-        refs.add(match[1]);
-    }
-    return Array.from(refs);
-}
+const pendingBlockLabels = new Set<string>();
 
 async function writeBlockToFile(block: any) {
     if (isTestMode) return;
-
-    const safeTitle = (block.title || "Untitled").replace(/[/\\?%*:|"<>]/g, '-').trim() || "Untitled";
-    const safeLabel = (block.label || "block").replace(/[/\\?%*:|"<>]/g, '-').trim() || "block";
     
     let oldFilename = blockIdToFileMap.get(block.id);
     let baseDir = oldFilename ? path.dirname(oldFilename) : "";
     if (baseDir === ".") baseDir = "";
 
-    let newFilename = baseDir ? path.join(baseDir, `${safeTitle}--${safeLabel}.md`) : `${safeTitle}--${safeLabel}.md`;
+    let readableFilename = makeBlockFilename(block.title || "", block.label || "", block.id);
+    let newFilename = baseDir ? path.join(baseDir, readableFilename) : readableFilename;
 
     const isConflict = Array.from(blockIdToFileMap.entries()).some(([i, f]) => f === newFilename && i !== block.id);
     if (isConflict) {
-        newFilename = baseDir ? path.join(baseDir, `${safeTitle}--${safeLabel} - ${block.id.slice(0, 8)}.md`) : `${safeTitle}--${safeLabel} - ${block.id.slice(0, 8)}.md`;
+        readableFilename = makeBlockFilename(block.title || "", block.label || "", `${block.id}-duplicate`);
+        newFilename = baseDir ? path.join(baseDir, readableFilename) : readableFilename;
     }
 
     const filePath = path.join(BLOCKS_DIR, newFilename);
     const fileContent = stringifyFrontmatter({
         id: block.id,
         title: block.title || "",
-        label: block.label || "",
-        references: block.references || []
+        label: block.label || ""
     }, block.content || "");
     
     if (baseDir) {
@@ -181,12 +154,45 @@ async function writeBlockToFile(block: any) {
     blockIdToFileMap.set(block.id, newFilename);
 }
 
+function blockMetadata(block: BlockData) {
+    return {
+        id: block.id,
+        title: block.title,
+        label: block.label,
+        references: block.references || [],
+        hasContent: block.hasContent ?? (block.content !== undefined && block.content.trim().length > 0)
+    };
+}
+
+async function ensureBlockContent(id: string): Promise<BlockData | null> {
+    const cached = blocksMap.get(id);
+    if (!cached) return null;
+    if (cached.content !== undefined) return cached;
+
+    const filename = blockIdToFileMap.get(id);
+    if (!filename) return cached;
+    const fileText = await fs.readFile(path.join(BLOCKS_DIR, filename), "utf-8");
+    const parsed = parseFrontmatter(fileText);
+    const fullBlock: BlockData = {
+        ...cached,
+        title: normalizeBlockTitle(metadataText(parsed.data.title, cached.title)),
+        label: normalizeBlockLabel(metadataText(parsed.data.label, cached.label)),
+        references: computeReferences(parsed.content),
+        content: parsed.content,
+        hasContent: parsed.content.trim().length > 0
+    };
+    blocksMap.set(id, fullBlock);
+    return fullBlock;
+}
+
 async function initBlocks() {
     blocksMap.clear();
     blockIdToFileMap.clear();
     if (!fsSync.existsSync(BLOCKS_DIR)) {
         if (isTestMode) {
-            for (const block of INITIAL_BLOCKS) blocksMap.set(block.id, { ...block });
+            for (const block of INITIAL_BLOCKS) {
+                blocksMap.set(block.id, { ...block, references: computeReferences(block.content) });
+            }
             return;
         }
         await ensureDir(BLOCKS_DIR);
@@ -194,27 +200,35 @@ async function initBlocks() {
     const files = await fs.readdir(BLOCKS_DIR, { recursive: true });
     if (files.filter(f => typeof f === 'string' && f.endsWith(".md")).length === 0) {
         for (const block of INITIAL_BLOCKS) {
-            await writeBlockToFile(block);
-            blocksMap.set(block.id, block);
+            const blockWithReferences = { ...block, references: computeReferences(block.content) };
+            await writeBlockToFile(blockWithReferences);
+            blocksMap.set(block.id, blockWithReferences);
         }
     } else {
         const mdFiles = files.filter(f => typeof f === 'string' && f.endsWith(".md")) as string[];
-        for (const file of mdFiles) {
+        const metadataEntries = await mapWithConcurrency(mdFiles, 16, async file => {
             const filePath = path.join(BLOCKS_DIR, file);
             const content = await fs.readFile(filePath, "utf-8");
             const parsed = parseFrontmatter(content);
-            const id = parsed.data.id || path.basename(file, ".md");
+            const id = metadataText(parsed.data.id, path.basename(file, ".md"));
+            return {
+                file,
+                block: {
+                    id,
+                    title: normalizeBlockTitle(metadataText(parsed.data.title)),
+                    label: normalizeBlockLabel(metadataText(parsed.data.label)),
+                    references: computeReferences(parsed.content),
+                    hasContent: parsed.content.trim().length > 0
+                } satisfies BlockData
+            };
+        });
+        for (const { file, block } of metadataEntries) {
+            const id = block.id;
             const existingFilename = blockIdToFileMap.get(id);
             if (existingFilename) {
                 throw new Error(`Duplicate block id "${id}" found in "${existingFilename}" and "${file}"`);
             }
-            blocksMap.set(id, {
-                id,
-                title: parsed.data.title || "",
-                label: parsed.data.label || "",
-                references: parsed.data.references || computeReferences(parsed.content),
-                content: parsed.content
-            });
+            blocksMap.set(id, block);
             // Normalize path slashes for consistency across platforms (use forward slash in map)
             blockIdToFileMap.set(id, file.replace(/\\/g, '/'));
         }
@@ -283,29 +297,17 @@ app.get("/api/assets/*", async (req, res) => {
 
 app.get("/api/blocks", async (req, res) => {
     try {
-        const blocks = Array.from(blocksMap.values()).map(b => {
-            return {
-                id: b.id,
-                title: b.title,
-                label: b.label,
-                references: b.references || [],
-                hasContent: b.content !== undefined && b.content.trim().length > 0
-                // we do NOT send content to make it fast for 10000+ blocks!
-                // wait, if we don't send content, the frontend must be updated to load it on demand.
-                // to avoid instantly breaking the app, let's include it for now, 
-                // but we add a query parameter ?metaOnly=true for search views
-            };
-        });
-        console.log("Blocks references:", blocks.map(b => b.references));
-        
+        const blocks = Array.from(blocksMap.values()).map(blockMetadata);
         // Sort by title
         blocks.sort((a, b) => a.title.localeCompare(b.title));
         
         if (req.query.metaOnly === 'true') {
             res.json(blocks);
         } else {
-            // send all content (might be slow but doesn't break current frontend yet)
-            res.json(Array.from(blocksMap.values()).sort((a, b) => a.title.localeCompare(b.title)));
+            const fullBlocks = (await Promise.all(blocks.map(block => ensureBlockContent(block.id))))
+                .filter((block): block is BlockData => !!block)
+                .sort((a, b) => a.title.localeCompare(b.title));
+            res.json(fullBlocks);
         }
     } catch (e) {
         res.status(500).json({ error: String(e) });
@@ -315,8 +317,9 @@ app.get("/api/blocks", async (req, res) => {
 app.get("/api/blocks/:id", async (req, res) => {
     try {
         const id = req.params.id;
-        if (blocksMap.has(id)) {
-            res.json(blocksMap.get(id));
+        const block = await ensureBlockContent(id);
+        if (block) {
+            res.json(block);
         } else {
             res.status(404).json({ error: "File not found" });
         }
@@ -327,7 +330,7 @@ app.get("/api/blocks/:id", async (req, res) => {
 
 app.get("/api/settings", async (req, res) => {
     try {
-        const settingDir = path.join(process.cwd(), "blocks", "setting");
+        const settingDir = path.join(WORKSPACE_DIR, "setting");
         const settingsPath = path.join(settingDir, "settings.json");
         const content = await fs.readFile(settingsPath, "utf-8").catch(() => "{\"macros\":{},\"customCommands\":[],\"textCommands\":[]}");
         if (isTestMode) {
@@ -347,7 +350,7 @@ app.post("/api/settings", async (req, res) => {
             testSettings = structuredClone(req.body || {});
             return res.json({ success: true });
         }
-        const settingDir = path.join(process.cwd(), "blocks", "setting");
+        const settingDir = path.join(WORKSPACE_DIR, "setting");
         await ensureDir(settingDir);
         const settingsPath = path.join(settingDir, "settings.json");
         await fs.writeFile(settingsPath, JSON.stringify(req.body || {}, null, 2), "utf-8");
@@ -360,16 +363,29 @@ app.post("/api/settings", async (req, res) => {
 app.post("/api/blocks", async (req, res) => {
     try {
         const id = uuidv4();
-        const block: BlockData = {
-            id,
-            title: req.body.title || "New Block",
-            label: req.body.label || "block",
-            content: req.body.content || ""
-        };
-        block.references = computeReferences(block.content);
-        await writeBlockToFile(block);
-        blocksMap.set(block.id, block);
-        res.json(block);
+        const title = normalizeBlockTitle(metadataText(req.body.title, "New Block"));
+        const label = normalizeBlockLabel(metadataText(req.body.label, "block"));
+        const metadataError = validateBlockMetadata(title, label);
+        if (metadataError) return res.status(400).json({ error: metadataError });
+        if (pendingBlockLabels.has(label) || Array.from(blocksMap.values()).some(candidate => candidate.label === label)) {
+            return res.status(409).json({ error: `Label "${label}" already exists` });
+        }
+        pendingBlockLabels.add(label);
+        try {
+            const block: BlockData = {
+                id,
+                title,
+                label,
+                content: req.body.content || "",
+                hasContent: !!req.body.content
+            };
+            block.references = computeReferences(block.content || "");
+            await writeBlockToFile(block);
+            blocksMap.set(block.id, block);
+            res.json(block);
+        } finally {
+            pendingBlockLabels.delete(label);
+        }
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
@@ -378,26 +394,47 @@ app.post("/api/blocks", async (req, res) => {
 app.put("/api/blocks/:id", async (req, res) => {
     try {
         const id = req.params.id;
-        const existing = blocksMap.get(id);
+        const existing = await ensureBlockContent(id);
         if (!existing) {
             return res.status(404).json({ error: "Block not found" });
         }
         
-        const newLabel = req.body.label !== undefined ? req.body.label : existing.label;
+        const newLabel = req.body.label !== undefined
+            ? normalizeBlockLabel(metadataText(req.body.label))
+            : existing.label;
+        const newTitle = req.body.title !== undefined
+            ? normalizeBlockTitle(metadataText(req.body.title))
+            : existing.title;
+        const metadataError = validateBlockTitle(newTitle) || validateBlockLabel(newLabel);
+        if (metadataError) return res.status(400).json({ error: metadataError });
+        if (Array.from(blocksMap.values()).some(candidate => candidate.id !== id && candidate.label === newLabel)) {
+            return res.status(409).json({ error: `Label "${newLabel}" already exists` });
+        }
         const oldLabel = existing.label;
 
         const block: BlockData = {
             id,
-            title: req.body.title !== undefined ? req.body.title : existing.title,
+            title: newTitle,
             label: newLabel,
-            content: req.body.content !== undefined ? req.body.content : existing.content
+            content: req.body.content !== undefined ? req.body.content : existing.content,
+            hasContent: (req.body.content !== undefined ? req.body.content : existing.content || "").trim().length > 0
         };
-        block.references = computeReferences(block.content);
+        block.references = computeReferences(block.content || "");
 
         let updatedBlocks = [block];
+        let loadedBeforeRename: Set<string> | null = null;
         blocksMap.set(id, block);
 
         if (oldLabel && newLabel && oldLabel !== newLabel) {
+            // Label changes can update absolute and relative references anywhere.
+            // Load content for this rare operation rather than retaining every note
+            // body in server memory during normal editing.
+            loadedBeforeRename = new Set(
+                Array.from(blocksMap.entries())
+                    .filter(([, candidate]) => candidate.content !== undefined)
+                    .map(([blockId]) => blockId)
+            );
+            await mapWithConcurrency(Array.from(blocksMap.keys()), 16, ensureBlockContent);
             const renames = [{ old: oldLabel, new: newLabel, id }];
             
             // Find child blocks to rename
@@ -453,6 +490,7 @@ app.put("/api/blocks/:id", async (req, res) => {
 
                 if (changed || bId === id) {
                     newB.references = computeReferences(newB.content || "");
+                    newB.hasContent = (newB.content || "").trim().length > 0;
                     blocksMap.set(bId, newB);
                     updatedBlocks.push(newB);
                 }
@@ -466,6 +504,12 @@ app.put("/api/blocks/:id", async (req, res) => {
 
         // Re-get the root block in case it was modified during the rename iteration
         const finalBlock = blocksMap.get(id) || block;
+        if (!isTestMode && loadedBeforeRename) {
+            for (const [blockId, candidate] of blocksMap.entries()) {
+                if (blockId === id || loadedBeforeRename.has(blockId) || candidate.content === undefined) continue;
+                blocksMap.set(blockId, blockMetadata(candidate));
+            }
+        }
         res.json({ block: finalBlock, updatedBlocks });
     } catch (e) {
         res.status(500).json({ error: String(e) });
@@ -475,7 +519,7 @@ app.put("/api/blocks/:id", async (req, res) => {
 app.get("/api/blocks/:id/raw", async (req, res) => {
     try {
         const id = req.params.id;
-        const block = blocksMap.get(id);
+        const block = await ensureBlockContent(id);
         if (block) {
             res.setHeader('Content-Type', 'text/plain');
             res.send(block.content || "");
@@ -553,7 +597,7 @@ async function startServer() {
                 }
 
                 const parsed = parseFrontmatter(content);
-                const id = parsed.data.id || filename.replace(".md", "");
+                const id = metadataText(parsed.data.id, filename.replace(".md", ""));
                 const mappedFilename = blockIdToFileMap.get(id);
                 if (mappedFilename && mappedFilename !== filename) {
                     console.error(`Ignoring duplicate block id "${id}" in "${filename}"; already loaded from "${mappedFilename}"`);
@@ -561,15 +605,17 @@ async function startServer() {
                 }
                 
                 const existing = blocksMap.get(id);
-                if (existing && existing.content === parsed.content && existing.title === parsed.data.title && existing.label === parsed.data.label) {
+                const parsedTitle = normalizeBlockTitle(metadataText(parsed.data.title));
+                const parsedLabel = normalizeBlockLabel(metadataText(parsed.data.label));
+                if (existing && existing.content === parsed.content && existing.title === parsedTitle && existing.label === parsedLabel) {
                     return; // No change or our own update
                 }
 
                 const newBlock: BlockData = {
                     id,
-                    title: parsed.data.title || "",
-                    label: parsed.data.label || "",
-                    references: parsed.data.references || computeReferences(parsed.content),
+                    title: parsedTitle,
+                    label: parsedLabel,
+                    references: computeReferences(parsed.content),
                     content: parsed.content
                 };
                 blocksMap.set(id, newBlock);
@@ -581,21 +627,22 @@ async function startServer() {
 
     // Vite middleware for development
     if (!isProduction) {
+        const { createServer: createViteServer } = await import("vite");
         const vite = await createViteServer({
             server: { middlewareMode: true, hmr: isTestMode ? false : undefined },
             appType: "spa",
         });
         app.use(vite.middlewares);
     } else {
-        const distPath = path.join(process.cwd(), 'dist');
-        app.use(express.static(distPath));
+        app.use(express.static(DIST_DIR));
         app.get('*', (req, res) => {
-            res.sendFile(path.join(distPath, 'index.html'));
+            res.sendFile(path.join(DIST_DIR, 'index.html'));
         });
     }
 
     app.listen(PORT, HOST, () => {
         console.log(`Server running on http://${HOST}:${PORT}`);
+        console.log(`Workspace: ${WORKSPACE_DIR}`);
         if (isTestMode) console.log("Test mode enabled: all edits are stored in memory and discarded on exit.");
     });
 }

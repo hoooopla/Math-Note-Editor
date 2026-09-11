@@ -1,5 +1,9 @@
 import { BlockData } from './index';
 import { v4 as uuidv4 } from 'uuid';
+import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from '../lib/block-metadata';
+import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
+
+export { computeReferences, parseFrontmatter } from '../lib/block-metadata';
 
 export interface EditorSettings {
     macros: Record<string, string>;
@@ -56,10 +60,10 @@ export interface BackendApi {
     listAssets: () => Promise<string[]>;
     getAssetUrl: (path: string) => Promise<string>;
     loadBlocks: () => Promise<BlockData[]>;
-    loadBlockContent: (id: string, blocks: BlockData[]) => Promise<BlockData | null>;
-    addBlock: (data: Partial<BlockData>, existingBlocks: BlockData[]) => Promise<BlockData>;
-    updateBlock: (id: string, data: BlockData, existingBlocks: BlockData[]) => Promise<{ block: BlockData, updatedBlocks?: BlockData[] }>;
-    deleteBlock: (id: string, blocks: BlockData[]) => Promise<void>;
+    loadBlockContent: (id: string) => Promise<BlockData | null>;
+    addBlock: (data: Partial<BlockData>) => Promise<BlockData>;
+    updateBlock: (id: string, data: BlockData) => Promise<{ block: BlockData, updatedBlocks?: BlockData[] }>;
+    deleteBlock: (id: string) => Promise<void>;
 }
 
 let dirHandle: FileSystemDirectoryHandle | null = null;
@@ -77,53 +81,6 @@ const requireOk = async (response: Response, operation: string) => {
     throw new Error(`${operation} failed (${response.status})${detail}`);
 };
 
-export const computeReferences = (content: string): string[] => {
-    const regex = /\[\[@?([^\]\|∨]+)(?:\|\|[^\]∨]+)?∨?\]\]/g;
-    const refs = new Set<string>();
-    let match;
-    while ((match = regex.exec(content)) !== null) {
-        refs.add(match[1]);
-    }
-    return Array.from(refs);
-};
-
-export const parseFrontmatter = (text: string) => {
-    const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)/);
-    if (!match) return { data: {}, content: text };
-    
-    const data: Record<string, any> = {};
-    match[1].split('\n').forEach(line => {
-        const idx = line.indexOf(':');
-        if (idx > -1) {
-            const key = line.substring(0, idx).trim();
-            const val = line.substring(idx + 1).trim();
-            if (val.startsWith('[') && val.endsWith(']')) {
-                try {
-                    data[key] = JSON.parse(val.replace(/'/g, '"'));
-                } catch (e) {
-                    data[key] = val;
-                }
-            } else {
-                data[key] = val;
-            }
-        }
-    });
-    return { data, content: match[2] };
-};
-
-const stringifyFrontmatter = (data: Record<string, any>, content: string) => {
-    let fm = '---\n';
-    for (const [k, v] of Object.entries(data)) {
-        if (Array.isArray(v)) {
-            fm += `${k}: ${JSON.stringify(v)}\n`;
-        } else {
-            fm += `${k}: ${v}\n`;
-        }
-    }
-    fm += '---\n';
-    return fm + content;
-};
-
 const getFileByBlockId = async (id: string, currentHandle: FileSystemDirectoryHandle | null = dirHandle): Promise<FileSystemFileHandle | null> => {
     if (!currentHandle) return null;
     try {
@@ -134,7 +91,7 @@ const getFileByBlockId = async (id: string, currentHandle: FileSystemDirectoryHa
                 const { data } = parseFrontmatter(text);
                 // In recursive search, if we check by file name alone and there are duplicate names in diff folders, it might give the first.
                 // It is better to rely on data.id first, or name replacing.
-                if (data.id === id || entry.name.replace('.md', '') === id) {
+                if (metadataText(data.id) === id || entry.name.replace('.md', '') === id) {
                     return entry;
                 }
             } else if (entry.kind === 'directory') {
@@ -350,12 +307,12 @@ export const api: BackendApi = {
                         const { data, content } = parseFrontmatter(text);
                         // Store the relative path instead of just the name in the map, or use data.id
                         const fileId = currentPath ? `${currentPath}/${entry.name}`.replace('.md', '') : entry.name.replace('.md', '');
-                        const id = data.id || fileId;
+                        const id = metadataText(data.id, fileId);
                         blocksMap.set(id, {
                             id,
-                            title: data.title || '',
-                            label: data.label || '',
-                            references: data.references || computeReferences(content),
+                            title: normalizeBlockTitle(metadataText(data.title)),
+                            label: normalizeBlockLabel(metadataText(data.label)),
+                            references: computeReferences(content),
                             hasContent: content.trim().length > 0
                         });
                     } else if (entry.kind === 'directory') {
@@ -373,7 +330,7 @@ export const api: BackendApi = {
         }
         return [];
     },
-    loadBlockContent: async (id, blocks) => {
+    loadBlockContent: async (id) => {
         if (useServer) {
             const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`);
             return res.ok ? await res.json() : null;
@@ -384,16 +341,16 @@ export const api: BackendApi = {
                 const file = await entry.getFile();
                 const { data, content } = parseFrontmatter(await file.text());
                 return {
-                    id: data.id || id,
-                    title: data.title || '',
-                    label: data.label || '',
+                    id: metadataText(data.id, id),
+                    title: normalizeBlockTitle(metadataText(data.title)),
+                    label: normalizeBlockLabel(metadataText(data.label)),
                     content
                 };
             }
         }
         return null;
     },
-    addBlock: async (data, existingBlocks) => {
+    addBlock: async (data) => {
         if (useServer) {
             const res = await fetch('/api/blocks', {
                 method: 'POST',
@@ -405,16 +362,19 @@ export const api: BackendApi = {
         }
         if (api.mode === "local" && dirHandle) {
             const id = uuidv4();
-            const block = { id, title: data.title || "New Block", label: data.label || "block", content: data.content || "", references: computeReferences(data.content || "") };
-            
-            const safeTitle = (block.title).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "Untitled";
-            const safeLabel = (block.label).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "block";
-            let newFilename = `${safeTitle}--${safeLabel}.md`;
+            const title = normalizeBlockTitle(metadataText(data.title, "New Block"));
+            const label = normalizeBlockLabel(metadataText(data.label, "block"));
+            const metadataError = validateBlockMetadata(title, label);
+            if (metadataError) throw new Error(metadataError);
+            const block = { id, title, label, content: data.content || "", references: computeReferences(data.content || "") };
+
+            const baseFilename = makeBlockFilename(block.title, block.label, block.id);
+            let newFilename = baseFilename;
             let counter = 1;
             while(true) {
                 try {
                     await dirHandle.getFileHandle(newFilename);
-                    newFilename = `${safeTitle}--${safeLabel}-${counter}.md`;
+                    newFilename = baseFilename.replace(/\.md$/, `-${counter}.md`);
                     counter++;
                 } catch(e) {
                     break;
@@ -423,13 +383,21 @@ export const api: BackendApi = {
 
             const fileHandle = await dirHandle.getFileHandle(newFilename, { create: true });
             const writable = await fileHandle.createWritable();
-            await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label, references: block.references || [] }, block.content));
+            await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content));
             await writable.close();
             return block;
         }
         throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot create blocks' : 'No writable backend is connected');
     },
-    updateBlock: async (id, block, existingBlocks) => {
+    updateBlock: async (id, block) => {
+        const normalizedBlock = {
+            ...block,
+            title: normalizeBlockTitle(metadataText(block.title)),
+            label: normalizeBlockLabel(metadataText(block.label))
+        };
+        const metadataError = validateBlockTitle(normalizedBlock.title) || validateBlockLabel(normalizedBlock.label);
+        if (metadataError) throw new Error(metadataError);
+        block = normalizedBlock;
         if (useServer) {
             const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, {
                 method: 'PUT',
@@ -445,21 +413,18 @@ export const api: BackendApi = {
             const entry = await getFileByBlockId(id);
             if (entry) {
                 let filename = entry.name;
-                const safeTitle = (block.title).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "Untitled";
-                const safeLabel = (block.label).replace(/[\/\\?%*:|"<>]/g, '-').trim() || "block";
-                
-                const expectedPrefix = `${safeTitle}--${safeLabel}`;
+                const expectedFilename = makeBlockFilename(block.title, block.label, block.id);
                 
                 // If title changed, maybe rename the file?
                 // For simplicity, FS mode just keeps same filename or we can create new and delete old
-                if (!filename.startsWith(expectedPrefix)) {
+                if (filename !== expectedFilename) {
                     // Try to rename
-                    let newFilename = `${expectedPrefix}.md`;
+                    let newFilename = expectedFilename;
                     let counter = 1;
                     while(true) {
                         try {
                             await dirHandle.getFileHandle(newFilename);
-                            newFilename = `${expectedPrefix}-${counter}.md`;
+                            newFilename = expectedFilename.replace(/\.md$/, `-${counter}.md`);
                             counter++;
                         } catch(e) {
                             break;
@@ -468,19 +433,19 @@ export const api: BackendApi = {
                     try {
                         const newHandle = await dirHandle.getFileHandle(newFilename, { create: true });
                         const writable = await newHandle.createWritable();
-                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label, references: computeReferences(block.content || "") }, block.content || ""));
+                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
                         await writable.close();
                         
                         await dirHandle.removeEntry(filename);
                     } catch(e) {
                         // fallback to just writing old file
                         const writable = await entry.createWritable();
-                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label, references: computeReferences(block.content || "") }, block.content || ""));
+                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
                         await writable.close();
                     }
                 } else {
                     const writable = await entry.createWritable();
-                    await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label, references: computeReferences(block.content || "") }, block.content || ""));
+                    await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
                     await writable.close();
                 }
                 
@@ -492,7 +457,7 @@ export const api: BackendApi = {
         if (api.mode === 'viewer') throw new Error('Read-only viewer cannot update blocks');
         throw new Error('No writable backend is connected');
     },
-    deleteBlock: async (id, blocks) => {
+    deleteBlock: async (id) => {
         if (useServer) {
             const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
             await requireOk(res, 'Deleting block');

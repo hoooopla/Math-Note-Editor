@@ -10,23 +10,49 @@ export function MathTitle({ text, className }: { text?: string | null; className
         return <span className={className}>Untitled</span>;
     }
 
-    const segments = [];
-    let current = 0;
-    const mathRegex = /(\$)([\s\S]*?)\1|(\\\[)([\s\S]*?)(\\\])/g;
-    let match;
+    const segments: Array<{ type: 'text'; content: string } | { type: 'math'; html: string }> = [];
+    const isEscaped = (position: number) => {
+        let backslashes = 0;
+        for (let index = position - 1; index >= 0 && text[index] === '\\'; index--) backslashes++;
+        return backslashes % 2 === 1;
+    };
+    const pushText = (content: string) => {
+        if (content) segments.push({ type: 'text', content: content.replace(/\\\$/g, '$') });
+    };
 
-    while ((match = mathRegex.exec(text)) !== null) {
-        if (match.index === mathRegex.lastIndex) {
-            mathRegex.lastIndex++;
+    let current = 0;
+    let cursor = 0;
+    while (cursor < text.length) {
+        let delimiterLength = 0;
+        let close = -1;
+        if (text[cursor] === '$' && !isEscaped(cursor)) {
+            delimiterLength = 1;
+            for (let index = cursor + 1; index < text.length; index++) {
+                if (text[index] === '$' && !isEscaped(index)) {
+                    close = index;
+                    break;
+                }
+            }
+        } else if (text.startsWith('\\[', cursor) && !isEscaped(cursor)) {
+            delimiterLength = 2;
+            for (let index = cursor + 2; index < text.length - 1; index++) {
+                if (text.startsWith('\\]', index) && !isEscaped(index)) {
+                    close = index;
+                    break;
+                }
+            }
         }
-        if (match.index > current) {
-            segments.push({ type: 'text', content: text.slice(current, match.index) });
+        if (close === -1) {
+            cursor++;
+            continue;
         }
-        
-        const mathContent = (match[2] || match[4] || '').trim();
+
+        pushText(text.slice(current, cursor));
+        const mathContent = text.slice(cursor + delimiterLength, close).trim();
         if (!mathContent) {
-            segments.push({ type: 'text', content: match[0] });
-            current = match.index + match[0].length;
+            pushText(text.slice(cursor, close + delimiterLength));
+            current = close + delimiterLength;
+            cursor = current;
             continue;
         }
 
@@ -39,13 +65,14 @@ export function MathTitle({ text, className }: { text?: string | null; className
             });
             segments.push({ type: 'math', html });
         } catch (e: any) {
-            segments.push({ type: 'text', content: match[0] });
+            pushText(text.slice(cursor, close + delimiterLength));
         }
-        current = match.index + match[0].length;
+        current = close + delimiterLength;
+        cursor = current;
     }
 
     if (current < text.length) {
-        segments.push({ type: 'text', content: text.slice(current) });
+        pushText(text.slice(current));
     }
 
     if (segments.length === 1 && segments[0].type === 'text') {

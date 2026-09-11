@@ -1,0 +1,31 @@
+name: Desktop packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: ['main']
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build:desktop
+      - run: npm run test:desktop-server
+      - run: npx electron-builder --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: math-note-editor-${{ runner.os }}
+          path: release/*
+          if-no-files-found: error

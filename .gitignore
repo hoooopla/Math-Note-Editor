@@ -1,6 +1,8 @@
 node_modules/
 build/
 dist/
+desktop-server/
+release/
 coverage/
 .DS_Store
 *.log
