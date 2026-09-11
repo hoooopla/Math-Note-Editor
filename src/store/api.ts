@@ -64,6 +64,7 @@ export interface BackendApi {
     saveAsset: (file: File, filename: string) => Promise<string>;
     listAssets: () => Promise<string[]>;
     getAssetUrl: (path: string) => Promise<string>;
+    setViewerFiles: (files: FileList) => void;
     loadBlocks: () => Promise<BlockData[]>;
     loadBlockContent: (id: string) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>) => Promise<BlockData>;
@@ -73,6 +74,7 @@ export interface BackendApi {
 
 let dirHandle: FileSystemDirectoryHandle | null = null;
 let useServer = true;
+const viewerAssets = new Map<string, File>();
 
 const requireOk = async (response: Response, operation: string) => {
     if (response.ok) return;
@@ -275,7 +277,21 @@ export const api: BackendApi = {
             }
             return files;
         }
+        if (api.mode === "viewer") return Array.from(viewerAssets.keys());
         return [];
+    },
+    setViewerFiles: (files) => {
+        viewerAssets.clear();
+        for (const file of Array.from(files)) {
+            const relativePath = file.webkitRelativePath.replace(/\\/g, '/');
+            const assetsMarker = relativePath.indexOf('/assets/');
+            const assetPath = relativePath.startsWith('assets/')
+                ? relativePath
+                : assetsMarker >= 0
+                    ? `assets/${relativePath.slice(assetsMarker + '/assets/'.length)}`
+                    : null;
+            if (assetPath) viewerAssets.set(assetPath, file);
+        }
     },
     getAssetUrl: async (path) => {
         if (/^(?:https?:|data:|blob:)/.test(path)) return path;
@@ -300,6 +316,10 @@ export const api: BackendApi = {
                     return path;
                 }
             }
+        }
+        if (api.mode === "viewer" && assetPath) {
+            const file = viewerAssets.get(assetPath);
+            if (file) return URL.createObjectURL(file);
         }
         return path;
     },

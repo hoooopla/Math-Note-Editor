@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from 'playwright/test';
+import path from 'node:path';
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from '../src/lib/block-metadata';
 import { encodeEmbeddedLabel, findActiveEmbeddedTarget, parseEmbeddedLinks } from '../src/lib/embedded-link-syntax';
 import { makeBlockFilename, validateBlockLabel } from '../src/lib/label-policy';
@@ -1134,6 +1135,22 @@ test('stores portable image paths and renders portable and legacy asset referenc
     await expect(images).toHaveCount(2);
     await expect.poll(() => images.evaluateAll(elements => elements.map(element => (element as HTMLImageElement).naturalWidth)))
         .toEqual([1, 1]);
+});
+
+test('renders workspace assets in the web read-only viewer', async ({ page }) => {
+    await page.route('**/api/blocks?metaOnly=true', route => route.abort());
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: 'Read-Only Viewer' })).toBeVisible();
+
+    await page.locator('input[type="file"][webkitdirectory]').setInputFiles(
+        path.resolve('tests/fixtures/viewer-workspace')
+    );
+
+    await expect(page.getByText('Viewer image test', { exact: true }).first()).toBeVisible();
+    const images = page.locator('.cm-image-widget img');
+    await expect(images).toHaveCount(2);
+    await expect.poll(() => images.evaluateAll(elements => elements.map(element => (element as HTMLImageElement).naturalWidth)))
+        .toEqual([2, 2]);
 });
 
 test('creates an open embedded editor only when it approaches the viewport', async ({ page }) => {

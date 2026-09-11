@@ -230,6 +230,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   loadViewerFiles: async (files: FileList) => {
     set({ isLoadingFiles: true });
+    backendApi.setViewerFiles(files);
     const newBlocks: BlockData[] = [];
     let loadedSettings: any = null;
     for (let i = 0; i < files.length; i++) {
