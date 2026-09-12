@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useEffect } from "react";
-import { useStore } from "../store";
+import { findNearestExistingParentId, useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { Trash2, FileText, Check, X, Lock, Unlock } from "lucide-react";
+import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp } from "lucide-react";
 import { MathTitle } from "./MathTitle";
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from "../lib/label-policy";
+import { SafeRelabelModal } from "./SafeRelabelModal";
 
 export const BlockContainer: React.FC<{ id: string }> = ({ id }) => {
     const block = useStore(state => state.blocksById[id]);
@@ -57,6 +58,8 @@ interface BlockProps {
 export function Block({ block, isFocused, focusDirection, focusX, macros, setActive, updateBlock, flushBlock, deleteBlock }: BlockProps) {
     const isViewOnlyState = useStore(state => state.viewOnlyBlocks[block.id]);
     const backendMode = useStore(state => state.backendMode);
+    const nearestParentId = useStore(state => findNearestExistingParentId(block.label, state.blockIdByLabel));
+    const nearestParentLabel = useStore(state => nearestParentId ? state.blocksById[nearestParentId]?.label : undefined);
     const isViewOnly = isViewOnlyState ?? (backendMode === "viewer");
     const setImageUploadParams = useStore(state => state.setImageUploadParams);
     const [isEditingMeta, setIsEditingMeta] = useState(false);
@@ -64,6 +67,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     const [labelInput, setLabelInput] = useState(block.label);
     const [error, setError] = useState<string | null>(null);
     const [focusRequestKey, setFocusRequestKey] = useState(0);
+    const [pendingRelabel, setPendingRelabel] = useState<{ oldPrefix: string, newPrefix: string } | null>(null);
 
     const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
@@ -108,16 +112,13 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
             setError(metadataError);
             return;
         }
-        if (finalLabel !== block.label) {
-            const duplicateId = useStore.getState().blockIdByLabel[finalLabel];
-            const isDuplicate = !!duplicateId && duplicateId !== block.id;
-            if (isDuplicate) {
-                setError(`Label "${finalLabel}" already exists`);
-                return;
-            }
-        }
         setError(null);
-        updateBlock(block.id, { title: finalTitle, label: finalLabel });
+        if (finalLabel !== block.label) {
+            if (finalTitle !== block.title) updateBlock(block.id, { title: finalTitle });
+            setPendingRelabel({ oldPrefix: block.label, newPrefix: finalLabel });
+        } else if (finalTitle !== block.title) {
+            updateBlock(block.id, { title: finalTitle });
+        }
         setIsEditingMeta(false);
     };
 
@@ -129,8 +130,18 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     };
 
     const handleMetaKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter') submitMeta();
-        if (e.key === 'Escape') cancelMeta();
+        if (e.key === 'Enter') {
+            // The input is removed when submitMeta opens the relabel preview.
+            // Consume this keydown so its default keypress cannot continue in
+            // the editor after focus returns and insert an unintended newline.
+            e.preventDefault();
+            e.stopPropagation();
+            submitMeta();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            cancelMeta();
+        }
     };
 
     return (
@@ -220,6 +231,16 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                 
                 {isFocused && (
                     <div className="flex items-center gap-2">
+                        {nearestParentId && nearestParentLabel && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); useStore.getState().goToNearestParent(); }}
+                                className="text-secondary hover:text-accent transition-colors opacity-0 group-hover:opacity-100 flex items-center"
+                                title={`Go to parent: ${nearestParentLabel}`}
+                                aria-label={`Go to nearest parent block ${nearestParentLabel}`}
+                            >
+                                <CornerLeftUp size={16} />
+                            </button>
+                        )}
                         {backendMode === "server" && (
                             <a 
                                 href={`/api/blocks/${block.id}/raw`} 
@@ -275,6 +296,14 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                     onImagePaste={(file, insertContent) => setImageUploadParams({ file, onInsert: insertContent })}
                 />
             </div>
+            {pendingRelabel && <SafeRelabelModal
+                oldPrefix={pendingRelabel.oldPrefix}
+                newPrefix={pendingRelabel.newPrefix}
+                onClose={(completed) => {
+                    if (!completed) setLabelInput(block.label);
+                    setPendingRelabel(null);
+                }}
+            />}
         </div>
     )
 }

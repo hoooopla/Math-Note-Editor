@@ -2,6 +2,7 @@ import { BlockData } from './index';
 import { v4 as uuidv4 } from 'uuid';
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from '../lib/block-metadata';
 import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
+import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from '../lib/safe-relabel';
 
 export { computeReferences, parseFrontmatter } from '../lib/block-metadata';
 
@@ -11,6 +12,7 @@ export interface EditorSettings {
     textCommands: string[];
     searchShortcut?: string;
     editMetadataShortcut?: string;
+    goToParentShortcut?: string;
     closeTabShortcut?: string;
     reopenClosedTabShortcut?: string;
     nextTabShortcut?: string;
@@ -69,12 +71,107 @@ export interface BackendApi {
     loadBlockContent: (id: string) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>) => Promise<BlockData>;
     updateBlock: (id: string, data: BlockData) => Promise<{ block: BlockData, updatedBlocks?: BlockData[] }>;
+    previewRelabel: (oldPrefix: string, newPrefix: string) => Promise<SafeRelabelPlan>;
+    commitRelabel: (plan: SafeRelabelPlan) => Promise<{ plan: SafeRelabelPlan, updatedBlocks: BlockData[] }>;
     deleteBlock: (id: string) => Promise<void>;
 }
 
 let dirHandle: FileSystemDirectoryHandle | null = null;
 let useServer = true;
 const viewerAssets = new Map<string, File>();
+const LOCAL_BACKUP_DIRECTORY = '.math-note-backups';
+
+interface LocalBlockFile {
+    handle: FileSystemFileHandle;
+    directory: FileSystemDirectoryHandle;
+    name: string;
+    relativePath: string;
+}
+
+const replaceLocalFile = async (handle: FileSystemFileHandle, contents: string | Blob) => {
+    const writable = await handle.createWritable();
+    try {
+        await writable.write(contents);
+        await writable.close();
+    } catch (error) {
+        await writable.abort(error).catch(() => {});
+        throw error;
+    }
+};
+
+const getLocalBackupHandle = async (relativePath: string) => {
+    if (!dirHandle) throw new Error('No writable backend is connected');
+    const pathParts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean);
+    const fileName = pathParts.pop();
+    if (!fileName) throw new Error(`Invalid backup path: ${relativePath}`);
+    let backupDirectory = await dirHandle.getDirectoryHandle(LOCAL_BACKUP_DIRECTORY, { create: true });
+    for (const part of pathParts) {
+        backupDirectory = await backupDirectory.getDirectoryHandle(part, { create: true });
+    }
+    let existed = true;
+    let handle: FileSystemFileHandle;
+    try {
+        handle = await backupDirectory.getFileHandle(`${fileName}.bak`);
+    } catch {
+        existed = false;
+        handle = await backupDirectory.getFileHandle(`${fileName}.bak`, { create: true });
+    }
+    return { handle, existed };
+};
+
+const backupLocalFile = async (file: LocalBlockFile) => {
+    const backup = await getLocalBackupHandle(file.relativePath);
+    await replaceLocalFile(backup.handle, await file.handle.getFile());
+    await file.directory.removeEntry(`${file.name}.bak`).catch(() => {});
+};
+
+const writeLocalFile = async (file: LocalBlockFile, contents: string | Blob, createBackup = true) => {
+    if (createBackup) await backupLocalFile(file);
+    await replaceLocalFile(file.handle, contents);
+};
+
+const migrateLocalLegacyBackups = async (
+    currentDirectory: FileSystemDirectoryHandle,
+    currentPath = ''
+): Promise<void> => {
+    for await (const entry of currentDirectory.values()) {
+        if (entry.kind === 'directory') {
+            if (!currentPath && entry.name === LOCAL_BACKUP_DIRECTORY) continue;
+            const nextPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+            await migrateLocalLegacyBackups(entry, nextPath);
+            continue;
+        }
+        if (!entry.name.endsWith('.bak')) continue;
+        const legacyRelativePath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+        const originalRelativePath = legacyRelativePath.slice(0, -4);
+        const backup = await getLocalBackupHandle(originalRelativePath);
+        const sourceFile = await entry.getFile();
+        const destinationIsNewer = backup.existed
+            && (await backup.handle.getFile()).lastModified >= sourceFile.lastModified;
+        if (!destinationIsNewer) await replaceLocalFile(backup.handle, sourceFile);
+        await currentDirectory.removeEntry(entry.name);
+    }
+};
+
+const localRevision = (blocks: BlockData[]) => {
+    const text = JSON.stringify(blocks.map(block => [block.id, block.title, block.label, block.content || '']).sort());
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+    return (hash >>> 0).toString(16);
+};
+
+const shortHash = (text: string) => {
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+    return (hash >>> 0).toString(16);
+};
+
+const loadAllLocalBlocks = async (): Promise<BlockData[]> => {
+    if (!dirHandle) return [];
+    const metadata = await api.loadBlocks();
+    return (await Promise.all(metadata.map(block => api.loadBlockContent(block.id))))
+        .filter((block): block is BlockData => !!block);
+};
 
 const requireOk = async (response: Response, operation: string) => {
     if (response.ok) return;
@@ -93,7 +190,11 @@ const portableAssetPath = (value: string): string | null => {
     return match ? `assets/${match[1]}` : null;
 };
 
-const getFileByBlockId = async (id: string, currentHandle: FileSystemDirectoryHandle | null = dirHandle): Promise<FileSystemFileHandle | null> => {
+const getFileLocationByBlockId = async (
+    id: string,
+    currentHandle: FileSystemDirectoryHandle | null = dirHandle,
+    currentPath = ''
+): Promise<LocalBlockFile | null> => {
     if (!currentHandle) return null;
     try {
         for await (const entry of currentHandle.values()) {
@@ -104,16 +205,24 @@ const getFileByBlockId = async (id: string, currentHandle: FileSystemDirectoryHa
                 // In recursive search, if we check by file name alone and there are duplicate names in diff folders, it might give the first.
                 // It is better to rely on data.id first, or name replacing.
                 if (metadataText(data.id) === id || entry.name.replace('.md', '') === id) {
-                    return entry;
+                    return {
+                        handle: entry,
+                        directory: currentHandle,
+                        name: entry.name,
+                        relativePath: currentPath ? `${currentPath}/${entry.name}` : entry.name
+                    };
                 }
             } else if (entry.kind === 'directory') {
-                const found = await getFileByBlockId(id, entry);
+                const nextPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+                const found = await getFileLocationByBlockId(id, entry, nextPath);
                 if (found) return found;
             }
         }
     } catch(e) { }
     return null;
 }
+
+const getFileByBlockId = async (id: string) => (await getFileLocationByBlockId(id))?.handle || null;
 
 export const api: BackendApi = {
     mode: "none",
@@ -135,6 +244,7 @@ export const api: BackendApi = {
     connectLocalFS: async () => {
         try {
             dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+            await migrateLocalLegacyBackups(dirHandle).catch(error => console.warn('Could not migrate legacy backups', error));
             api.mode = "local";
             return true;
         } catch (e) {
@@ -149,6 +259,7 @@ export const api: BackendApi = {
             textCommands: [], 
             searchShortcut: "meta+k",
             editMetadataShortcut: "f2",
+            goToParentShortcut: "mod+shift+arrowup",
             closeTabShortcut: "mod+w",
             reopenClosedTabShortcut: "mod+shift+t",
             nextTabShortcut: "ctrl+tab",
@@ -210,10 +321,21 @@ export const api: BackendApi = {
             await requireOk(res, 'Saving settings');
         } else if (api.mode === "local" && dirHandle) {
             const settingDirHandle = await dirHandle.getDirectoryHandle('setting', { create: true });
-            const fileHandle = await settingDirHandle.getFileHandle('settings.json', { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(JSON.stringify(settings, null, 2));
-            await writable.close();
+            let existed = true;
+            let fileHandle: FileSystemFileHandle;
+            try {
+                fileHandle = await settingDirHandle.getFileHandle('settings.json');
+            } catch {
+                existed = false;
+                fileHandle = await settingDirHandle.getFileHandle('settings.json', { create: true });
+            }
+            const file: LocalBlockFile = {
+                handle: fileHandle,
+                directory: settingDirHandle,
+                name: 'settings.json',
+                relativePath: 'setting/settings.json'
+            };
+            await writeLocalFile(file, JSON.stringify(settings, null, 2), existed);
         }
     },
     saveAsset: async (file, filename) => {
@@ -240,10 +362,21 @@ export const api: BackendApi = {
             for (let i = 0; i < pathParts.length - 1; i++) {
                 currentDir = await currentDir.getDirectoryHandle(pathParts[i], { create: true });
             }
-            const fileHandle = await currentDir.getFileHandle(pathParts[pathParts.length - 1], { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(file);
-            await writable.close();
+            const assetName = pathParts[pathParts.length - 1];
+            let existed = true;
+            let fileHandle: FileSystemFileHandle;
+            try {
+                fileHandle = await currentDir.getFileHandle(assetName);
+            } catch {
+                existed = false;
+                fileHandle = await currentDir.getFileHandle(assetName, { create: true });
+            }
+            await writeLocalFile({
+                handle: fileHandle,
+                directory: currentDir,
+                name: assetName,
+                relativePath: `assets/${filename}`
+            }, file, existed);
             return 'assets/' + filename; 
         }
         return '';
@@ -415,9 +548,7 @@ export const api: BackendApi = {
             }
 
             const fileHandle = await dirHandle.getFileHandle(newFilename, { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content));
-            await writable.close();
+            await replaceLocalFile(fileHandle, stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content));
             return block;
         }
         throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot create blocks' : 'No writable backend is connected');
@@ -442,44 +573,34 @@ export const api: BackendApi = {
             return await res.json();
         }
         if (api.mode === "local" && dirHandle) {
-            // Write to local file
-            const entry = await getFileByBlockId(id);
-            if (entry) {
-                let filename = entry.name;
+            const location = await getFileLocationByBlockId(id);
+            if (location) {
+                const filename = location.name;
                 const expectedFilename = makeBlockFilename(block.title, block.label, block.id);
-                
-                // If title changed, maybe rename the file?
-                // For simplicity, FS mode just keeps same filename or we can create new and delete old
+                const contents = stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || "");
                 if (filename !== expectedFilename) {
-                    // Try to rename
                     let newFilename = expectedFilename;
                     let counter = 1;
                     while(true) {
                         try {
-                            await dirHandle.getFileHandle(newFilename);
+                            await location.directory.getFileHandle(newFilename);
                             newFilename = expectedFilename.replace(/\.md$/, `-${counter}.md`);
                             counter++;
                         } catch(e) {
                             break;
                         }
                     }
+                    await backupLocalFile(location);
+                    const newHandle = await location.directory.getFileHandle(newFilename, { create: true });
                     try {
-                        const newHandle = await dirHandle.getFileHandle(newFilename, { create: true });
-                        const writable = await newHandle.createWritable();
-                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
-                        await writable.close();
-                        
-                        await dirHandle.removeEntry(filename);
-                    } catch(e) {
-                        // fallback to just writing old file
-                        const writable = await entry.createWritable();
-                        await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
-                        await writable.close();
+                        await replaceLocalFile(newHandle, contents);
+                        await location.directory.removeEntry(filename);
+                    } catch(error) {
+                        await location.directory.removeEntry(newFilename).catch(() => {});
+                        throw error;
                     }
                 } else {
-                    const writable = await entry.createWritable();
-                    await writable.write(stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ""));
-                    await writable.close();
+                    await writeLocalFile(location, contents);
                 }
                 
                 // Client-side cascades (simplified for FS mode)
@@ -490,14 +611,101 @@ export const api: BackendApi = {
         if (api.mode === 'viewer') throw new Error('Read-only viewer cannot update blocks');
         throw new Error('No writable backend is connected');
     },
+    previewRelabel: async (oldPrefix, newPrefix) => {
+        if (useServer) {
+            const res = await fetch('/api/relabel/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oldPrefix, newPrefix })
+            });
+            await requireOk(res, 'Previewing tree transformation');
+            return await res.json();
+        }
+        if (api.mode === 'local' && dirHandle) {
+            const blocks = await loadAllLocalBlocks();
+            const plan = buildSafeRelabelPlan(blocks, oldPrefix, newPrefix);
+            plan.revision = localRevision(blocks);
+            plan.signature = shortHash(relabelPlanSignatureInput(plan));
+            const fileNames = new Map<string, string>();
+            for (const id of new Set([
+                ...plan.blockChanges.map(change => change.id),
+                ...plan.referenceImpacts.map(impact => impact.blockId)
+            ])) {
+                const location = await getFileLocationByBlockId(id);
+                if (location) fileNames.set(id, location.relativePath);
+            }
+            for (const change of plan.blockChanges) change.fileName = fileNames.get(change.id);
+            for (const impact of plan.referenceImpacts) impact.fileName = fileNames.get(impact.blockId);
+            return plan;
+        }
+        throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot relabel blocks' : 'No writable backend is connected');
+    },
+    commitRelabel: async (preview) => {
+        if (useServer) {
+            const res = await fetch('/api/relabel/commit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oldPrefix: preview.oldPrefix, newPrefix: preview.newPrefix, revision: preview.revision, signature: preview.signature })
+            });
+            await requireOk(res, 'Applying tree transformation');
+            return await res.json();
+        }
+        if (api.mode === 'local' && dirHandle) {
+            const blocks = await loadAllLocalBlocks();
+            const current = buildSafeRelabelPlan(blocks, preview.oldPrefix, preview.newPrefix);
+            current.revision = localRevision(blocks);
+            current.signature = shortHash(relabelPlanSignatureInput(current));
+            if (current.revision !== preview.revision && current.signature !== preview.signature) {
+                throw new Error('The workspace changed after this preview. Review it again before confirming.');
+            }
+            if (current.conflicts.length) throw new Error(current.conflicts.join(' '));
+            const planned = applySafeRelabelPlan(blocks, current);
+            const updatedBlocks: BlockData[] = [];
+            const prepared: Array<{ file: LocalBlockFile, original: string, updated: BlockData }> = [];
+            for (let index = 0; index < blocks.length; index++) {
+                const before = blocks[index];
+                const after = planned[index];
+                if (before.label === after.label && before.content === after.content) continue;
+                const file = await getFileLocationByBlockId(before.id);
+                if (!file) throw new Error(`Could not find the file for “${before.title}”.`);
+                const updated: BlockData = {
+                    ...before,
+                    label: after.label,
+                    content: after.content,
+                    references: computeReferences(after.content || ''),
+                    hasContent: (after.content || '').trim().length > 0
+                };
+                prepared.push({ file, original: await (await file.handle.getFile()).text(), updated });
+                updatedBlocks.push(updated);
+            }
+            const written: typeof prepared = [];
+            try {
+                for (const item of prepared) {
+                    await writeLocalFile(
+                        item.file,
+                        stringifyFrontmatter({ id: item.updated.id, title: item.updated.title, label: item.updated.label }, item.updated.content || '')
+                    );
+                    written.push(item);
+                }
+            } catch (error) {
+                for (const item of written) {
+                    await replaceLocalFile(item.file.handle, item.original);
+                }
+                throw error;
+            }
+            return { plan: current, updatedBlocks };
+        }
+        throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot relabel blocks' : 'No writable backend is connected');
+    },
     deleteBlock: async (id) => {
         if (useServer) {
             const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
             await requireOk(res, 'Deleting block');
         } else if (api.mode === "local" && dirHandle) {
-            const entry = await getFileByBlockId(id);
-            if (entry) {
-                await dirHandle.removeEntry(entry.name);
+            const file = await getFileLocationByBlockId(id);
+            if (file) {
+                await backupLocalFile(file);
+                await file.directory.removeEntry(file.name);
             }
         } else if (api.mode === 'viewer') {
             throw new Error('Read-only viewer cannot delete blocks');

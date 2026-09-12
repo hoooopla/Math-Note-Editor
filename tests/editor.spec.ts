@@ -3,6 +3,7 @@ import path from 'node:path';
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from '../src/lib/block-metadata';
 import { encodeEmbeddedLabel, findActiveEmbeddedTarget, parseEmbeddedLinks } from '../src/lib/embedded-link-syntax';
 import { makeBlockFilename, validateBlockLabel } from '../src/lib/label-policy';
+import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput } from '../src/lib/safe-relabel';
 
 async function openEditor(page: Page) {
     const runtime = await page.request.get('/api/runtime');
@@ -91,6 +92,116 @@ test('round-trips YAML metadata and creates bounded readable filenames', () => {
     expect(filename).toContain('f26157d5');
     expect(new TextEncoder().encode(filename).length).toBeLessThan(255);
     expect(filename).not.toMatch(/[\\/:*?"<>|]/);
+});
+
+test('plans a sparse subtree relabel and preserves relative link meaning', () => {
+    const blocks = [
+        { id: 'root', title: 'Sparse root', label: 'A/B', content: 'Child [[/Child]]' },
+        { id: 'child', title: 'Child', label: 'A/B/Child', content: '' },
+        { id: 'source', title: 'Index', label: 'Index', content: 'See [[A/B/Child||Child alias∨]] and [[A/B/Future]]' }
+    ];
+    const plan = buildSafeRelabelPlan(blocks, 'A/B', 'Math/Groups');
+
+    expect(plan.changeType).toBe('move-and-rename');
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.blockChanges.map(change => [change.oldLabel, change.newLabel])).toEqual([
+        ['A/B', 'Math/Groups'],
+        ['A/B/Child', 'Math/Groups/Child']
+    ]);
+    expect(plan.referenceImpacts.find(impact => impact.oldText === '[[/Child]]')).toMatchObject({
+        changed: false,
+        oldTarget: 'A/B/Child',
+        newTarget: 'Math/Groups/Child'
+    });
+    expect(plan.referenceImpacts.find(impact => impact.oldTarget === 'A/B/Future')).toMatchObject({
+        changed: true,
+        targetExists: false,
+        newText: '[[Math/Groups/Future]]'
+    });
+
+    const applied = applySafeRelabelPlan(blocks, plan);
+    expect(applied.find(block => block.id === 'root')?.content).toBe('Child [[/Child]]');
+    expect(applied.find(block => block.id === 'source')?.content)
+        .toBe('See [[Math/Groups/Child||Child alias∨]] and [[Math/Groups/Future]]');
+});
+
+test('safe relabel signature is stable when workspace enumeration order changes', () => {
+    const blocks = [
+        { id: 'root', title: 'Root', label: 'A/B', content: '[[/Child]]' },
+        { id: 'child', title: 'Child', label: 'A/B/Child', content: '' },
+        { id: 'source', title: 'Source', label: 'Index', content: '[[A/B]] [[A/B/Child]]' }
+    ];
+    const forward = buildSafeRelabelPlan(blocks, 'A/B', 'X/B');
+    const reversed = buildSafeRelabelPlan([...blocks].reverse(), 'A/B', 'X/B');
+    expect(relabelPlanSignatureInput(forward)).toBe(relabelPlanSignatureInput(reversed));
+});
+
+test('rejects relabel collisions and moving a node into its own subtree', () => {
+    const blocks = [
+        { id: 'one', title: 'One', label: 'A/B', content: '' },
+        { id: 'child', title: 'Child', label: 'A/B/C', content: '' },
+        { id: 'occupied', title: 'Occupied', label: 'X/B/C', content: '' }
+    ];
+    expect(buildSafeRelabelPlan(blocks, 'A/B', 'X/B').conflicts.join(' ')).toContain('already occupied');
+    expect(buildSafeRelabelPlan(blocks, 'A/B', 'A/B/Nested').conflicts.join(' ')).toContain('own subtree');
+});
+
+test('previews and commits a revision-checked tree transformation', async ({ request }) => {
+    const suffix = Date.now();
+    const oldPrefix = `safe-${suffix}/missing-parent`;
+    const newPrefix = `moved-${suffix}/new-parent`;
+    const root = await (await request.post('/api/blocks', {
+        data: { title: 'Safe root', label: oldPrefix, content: 'child [[/Child]]' }
+    })).json();
+    const child = await (await request.post('/api/blocks', {
+        data: { title: 'Safe child', label: `${oldPrefix}/Child`, content: '' }
+    })).json();
+    const source = await (await request.post('/api/blocks', {
+        data: { title: 'Safe source', label: `source-${suffix}`, content: `before [[${oldPrefix}/Child]] after` }
+    })).json();
+
+    const previewResponse = await request.post('/api/relabel/preview', { data: { oldPrefix, newPrefix } });
+    expect(previewResponse.ok()).toBeTruthy();
+    const preview = await previewResponse.json();
+    expect(preview.conflicts).toEqual([]);
+    expect(preview.blockChanges).toHaveLength(2);
+    expect(preview.referenceImpacts.some((impact: { changed: boolean }) => impact.changed)).toBeTruthy();
+
+    const commit = await request.post('/api/relabel/commit', {
+        data: { oldPrefix, newPrefix, revision: preview.revision }
+    });
+    expect(commit.ok()).toBeTruthy();
+    expect((await (await request.get(`/api/blocks/${root.id}`)).json()).label).toBe(newPrefix);
+    expect((await (await request.get(`/api/blocks/${child.id}`)).json()).label).toBe(`${newPrefix}/Child`);
+    expect((await (await request.get(`/api/blocks/${source.id}`)).json()).content).toContain(`[[${newPrefix}/Child]]`);
+});
+
+test('rejects stale relabel plans and direct label-change bypasses', async ({ request }) => {
+    const suffix = Date.now();
+    const oldPrefix = `stale-${suffix}`;
+    const newPrefix = `fresh-${suffix}`;
+    const block = await (await request.post('/api/blocks', {
+        data: { title: 'Stale plan', label: oldPrefix, content: '' }
+    })).json();
+    const preview = await (await request.post('/api/relabel/preview', {
+        data: { oldPrefix, newPrefix }
+    })).json();
+
+    const directRelabel = await request.put(`/api/blocks/${block.id}`, {
+        data: { ...block, label: newPrefix }
+    });
+    expect(directRelabel.status()).toBe(409);
+    expect((await directRelabel.json()).error).toContain('reviewed tree transformation');
+
+    const titleUpdate = await request.put(`/api/blocks/${block.id}`, {
+        data: { ...block, title: 'Changed after preview' }
+    });
+    expect(titleUpdate.ok()).toBeTruthy();
+    const staleCommit = await request.post('/api/relabel/commit', {
+        data: { oldPrefix, newPrefix, revision: preview.revision }
+    });
+    expect(staleCommit.status()).toBe(409);
+    expect((await staleCommit.json()).error).toContain('workspace changed');
 });
 
 test('rejects invalid and duplicate labels at the server boundary', async ({ request }) => {
@@ -183,21 +294,20 @@ test('validates header metadata and accepts brackets and math in labels', async 
     const validLabel = `Analysis/Intervals/$[a,b]|c$-${Date.now()}`;
     await page.getByLabel('Block title').fill(validTitle);
     await page.getByLabel('Block label').fill(validLabel);
-    const saveRequest = page.waitForRequest(request => {
-        if (request.method() !== 'PUT' || !request.url().includes('/api/blocks/')) return false;
-        const data = request.postDataJSON();
-        return data?.title === validTitle && data?.label === validLabel;
-    });
     await page.getByLabel('Save block metadata').click();
-    const completedSaveRequest = await saveRequest;
-    const saved = completedSaveRequest.postDataJSON();
-    expect(saved.title).toBe(validTitle);
-    expect(saved.label).toBe(validLabel);
-    const savedBlockId = completedSaveRequest.url().split('/').pop();
+    await expect(page.getByText('Tree transformation', { exact: true })).toBeVisible();
+    await expect(page.getByText('Block label changes', { exact: false })).toBeVisible();
+    await expect(page.getByText(validLabel, { exact: true }).first()).toBeVisible();
+    const commitResponse = page.waitForResponse(response => response.url().endsWith('/api/relabel/commit') && response.request().method() === 'POST');
+    await page.getByRole('button', { name: /Move and rename subtree/ }).click();
+    expect((await commitResponse).ok()).toBeTruthy();
+    await expect(page.getByText('Tree transformation complete')).toBeVisible();
+    await page.getByRole('button', { name: 'Done' }).click();
+    const savedBlockId = activePanelId!.replace('block-tab-panel-', '');
     await expect.poll(async () => {
         const response = await page.request.get(`/api/blocks/${savedBlockId}`);
-        return (await response.json()).label;
-    }).toBe(validLabel);
+        return await response.json();
+    }).toMatchObject({ title: validTitle, label: validLabel });
 });
 
 test('edits active block metadata with F2 and a customized shortcut', async ({ page }) => {
@@ -456,6 +566,44 @@ test('clicking the workspace background removes editor focus', async ({ page }) 
     await background.click({ position: { x: 4, y: box!.height - 4 } });
 
     await expect(editor).not.toBeFocused();
+});
+
+test('opens the nearest existing parent beside the current tab by button and custom shortcut', async ({ page }) => {
+    const suffix = Date.now();
+    const parentLabel = `test:parent-${suffix}`;
+    const childLabel = `${parentLabel}/missing/child`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Nearest existing parent', label: parentLabel, content: 'parent content' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Deep hierarchy child', label: childLabel, content: 'child content' }
+    });
+    await openEditor(page);
+
+    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByPlaceholder('Search blocks or create new...').fill(childLabel);
+    await page.getByPlaceholder('Search blocks or create new...').press('Enter');
+
+    const childTab = page.getByRole('tab').filter({ hasText: 'Deep hierarchy child' });
+    const parentTab = page.getByRole('tab').filter({ hasText: 'Nearest existing parent' });
+    await page.getByRole('button', { name: `Go to nearest parent block ${parentLabel}` }).click();
+    await expect(parentTab).toHaveAttribute('aria-selected', 'true');
+
+    const tabLabels = await page.getByRole('tab').allTextContents();
+    expect(tabLabels.indexOf(await parentTab.textContent() || '')).toBe(tabLabels.indexOf(await childTab.textContent() || '') + 1);
+
+    await childTab.click();
+    await page.keyboard.press('ControlOrMeta+Shift+ArrowUp');
+    await expect(parentTab).toHaveAttribute('aria-selected', 'true');
+
+    await childTab.click();
+    await page.getByLabel('Open settings').click();
+    await page.getByRole('tab', { name: 'Keyboard Shortcuts' }).click();
+    await page.getByLabel('Go to nearest parent block shortcut').fill('mod+shift+p');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await page.keyboard.press('ControlOrMeta+Shift+P');
+    await expect(parentTab).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('button', { name: /Go to nearest parent block/ })).toHaveCount(0);
 });
 
 test('restores root focus when switching and closing tabs', async ({ page }) => {
@@ -1047,8 +1195,11 @@ test('preserves reference cascades when lazily loaded block labels change', asyn
         data: { title: 'Lazy source', label: `test:lazy-source-${suffix}`, content: `before [[${originalLabel}]] after` }
     })).json();
     const renamedLabel = `test:lazy-renamed-${suffix}`;
-    const response = await page.request.put(`/api/blocks/${targetBlock.id}`, {
-        data: { ...targetBlock, label: renamedLabel }
+    const preview = await (await page.request.post('/api/relabel/preview', {
+        data: { oldPrefix: originalLabel, newPrefix: renamedLabel }
+    })).json();
+    const response = await page.request.post('/api/relabel/commit', {
+        data: { oldPrefix: originalLabel, newPrefix: renamedLabel, revision: preview.revision }
     });
     expect(response.ok()).toBeTruthy();
 

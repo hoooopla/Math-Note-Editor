@@ -195,7 +195,7 @@ export function encodeEmbeddedLabel(label: string, options: { relative?: boolean
     return `${options.standout ? "@" : ""}${withRelativeMarker}`;
 }
 
-function targetBounds(rawText: string): { start: number; end: number } {
+export function targetBounds(rawText: string): { start: number; end: number } {
     const start = rawText.startsWith("@") ? 1 : 0;
     const outsideMath = syntaxPositions(rawText);
     let end = rawText.length;

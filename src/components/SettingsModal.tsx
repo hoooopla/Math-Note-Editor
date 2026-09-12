@@ -52,6 +52,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localTextCommands, setLocalTextCommands] = useState<string[]>([]);
     const [localSearchShortcut, setLocalSearchShortcut] = useState<string>('meta+k');
     const [localEditMetadataShortcut, setLocalEditMetadataShortcut] = useState<string>('f2');
+    const [localGoToParentShortcut, setLocalGoToParentShortcut] = useState<string>('mod+shift+arrowup');
     const [localCloseTabShortcut, setLocalCloseTabShortcut] = useState<string>('mod+w');
     const [localReopenTabShortcut, setLocalReopenTabShortcut] = useState<string>('mod+shift+t');
     const [localNextTabShortcut, setLocalNextTabShortcut] = useState<string>('ctrl+tab');
@@ -105,6 +106,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalTextCommands([...(settings.textCommands || [])]);
             setLocalSearchShortcut(settings.searchShortcut || 'meta+k');
             setLocalEditMetadataShortcut(settings.editMetadataShortcut || 'f2');
+            setLocalGoToParentShortcut(settings.goToParentShortcut || 'mod+shift+arrowup');
             setLocalCloseTabShortcut(settings.closeTabShortcut || 'mod+w');
             setLocalReopenTabShortcut(settings.reopenClosedTabShortcut || 'mod+shift+t');
             setLocalNextTabShortcut(settings.nextTabShortcut || 'ctrl+tab');
@@ -217,13 +219,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         const normalizedShortcuts = {
             search: localSearchShortcut.trim().toLowerCase(),
             editMetadata: localEditMetadataShortcut.trim().toLowerCase(),
+            goToParent: localGoToParentShortcut.trim().toLowerCase(),
             closeTab: localCloseTabShortcut.trim().toLowerCase(),
             reopenTab: localReopenTabShortcut.trim().toLowerCase(),
             nextTab: localNextTabShortcut.trim().toLowerCase(),
             previousTab: localPreviousTabShortcut.trim().toLowerCase()
         };
         for (const [name, shortcut] of Object.entries(normalizedShortcuts)) {
-            if (!isValidShortcut(shortcut)) errors.push(`${({ search: 'Search', editMetadata: 'Edit block metadata', closeTab: 'Close tab', reopenTab: 'Reopen tab', nextTab: 'Next tab', previousTab: 'Previous tab' } as Record<string, string>)[name]} shortcut must be F1–F12 or contain Ctrl, Meta, Cmd, or Mod plus one supported key.`);
+            if (!isValidShortcut(shortcut)) errors.push(`${({ search: 'Search', editMetadata: 'Edit block metadata', goToParent: 'Go to parent', closeTab: 'Close tab', reopenTab: 'Reopen tab', nextTab: 'Next tab', previousTab: 'Previous tab' } as Record<string, string>)[name]} shortcut must be F1–F12 or contain Ctrl, Meta, Cmd, or Mod plus one supported key.`);
         }
         const shortcutValues = Object.values(normalizedShortcuts);
         if (new Set(shortcutValues).size !== shortcutValues.length) {
@@ -286,6 +289,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             textCommands: newTextCommands,
             searchShortcut: normalizedShortcuts.search,
             editMetadataShortcut: normalizedShortcuts.editMetadata,
+            goToParentShortcut: normalizedShortcuts.goToParent,
             closeTabShortcut: normalizedShortcuts.closeTab,
             reopenClosedTabShortcut: normalizedShortcuts.reopenTab,
             nextTabShortcut: normalizedShortcuts.nextTab,
@@ -708,6 +712,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <div>
                                                 <label htmlFor="settings-edit-metadata-shortcut" className="text-sm font-medium text-primary">Edit active block title and label</label>
                                                 <p className="text-xs text-secondary">Opens the same metadata editor as double-clicking the note header. On some Macs, press Fn+F2.</p>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-[minmax(180px,auto)_1fr] gap-3 rounded-lg border border-outline bg-base/40 px-3 py-3">
+                                            <input
+                                                id="settings-go-to-parent-shortcut"
+                                                aria-label="Go to nearest parent block shortcut"
+                                                type="text"
+                                                value={localGoToParentShortcut}
+                                                onChange={(e) => setLocalGoToParentShortcut(e.target.value)}
+                                                placeholder="e.g. mod+shift+arrowup"
+                                                className="w-full rounded border border-outline bg-surface px-3 py-2 text-xs font-mono text-primary focus:border-accent focus:outline-none"
+                                            />
+                                            <div>
+                                                <label htmlFor="settings-go-to-parent-shortcut" className="text-sm font-medium text-primary">Go to nearest parent block</label>
+                                                <p className="text-xs text-secondary">Opens the closest existing ancestor of the current root note in a tab beside it.</p>
                                             </div>
                                         </div>
                                         </div>

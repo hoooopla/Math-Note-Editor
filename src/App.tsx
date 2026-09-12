@@ -94,6 +94,8 @@ export default function App() {
                 useStore.getState().cycleTab(1);
             } else if (command === 'previous-tab') {
                 useStore.getState().cycleTab(-1);
+            } else if (command === 'go-to-parent') {
+                useStore.getState().goToNearestParent();
             }
         });
     }, []);
@@ -147,9 +149,10 @@ export default function App() {
             closeTab: settings.closeTabShortcut || 'mod+w',
             reopenTab: settings.reopenClosedTabShortcut || 'mod+shift+t',
             nextTab: settings.nextTabShortcut || 'ctrl+tab',
-            previousTab: settings.previousTabShortcut || 'ctrl+shift+tab'
+            previousTab: settings.previousTabShortcut || 'ctrl+shift+tab',
+            goToParent: settings.goToParentShortcut || 'mod+shift+arrowup'
         });
-    }, [settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut]);
+    }, [settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, settings.goToParentShortcut]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -168,6 +171,12 @@ export default function App() {
                         detail: { blockId: rootBlockId }
                     }));
                 }
+                return;
+            }
+
+            if (!isMacroModalOpen && !isSearchModalOpen && !isGraphModalOpen
+                && shortcutMatches(e, settings.goToParentShortcut || 'mod+shift+arrowup')) {
+                if (useStore.getState().goToNearestParent()) e.preventDefault();
                 return;
             }
 
@@ -190,7 +199,7 @@ export default function App() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen]);
+    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen]);
 
     const closeTab = (id: string, e?: React.SyntheticEvent) => {
         e?.stopPropagation();

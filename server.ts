@@ -2,9 +2,12 @@ import express from "express";
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
+import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from "./src/lib/block-metadata";
 import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from "./src/lib/label-policy";
+import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from "./src/lib/safe-relabel";
+import { atomicWriteFile, backupFile } from "./src/lib/atomic-file";
 
 const app = express();
 const portArgumentIndex = process.argv.indexOf("--port");
@@ -21,6 +24,7 @@ app.use(express.json({ limit: '20mb' }));
 // default for backwards compatibility.
 const WORKSPACE_DIR = path.resolve(process.env.MATH_NOTE_WORKSPACE || path.join(process.cwd(), "blocks"));
 const BLOCKS_DIR = WORKSPACE_DIR;
+const BACKUP_DIR = path.join(WORKSPACE_DIR, ".math-note-backups");
 const DIST_DIR = path.resolve(process.env.MATH_NOTE_DIST_DIR || path.join(process.cwd(), "dist"));
 
 interface BlockData {
@@ -53,6 +57,46 @@ async function ensureDir(dir: string) {
     try {
         await fs.mkdir(dir, { recursive: true });
     } catch (e) {}
+}
+
+function workspaceBackupPath(targetPath: string) {
+    const relativePath = path.relative(WORKSPACE_DIR, path.resolve(targetPath));
+    if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+        throw new Error(`Cannot back up a file outside the workspace: ${targetPath}`);
+    }
+    return path.join(BACKUP_DIR, `${relativePath}.bak`);
+}
+
+function writeWorkspaceFile(targetPath: string, contents: string | Buffer) {
+    return atomicWriteFile(targetPath, contents, { backupPath: workspaceBackupPath(targetPath) });
+}
+
+function backupWorkspaceFile(targetPath: string) {
+    return backupFile(targetPath, workspaceBackupPath(targetPath));
+}
+
+async function migrateLegacyBackups(directory = WORKSPACE_DIR) {
+    if (isTestMode || !fsSync.existsSync(directory)) return;
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+            if (entryPath !== BACKUP_DIR) await migrateLegacyBackups(entryPath);
+            continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith(".bak")) continue;
+        const originalPath = entryPath.slice(0, -4);
+        const destinationPath = workspaceBackupPath(originalPath);
+        let shouldCopy = true;
+        try {
+            const [sourceStats, destinationStats] = await Promise.all([fs.stat(entryPath), fs.stat(destinationPath)]);
+            shouldCopy = sourceStats.mtimeMs > destinationStats.mtimeMs;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (shouldCopy) await atomicWriteFile(destinationPath, await fs.readFile(entryPath), { backup: false });
+        await fs.unlink(entryPath);
+    }
 }
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
@@ -115,8 +159,71 @@ const INITIAL_BLOCKS = [
 
 const blockIdToFileMap = new Map<string, string>();
 const pendingBlockLabels = new Set<string>();
+const blockWriteQueues = new Map<string, Promise<void>>();
+let relabelInProgress = false;
 
-async function writeBlockToFile(block: any) {
+function relabelRevision(blocks: BlockData[]) {
+    const snapshot = blocks
+        .map(block => ({ id: block.id, title: block.title, label: block.label, content: block.content || "" }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    return crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+}
+
+async function createRelabelPlan(oldPrefixInput: unknown, newPrefixInput: unknown): Promise<{ plan: SafeRelabelPlan, blocks: BlockData[], loadedBefore: Set<string> }> {
+    const oldPrefix = normalizeBlockLabel(metadataText(oldPrefixInput));
+    const newPrefix = normalizeBlockLabel(metadataText(newPrefixInput));
+    const loadedBefore = new Set(
+        Array.from(blocksMap.entries())
+            .filter(([, block]) => block.content !== undefined)
+            .map(([id]) => id)
+    );
+    await mapWithConcurrency(Array.from(blocksMap.keys()), 16, ensureBlockContent);
+    const blocks = Array.from(blocksMap.values()).filter((block): block is BlockData & { content: string } => block.content !== undefined);
+    const plan = buildSafeRelabelPlan(blocks, oldPrefix, newPrefix);
+    plan.revision = relabelRevision(blocks);
+    plan.signature = crypto.createHash("sha256").update(relabelPlanSignatureInput(plan)).digest("hex");
+    for (const change of plan.blockChanges) change.fileName = blockIdToFileMap.get(change.id);
+    for (const impact of plan.referenceImpacts) impact.fileName = blockIdToFileMap.get(impact.blockId);
+    return { plan, blocks, loadedBefore };
+}
+
+function restoreLazyBlockBodies(loadedBefore: Set<string>) {
+    if (isTestMode) return;
+    for (const [id, block] of blocksMap) {
+        if (!loadedBefore.has(id) && block.content !== undefined) blocksMap.set(id, blockMetadata(block));
+    }
+}
+
+async function writeRelabelTransaction(updatedBlocks: BlockData[]) {
+    if (isTestMode) return;
+    const originalFileMap = new Map(blockIdToFileMap);
+    const snapshots = new Map<string, string>();
+    for (const block of updatedBlocks) {
+        const filename = originalFileMap.get(block.id);
+        if (filename) snapshots.set(block.id, await fs.readFile(path.join(BLOCKS_DIR, filename), "utf-8"));
+    }
+    try {
+        for (const block of updatedBlocks) await writeBlockToFile(block);
+    } catch (error) {
+        for (const block of updatedBlocks) {
+            const originalFilename = originalFileMap.get(block.id);
+            const currentFilename = blockIdToFileMap.get(block.id);
+            if (currentFilename && currentFilename !== originalFilename) {
+                await fs.unlink(path.join(BLOCKS_DIR, currentFilename)).catch(() => {});
+            }
+            const snapshot = snapshots.get(block.id);
+            if (originalFilename && snapshot !== undefined) {
+                await ensureDir(path.dirname(path.join(BLOCKS_DIR, originalFilename)));
+                await atomicWriteFile(path.join(BLOCKS_DIR, originalFilename), snapshot, { backup: false });
+            }
+        }
+        blockIdToFileMap.clear();
+        for (const [id, filename] of originalFileMap) blockIdToFileMap.set(id, filename);
+        throw error;
+    }
+}
+
+async function writeBlockToFileUnlocked(block: BlockData) {
     if (isTestMode) return;
     
     let oldFilename = blockIdToFileMap.get(block.id);
@@ -142,7 +249,10 @@ async function writeBlockToFile(block: any) {
     if (baseDir) {
         await ensureDir(path.join(BLOCKS_DIR, baseDir));
     }
-    await fs.writeFile(filePath, fileContent, "utf-8");
+    if (oldFilename && oldFilename !== newFilename) {
+        await backupWorkspaceFile(path.join(BLOCKS_DIR, oldFilename));
+    }
+    await writeWorkspaceFile(filePath, fileContent);
 
     if (oldFilename && oldFilename !== newFilename) {
         try {
@@ -152,6 +262,17 @@ async function writeBlockToFile(block: any) {
         }
     }
     blockIdToFileMap.set(block.id, newFilename);
+}
+
+async function writeBlockToFile(block: BlockData) {
+    const previous = blockWriteQueues.get(block.id) || Promise.resolve();
+    const current = previous.catch(() => {}).then(() => writeBlockToFileUnlocked(block));
+    blockWriteQueues.set(block.id, current);
+    try {
+        await current;
+    } finally {
+        if (blockWriteQueues.get(block.id) === current) blockWriteQueues.delete(block.id);
+    }
 }
 
 function blockMetadata(block: BlockData) {
@@ -197,6 +318,7 @@ async function initBlocks() {
         }
         await ensureDir(BLOCKS_DIR);
     }
+    await migrateLegacyBackups();
     const files = await fs.readdir(BLOCKS_DIR, { recursive: true });
     if (files.filter(f => typeof f === 'string' && f.endsWith(".md")).length === 0) {
         for (const block of INITIAL_BLOCKS) {
@@ -251,7 +373,7 @@ app.post("/api/assets", express.json({limit: '20mb'}), async (req, res) => {
             return res.json({ success: true, url: `assets/${assetPath}` });
         }
         await ensureDir(path.dirname(absolutePath));
-        await fs.writeFile(absolutePath, buffer);
+        await writeWorkspaceFile(absolutePath, buffer);
         res.json({ success: true, url: `assets/${filePath.replace(/^assets\//, '')}` });
     } catch (e) {
         res.status(500).json({ error: String(e) });
@@ -353,15 +475,70 @@ app.post("/api/settings", async (req, res) => {
         const settingDir = path.join(WORKSPACE_DIR, "setting");
         await ensureDir(settingDir);
         const settingsPath = path.join(settingDir, "settings.json");
-        await fs.writeFile(settingsPath, JSON.stringify(req.body || {}, null, 2), "utf-8");
+        await writeWorkspaceFile(settingsPath, JSON.stringify(req.body || {}, null, 2));
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
 });
 
+app.post("/api/relabel/preview", async (req, res) => {
+    try {
+        if (relabelInProgress) return res.status(409).json({ error: "Another tree transformation is currently running" });
+        const { plan, loadedBefore } = await createRelabelPlan(req.body.oldPrefix, req.body.newPrefix);
+        restoreLazyBlockBodies(loadedBefore);
+        res.json(plan);
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.post("/api/relabel/commit", async (req, res) => {
+    if (relabelInProgress) return res.status(409).json({ error: "Another tree transformation is currently running" });
+    relabelInProgress = true;
+    let loadedBefore: Set<string> | null = null;
+    try {
+        const prepared = await createRelabelPlan(req.body.oldPrefix, req.body.newPrefix);
+        const { plan, blocks } = prepared;
+        loadedBefore = prepared.loadedBefore;
+        if (plan.conflicts.length) return res.status(409).json({ error: plan.conflicts.join(" "), plan });
+        const revisionChanged = !req.body.revision || req.body.revision !== plan.revision;
+        const semanticPlanChanged = !req.body.signature || req.body.signature !== plan.signature;
+        if (revisionChanged && semanticPlanChanged) {
+            return res.status(409).json({
+                error: "The workspace changed after this preview. Review the refreshed transformation before confirming.",
+                plan
+            });
+        }
+        const planned = applySafeRelabelPlan(blocks, plan);
+        const updatedBlocks: BlockData[] = [];
+        for (let index = 0; index < blocks.length; index++) {
+            const before = blocks[index];
+            const after = planned[index];
+            if (before.label === after.label && before.content === after.content) continue;
+            updatedBlocks.push({
+                ...before,
+                label: after.label,
+                content: after.content,
+                references: computeReferences(after.content || ""),
+                hasContent: (after.content || "").trim().length > 0
+            });
+        }
+        await writeRelabelTransaction(updatedBlocks);
+        for (const block of updatedBlocks) blocksMap.set(block.id, block);
+        for (const block of updatedBlocks) notifyClients({ type: "update", block });
+        res.json({ plan, updatedBlocks });
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    } finally {
+        if (loadedBefore) restoreLazyBlockBodies(loadedBefore);
+        relabelInProgress = false;
+    }
+});
+
 app.post("/api/blocks", async (req, res) => {
     try {
+        if (relabelInProgress) return res.status(409).json({ error: "A tree transformation is currently running" });
         const id = uuidv4();
         const title = normalizeBlockTitle(metadataText(req.body.title, "New Block"));
         const label = normalizeBlockLabel(metadataText(req.body.label, "block"));
@@ -393,6 +570,7 @@ app.post("/api/blocks", async (req, res) => {
 
 app.put("/api/blocks/:id", async (req, res) => {
     try {
+        if (relabelInProgress) return res.status(409).json({ error: "A tree transformation is currently running" });
         const id = req.params.id;
         const existing = await ensureBlockContent(id);
         if (!existing) {
@@ -407,10 +585,11 @@ app.put("/api/blocks/:id", async (req, res) => {
             : existing.title;
         const metadataError = validateBlockTitle(newTitle) || validateBlockLabel(newLabel);
         if (metadataError) return res.status(400).json({ error: metadataError });
-        if (Array.from(blocksMap.values()).some(candidate => candidate.id !== id && candidate.label === newLabel)) {
-            return res.status(409).json({ error: `Label "${newLabel}" already exists` });
+        if (newLabel !== existing.label) {
+            return res.status(409).json({
+                error: "Label changes require a reviewed tree transformation. Use /api/relabel/preview and /api/relabel/commit."
+            });
         }
-        const oldLabel = existing.label;
 
         const block: BlockData = {
             id,
@@ -420,97 +599,9 @@ app.put("/api/blocks/:id", async (req, res) => {
             hasContent: (req.body.content !== undefined ? req.body.content : existing.content || "").trim().length > 0
         };
         block.references = computeReferences(block.content || "");
-
-        let updatedBlocks = [block];
-        let loadedBeforeRename: Set<string> | null = null;
+        await writeBlockToFile(block);
         blocksMap.set(id, block);
-
-        if (oldLabel && newLabel && oldLabel !== newLabel) {
-            // Label changes can update absolute and relative references anywhere.
-            // Load content for this rare operation rather than retaining every note
-            // body in server memory during normal editing.
-            loadedBeforeRename = new Set(
-                Array.from(blocksMap.entries())
-                    .filter(([, candidate]) => candidate.content !== undefined)
-                    .map(([blockId]) => blockId)
-            );
-            await mapWithConcurrency(Array.from(blocksMap.keys()), 16, ensureBlockContent);
-            const renames = [{ old: oldLabel, new: newLabel, id }];
-            
-            // Find child blocks to rename
-            for (const [bId, b] of blocksMap.entries()) {
-                if (bId !== id && b.label.startsWith(oldLabel + "/")) {
-                    const childNewLabel = newLabel + b.label.substring(oldLabel.length);
-                    renames.push({ old: b.label, new: childNewLabel, id: bId });
-                }
-            }
-
-            // Apply renames
-            updatedBlocks = [];
-            for (const [bId, b] of blocksMap.entries()) {
-                let changed = false;
-                let newB = { ...b };
-                
-                const renameMatch = renames.find(r => r.id === bId);
-                if (renameMatch && bId !== id) {
-                    newB.label = renameMatch.new;
-                    changed = true;
-                }
-
-                if (newB.content) {
-                    // Check against original label before rename, just in case
-                    const baseLabel = b.label; 
-                    
-                    for (const r of renames) {
-                        const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                        
-                        // Absolute replacement
-                        const regex = new RegExp(`\\[\\[(@)?(${escapeRegExp(r.old)})((\\|\\|[^\\]∨]+)?)?(∨)?\\]\\]`, 'g');
-                        let nextContent = newB.content.replace(regex, (match: string, at: string, old: string, title: string, something: string, open: string) => {
-                            return `[[${at || ''}${r.new}${title || ''}${open || ''}]]`;
-                        });
-
-                        // Relative replacement
-                        if (r.old.startsWith(baseLabel + "/")) {
-                            const oldRelative = r.old.substring(baseLabel.length);
-                            const newRelative = r.new.startsWith(newB.label + "/") ? r.new.substring(newB.label.length) : r.new;
-                            
-                            const relRegex = new RegExp(`\\[\\[(@)?(${escapeRegExp(oldRelative)})((\\|\\|[^\\]∨]+)?)?(∨)?\\]\\]`, 'g');
-                            nextContent = nextContent.replace(relRegex, (match: string, at: string, old: string, title: string, something: string, open: string) => {
-                                return `[[${at || ''}${newRelative}${title || ''}${open || ''}]]`;
-                            });
-                        }
-
-                        if (nextContent !== newB.content) {
-                            newB.content = nextContent;
-                            changed = true;
-                        }
-                    }
-                }
-
-                if (changed || bId === id) {
-                    newB.references = computeReferences(newB.content || "");
-                    newB.hasContent = (newB.content || "").trim().length > 0;
-                    blocksMap.set(bId, newB);
-                    updatedBlocks.push(newB);
-                }
-            }
-        }
-
-        // Save all modified blocks to disk
-        for (const b of updatedBlocks) {
-            await writeBlockToFile(b);
-        }
-
-        // Re-get the root block in case it was modified during the rename iteration
-        const finalBlock = blocksMap.get(id) || block;
-        if (!isTestMode && loadedBeforeRename) {
-            for (const [blockId, candidate] of blocksMap.entries()) {
-                if (blockId === id || loadedBeforeRename.has(blockId) || candidate.content === undefined) continue;
-                blocksMap.set(blockId, blockMetadata(candidate));
-            }
-        }
-        res.json({ block: finalBlock, updatedBlocks });
+        res.json({ block, updatedBlocks: [block] });
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
@@ -533,12 +624,14 @@ app.get("/api/blocks/:id/raw", async (req, res) => {
 
 app.delete("/api/blocks/:id", async (req, res) => {
     try {
+        if (relabelInProgress) return res.status(409).json({ error: "A tree transformation is currently running" });
         const id = req.params.id;
         const filename = blockIdToFileMap.get(id);
         if (isTestMode) {
             blockIdToFileMap.delete(id);
         } else if (filename) {
             const filePath = path.join(BLOCKS_DIR, filename);
+            await backupWorkspaceFile(filePath);
             await fs.unlink(filePath).catch(() => {});
             blockIdToFileMap.delete(id);
         } else {

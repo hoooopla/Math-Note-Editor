@@ -16,7 +16,8 @@ let noteShortcuts = {
   closeTab: 'mod+w',
   reopenTab: 'mod+shift+t',
   nextTab: 'ctrl+tab',
-  previousTab: 'ctrl+shift+tab'
+  previousTab: 'ctrl+shift+tab',
+  goToParent: 'mod+shift+arrowup'
 };
 
 function toAccelerator(value, fallback) {
@@ -73,6 +74,46 @@ function preferencesPath() {
   return path.join(app.getPath('userData'), 'desktop-settings.json');
 }
 
+function replaceFileSync(targetPath, contents) {
+  const directory = path.dirname(targetPath);
+  fs.mkdirSync(directory, { recursive: true });
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+  );
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(temporaryPath, 'wx');
+    fs.writeFileSync(descriptor, contents);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    fs.renameSync(temporaryPath, targetPath);
+    try {
+      const directoryDescriptor = fs.openSync(directory, 'r');
+      try { fs.fsyncSync(directoryDescriptor); } finally { fs.closeSync(directoryDescriptor); }
+    } catch {
+      // Some platforms do not support flushing a directory handle.
+    }
+  } catch (error) {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor); } catch {}
+    }
+    try { fs.unlinkSync(temporaryPath); } catch {}
+    throw error;
+  }
+}
+
+function atomicWriteFileSync(targetPath, contents, backupPath = `${targetPath}.bak`) {
+  if (fs.existsSync(targetPath)) {
+    replaceFileSync(backupPath, fs.readFileSync(targetPath));
+    if (backupPath !== `${targetPath}.bak`) {
+      try { fs.unlinkSync(`${targetPath}.bak`); } catch {}
+    }
+  }
+  replaceFileSync(targetPath, contents);
+}
+
 function readSavedWorkspace() {
   try {
     const value = JSON.parse(fs.readFileSync(preferencesPath(), 'utf8'))?.workspace;
@@ -83,8 +124,8 @@ function readSavedWorkspace() {
 }
 
 function saveWorkspace(workspace) {
-  fs.mkdirSync(path.dirname(preferencesPath()), { recursive: true });
-  fs.writeFileSync(preferencesPath(), JSON.stringify({ workspace }, null, 2));
+  const backupPath = path.join(app.getPath('userData'), '.math-note-backups', 'desktop-settings.json.bak');
+  atomicWriteFileSync(preferencesPath(), JSON.stringify({ workspace }, null, 2), backupPath);
 }
 
 async function selectWorkspace() {
@@ -232,6 +273,8 @@ function installMenu() {
     {
       label: 'Navigate',
       submenu: [
+        { label: 'Go to Nearest Parent Block', accelerator: toAccelerator(noteShortcuts.goToParent, 'mod+shift+arrowup'), click: () => sendNoteCommand('go-to-parent') },
+        { type: 'separator' },
         { label: 'Next Note Tab', accelerator: toAccelerator(noteShortcuts.nextTab, 'ctrl+tab'), click: () => sendNoteCommand('next-tab') },
         { label: 'Previous Note Tab', accelerator: toAccelerator(noteShortcuts.previousTab, 'ctrl+shift+tab'), click: () => sendNoteCommand('previous-tab') }
       ]

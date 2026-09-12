@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { api as backendApi, EditorSettings, parseFrontmatter, computeReferences } from './api';
 import { metadataText } from '../lib/block-metadata';
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
+import { SafeRelabelPlan } from '../lib/safe-relabel';
 
 export interface BlockData {
   id: string;
@@ -57,6 +58,8 @@ export interface AppState {
   updateBlock: (id: string, data: Partial<BlockData>) => void;
   flushBlock: (id: string) => Promise<void>;
   flushPendingSaves: () => Promise<void>;
+  previewRelabel: (oldPrefix: string, newPrefix: string) => Promise<SafeRelabelPlan>;
+  commitRelabel: (plan: SafeRelabelPlan) => Promise<void>;
   deleteBlock: (id: string) => Promise<void>;
   setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null, x?: number | null) => void;
   setSettings: (settings: EditorSettings) => void;
@@ -66,6 +69,7 @@ export interface AppState {
   closeTab: (id: string) => Promise<void>;
   reopenClosedTab: () => void;
   cycleTab: (direction: 1 | -1) => void;
+  goToNearestParent: () => boolean;
   activateRootBlock: (id: string, dir?: "start" | "end" | null) => void;
   openBlockInTab: (id: string, activate: boolean) => void;
   openBlockNextToActive: (id: string) => void;
@@ -132,6 +136,16 @@ export function getOrderedBlocks(state: Pick<AppState, "blockOrder" | "blocksByI
   return state.blockOrder.map(id => state.blocksById[id]).filter((block): block is BlockData => !!block);
 }
 
+export function findNearestExistingParentId(label: string, blockIdByLabel: Record<string, string>): string | null {
+  let separator = label.lastIndexOf('/');
+  while (separator > 0) {
+    const parentId = blockIdByLabel[label.slice(0, separator)];
+    if (parentId) return parentId;
+    separator = label.lastIndexOf('/', separator - 1);
+  }
+  return null;
+}
+
 function hasMetadataChange(current: BlockData, data: Partial<BlockData>) {
   return (data.title !== undefined && data.title !== current.title) ||
     (data.label !== undefined && data.label !== current.label) ||
@@ -174,6 +188,7 @@ export const useStore = create<AppState>((set, get) => ({
     textCommands: [],
     searchShortcut: "meta+k",
     editMetadataShortcut: "f2",
+    goToParentShortcut: "mod+shift+arrowup",
     closeTabShortcut: "mod+w",
     reopenClosedTabShortcut: "mod+shift+t",
     nextTabShortcut: "ctrl+tab",
@@ -411,6 +426,10 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     data = normalizedData;
+    const hasActualChange = Object.entries(data).some(([key, value]) =>
+      (current as unknown as Record<string, unknown>)[key] !== value
+    );
+    if (!hasActualChange) return;
     set((state) => {
       const current = state.blocksById[id];
       if (!current) return state;
@@ -436,7 +455,58 @@ export const useStore = create<AppState>((set, get) => ({
     await flushBlockSave(id);
   },
   flushPendingSaves: async () => {
-    await Promise.all(Array.from(dirtyBlockVersions.keys(), id => flushBlockSave(id)));
+    // A save already in flight can receive a newer local version just as its
+    // request completes. Keep draining until the workspace is actually stable;
+    // otherwise preview may be built before that newer version reaches disk and
+    // commit will correctly-but-confusingly reject its own first confirmation.
+    for (let attempt = 0; attempt < 20 && dirtyBlockVersions.size > 0; attempt++) {
+      const pendingIds = Array.from(dirtyBlockVersions.keys());
+      await Promise.all(pendingIds.map(id => flushBlockSave(id)));
+      if (dirtyBlockVersions.size > 0) await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    if (dirtyBlockVersions.size > 0) {
+      throw new Error('Could not save all pending block edits before preparing the tree transformation.');
+    }
+  },
+  previewRelabel: async (oldPrefix, newPrefix) => {
+    await get().flushPendingSaves();
+    return await backendApi.previewRelabel(oldPrefix, newPrefix);
+  },
+  commitRelabel: async (plan) => {
+    await get().flushPendingSaves();
+    const result = await backendApi.commitRelabel(plan);
+    set(state => {
+      const blocksById = { ...state.blocksById };
+      const labelMap = new Map<string, string>();
+      for (const change of result.plan.blockChanges) labelMap.set(change.oldLabel, change.newLabel);
+      for (const updated of result.updatedBlocks) {
+        const current = blocksById[updated.id];
+        if (!current) continue;
+        blocksById[updated.id] = {
+          ...current,
+          label: updated.label,
+          title: updated.title,
+          references: updated.references,
+          hasContent: updated.hasContent,
+          ...(current.content !== undefined ? { content: updated.content } : {})
+        };
+      }
+      const blockIdByLabel = cloneLabelIndex();
+      for (const block of Object.values(blocksById)) blockIdByLabel[block.label] = block.id;
+      const remapPath = (path: string[] | null) => path?.map(label => labelMap.get(label) || label) || null;
+      const tabFocusStates = Object.fromEntries(Object.entries(state.tabFocusStates).map(([id, focus]) => [id, {
+        ...focus,
+        activePath: remapPath(focus.activePath)
+      }]));
+      return {
+        blocksById,
+        blockIdByLabel,
+        blocksRevision: state.blocksRevision + 1,
+        activePath: remapPath(state.activePath),
+        tabFocusStates,
+        persistenceError: null
+      };
+    });
   },
   deleteBlock: async (id) => {
     if (syncTimeouts[id]) {
@@ -617,6 +687,15 @@ export const useStore = create<AppState>((set, get) => ({
     };
     return { activeTab: id, tabFocusStates, ...restored, focusDirection: null };
   }),
+  goToNearestParent: () => {
+    const state = get();
+    const root = state.activeTab ? state.blocksById[state.activeTab] : null;
+    if (!root) return false;
+    const parentId = findNearestExistingParentId(root.label, state.blockIdByLabel);
+    if (!parentId) return false;
+    state.openBlockNextToActive(parentId);
+    return true;
+  },
   activateRootBlock: (id, dir = null) => set((state) => {
     const block = state.blocksById[id];
     if (!block) return state;
@@ -751,7 +830,17 @@ async function flushBlockSave(id: string): Promise<void> {
   }
 
   const existingChain = blockSaveChains.get(id);
-  if (existingChain) return existingChain;
+  if (existingChain) {
+    await existingChain;
+    // The active chain normally consumes newer versions in its loop. This
+    // second check closes the small hand-off window between its last check and
+    // removal from blockSaveChains.
+    if (dirtyBlockVersions.has(id)) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return flushBlockSave(id);
+    }
+    return;
+  }
 
   const chain = (async () => {
     while (dirtyBlockVersions.has(id)) {
