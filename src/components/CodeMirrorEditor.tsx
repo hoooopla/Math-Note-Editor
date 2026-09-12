@@ -112,6 +112,42 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
             }
         ]);
 
+        const indentBlockMath = (view: EditorView, outdent = false) => {
+            if (view.state.readOnly) return false;
+
+            const selection = view.state.selection.main;
+            const startLine = view.state.doc.lineAt(selection.from);
+            let endLine = view.state.doc.lineAt(selection.to);
+            if (!selection.empty && selection.to === endLine.from && endLine.number > startLine.number) {
+                endLine = view.state.doc.line(endLine.number - 1);
+            }
+
+            const ranges = view.state.field(parsedRangesField, false);
+            const blockMath = ranges?.find(range =>
+                range.type === "blockMath" &&
+                startLine.from >= range.from + 2 &&
+                startLine.from < range.to - 2 &&
+                endLine.to <= range.to - 2
+            );
+            if (!blockMath) return false;
+
+            const changes = [];
+            for (let lineNumber = startLine.number; lineNumber <= endLine.number; lineNumber++) {
+                const line = view.state.doc.line(lineNumber);
+                if (outdent) {
+                    const leadingSpaces = line.text.match(/^ {1,2}/)?.[0].length ?? 0;
+                    if (leadingSpaces > 0) changes.push({ from: line.from, to: line.from + leadingSpaces, insert: "" });
+                } else {
+                    changes.push({ from: line.from, insert: "  " });
+                }
+            }
+
+            if (changes.length > 0) {
+                view.dispatch({ changes, scrollIntoView: true, userEvent: "input.type" });
+            }
+            return true;
+        };
+
         const continueMarkup = (view: EditorView) => {
                     if (completionStatus(view.state) === "active") return false;
 
@@ -458,8 +494,11 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                                 return true;
                             }
                         }
-                        return false;
+                        return indentBlockMath(view);
                     } 
+                }, {
+                    key: "Shift-Tab",
+                    run: (view) => indentBlockMath(view, true)
                 }]),
                 autocompletion({ override: [latexCompletion, linkCompletion, textCompletion] }),
                 EditorView.domEventHandlers({

@@ -135,6 +135,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
 
     return (
         <div 
+            data-block-root
             className={`group relative border rounded-[8px] mb-6 transition-colors bg-surface border-outline ${isFocused ? 'z-30' : 'z-0'}`}
         >
 

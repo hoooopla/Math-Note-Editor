@@ -437,10 +437,14 @@ export default function App() {
                             aria-hidden={activeTab !== id}
                             className={`absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base ${activeTab === id ? 'visible pointer-events-auto' : 'invisible pointer-events-none'}`}
                             onClick={(e) => {
-                                if (e.target === e.currentTarget) setActiveBlock(null);
+                                const target = e.target;
+                                if (target instanceof Element && !target.closest('[data-block-root]')) {
+                                    setActiveBlock(null);
+                                    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+                                }
                             }}
                         >
-                            <div className="max-w-4xl mx-auto pb-64">
+                            <div className="max-w-4xl mx-auto pb-64" data-testid="block-workspace-background">
                                 <BlockContainer id={id} />
                             </div>
                         </div>

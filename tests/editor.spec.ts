@@ -446,6 +446,18 @@ test('focuses the root editor when a block is selected through search', async ({
     await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first()).toBeFocused();
 });
 
+test('clicking the workspace background removes editor focus', async ({ page }) => {
+    const editor = await openEditor(page);
+    await expect(editor).toBeFocused();
+
+    const background = page.getByTestId('block-workspace-background');
+    const box = await background.boundingBox();
+    expect(box).not.toBeNull();
+    await background.click({ position: { x: 4, y: box!.height - 4 } });
+
+    await expect(editor).not.toBeFocused();
+});
+
 test('restores root focus when switching and closing tabs', async ({ page }) => {
     const suffix = Date.now();
     const firstLabel = `test:tab-focus-a-${suffix}`;
@@ -1098,6 +1110,24 @@ test('renders and edits display math without crashing the editor', async ({ page
     await expect(editor).toContainText('\\int_0^1 t^2');
     await expect(page.locator('.cm-math-block .katex')).toBeVisible();
     expect(editorErrors).toEqual([]);
+});
+
+test('indents selected display-math lines with Tab and outdents with Shift+Tab', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, '\\[\nfirst\nsecond\n\\]');
+
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('End');
+    await page.keyboard.up('Shift');
+    await page.keyboard.press('Tab');
+
+    await expect.poll(() => editor.evaluate(element => element.textContent)).toContain('  first  second');
+
+    await page.keyboard.press('Shift+Tab');
+    await expect.poll(() => editor.evaluate(element => element.textContent)).toContain('firstsecond');
 });
 
 test('renders image previews as their lines enter the viewport', async ({ page }) => {
