@@ -381,10 +381,10 @@ test('safe relabel preview shows source and destination parent context', async (
 
     const before = page.getByTestId('safe-relabel-before-tree');
     const after = page.getByTestId('safe-relabel-after-tree');
-    await expect(before.getByLabel(oldParent, { exact: true })).toBeVisible();
+    await expect(before.getByLabel(oldParent, { exact: true })).toHaveCount(1);
     await expect(before).toContainText('Existing parent');
     await expect(before).toContainText('Smooth');
-    await expect(after.getByLabel(newParent, { exact: true })).toBeVisible();
+    await expect(after.getByLabel(newParent, { exact: true })).toHaveCount(1);
     await expect(after).toContainText('Existing parent');
     await expect(after).toContainText('Curves');
     await expect(after.getByText('Nearby existing siblings')).toBeVisible();

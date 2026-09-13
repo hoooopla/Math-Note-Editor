@@ -1035,6 +1035,7 @@ test('moves one rendered row at a time around a closed standout title', async ({
     await search.press('Enter');
     const parentEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
     await page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="block-metadata-header-"]').click();
+    await expect(parentEditor).toBeFocused();
 
     await page.keyboard.press('ControlOrMeta+Home');
     await page.keyboard.press('ArrowDown');
@@ -1078,6 +1079,7 @@ test('visits suffix and prefix rows surrounding a closed standout title', async 
     const parentEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
     await page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="block-metadata-header-"]').click();
 
+    await expect(parentEditor).toBeFocused();
     await page.keyboard.press('ControlOrMeta+Home');
     await page.keyboard.press('ArrowDown');
     await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(1);
