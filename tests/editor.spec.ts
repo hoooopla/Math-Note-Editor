@@ -4,6 +4,7 @@ import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter
 import { encodeEmbeddedLabel, findActiveEmbeddedTarget, parseEmbeddedLinks } from '../src/lib/embedded-link-syntax';
 import { makeBlockFilename, validateBlockLabel } from '../src/lib/label-policy';
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput } from '../src/lib/safe-relabel';
+import { findDuplicateLabelIssues } from '../src/lib/workspace-validation';
 
 async function openEditor(page: Page) {
     const runtime = await page.request.get('/api/runtime');
@@ -232,6 +233,43 @@ test('rejects concurrent attempts to create the same label', async ({ request })
         request.post('/api/blocks', { data: { title: 'Concurrent B', label, content: '' } })
     ]);
     expect(responses.map(response => response.status()).sort()).toEqual([200, 409]);
+});
+
+test('groups normalized duplicate labels without assigning either block as canonical', () => {
+    const issues = findDuplicateLabelIssues([
+        { id: 'one', title: 'One', label: ' Shared ', fileName: 'one.md' },
+        { id: 'two', title: 'Two', label: 'Shared', fileName: 'two.md' },
+        { id: 'three', title: 'Three', label: 'Unique', fileName: 'three.md' }
+    ]);
+    expect(issues).toEqual([{
+        label: 'Shared',
+        blocks: [
+            { id: 'one', title: 'One', label: 'Shared', fileName: 'one.md' },
+            { id: 'two', title: 'Two', label: 'Shared', fileName: 'two.md' }
+        ]
+    }]);
+});
+
+test('pauses duplicate blocks and repairs one through the workspace issues flow', async ({ page, request }) => {
+    const label = `duplicate-import-${Date.now()}`;
+    const seeded = await request.post('/api/test/duplicate-labels', { data: { label } });
+    expect(seeded.ok()).toBeTruthy();
+
+    await page.goto('/');
+    const dialog = page.getByRole('dialog', { name: 'Duplicate labels need attention' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText(label, { exact: true })).toBeVisible();
+    await expect(page.getByText(/duplicate label group needs attention/i)).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Open to rename' }).first().click();
+    const repairedLabel = `${label}-repaired`;
+    await page.getByLabel('Block label').fill(repairedLabel);
+    await page.getByLabel('Save block metadata').click();
+
+    await expect(page.getByText(/duplicate label group needs attention/i)).not.toBeVisible();
+    const metadata = await (await request.get('/api/blocks?metaOnly=true')).json();
+    expect(metadata.filter((block: { label: string }) => block.label === label)).toHaveLength(1);
+    expect(metadata.filter((block: { label: string }) => block.label === repairedLabel)).toHaveLength(1);
 });
 
 test('creates an exact safe search label and focuses the new root editor', async ({ page }) => {
@@ -1526,4 +1564,38 @@ test('shows and reveals the current desktop workspace from settings', async ({ p
     await expect(page.getByLabel('Current workspace path')).toHaveText('/Users/test/Math Notes Workspace');
     await page.getByRole('button', { name: 'Show in Finder' }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__workspaceRevealCount())).toBe(1);
+});
+
+test('shows workspace backups and restores only after confirmation', async ({ page }) => {
+    let restoreCount = 0;
+    await page.route('**/api/backups', route => route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify([{ path: 'Algebra.md', modifiedAt: Date.now(), size: 240 }])
+    }));
+    await page.route('**/api/backups/restore', async route => {
+        restoreCount += 1;
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ success: true }) });
+    });
+    await openEditor(page);
+    await page.getByLabel('Open settings').click();
+    await expect(page.getByLabel('Available backups')).toContainText('Algebra.md');
+    page.once('dialog', dialog => dialog.dismiss());
+    await page.getByRole('button', { name: 'Restore', exact: true }).click();
+    expect(restoreCount).toBe(0);
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: 'Restore', exact: true }).click();
+    await expect.poll(() => restoreCount).toBe(1);
+    await expect(page.getByRole('status')).toContainText('previous current version is now the backup');
+});
+
+test('restores open tabs and the active tab from workspace settings', async ({ page, request }) => {
+    const blocks = await (await request.get('/api/blocks?metaOnly=true')).json();
+    const ids = blocks.slice(0, 2).map((block: { id: string }) => block.id);
+    expect(ids).toHaveLength(2);
+    const saved = await request.post('/api/workspace/session', { data: { openTabs: ids, activeTab: ids[1], persistForTest: true } });
+    expect(saved.ok()).toBeTruthy();
+
+    await openEditor(page);
+    await expect(page.getByRole('tab')).toHaveCount(2);
+    await expect(page.getByRole('tab', { selected: true })).toHaveAttribute('aria-controls', `block-tab-panel-${ids[1]}`);
 });

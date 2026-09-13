@@ -63,6 +63,16 @@ try {
     body: JSON.stringify({ macros: { '\\C': '\\mathbb{C}' }, customCommands: [], textCommands: [] })
   });
   if (!updatedSettingsResponse.ok) throw new Error('Could not update shared workspace settings.');
+  const sessionResponse = await fetch(`${url}/api/workspace/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ openTabs: ['tab-a', 'tab-b'], activeTab: 'tab-b' })
+  });
+  if (!sessionResponse.ok) throw new Error('Could not save the workspace tab session.');
+  const settingsWithSession = await (await fetch(`${url}/api/settings`)).json();
+  if (settingsWithSession.macros?.['\\C'] !== '\\mathbb{C}' || settingsWithSession.workspaceSession?.activeTab !== 'tab-b') {
+    throw new Error('Saving the workspace tab session overwrote settings or failed to persist the active tab.');
+  }
 
   const noteResponse = await fetch(`${url}/api/blocks`, {
     method: 'POST',
@@ -81,8 +91,8 @@ try {
   await fs.access(path.join(workspace, 'setting', 'settings.json'));
   const backupDirectory = path.join(workspace, '.math-note-backups');
   const settingsBackup = JSON.parse(await fs.readFile(path.join(backupDirectory, 'setting', 'settings.json.bak'), 'utf-8'));
-  if (settingsBackup.macros?.['\\R'] !== '\\mathbb{R}') {
-    throw new Error('The settings backup does not contain the previous saved version.');
+  if (settingsBackup.macros?.['\\C'] !== '\\mathbb{C}' || settingsBackup.workspaceSession) {
+    throw new Error('The settings backup does not contain the version from before the tab session was saved.');
   }
   const files = await fs.readdir(workspace);
   const noteFilename = files.find(file => file.endsWith('.md') && file.includes('Desktop smoke test'));
@@ -93,6 +103,17 @@ try {
   const noteBackup = await fs.readFile(path.join(backupDirectory, `${noteFilename}.bak`), 'utf-8');
   if (!currentNote.includes('Updated shared workspace') || !noteBackup.includes('Shared workspace')) {
     throw new Error('The note and its backup do not contain the expected current and previous versions.');
+  }
+  const backupList = await (await fetch(`${url}/api/backups`)).json();
+  if (!backupList.some(backup => backup.path === noteFilename)) throw new Error('The note backup was not exposed by the recovery API.');
+  const restoreResponse = await fetch(`${url}/api/backups/restore`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: noteFilename })
+  });
+  if (!restoreResponse.ok) throw new Error(`Could not restore the note backup: ${await restoreResponse.text()}`);
+  const restoredNote = await fs.readFile(path.join(workspace, noteFilename), 'utf-8');
+  const swappedBackup = await fs.readFile(path.join(backupDirectory, `${noteFilename}.bak`), 'utf-8');
+  if (!restoredNote.includes('Shared workspace') || !swappedBackup.includes('Updated shared workspace')) {
+    throw new Error('Backup restore did not safely swap the current and previous versions.');
   }
   if (await fs.access(path.join(workspace, 'legacy-note.md.bak')).then(() => true, () => false)) {
     throw new Error('A legacy sidecar backup was not removed after migration.');

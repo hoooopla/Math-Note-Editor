@@ -20,7 +20,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Install Playwright browser (Linux)
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+      - name: Install Playwright browser (macOS and Windows)
+        if: runner.os != 'Linux'
+        run: npx playwright install chromium
       - run: npm run lint
+      - run: npm run test:atomic-saves
+      - run: npm run test:e2e
       - run: npm run build:desktop
       - run: npm run test:desktop-server
       - run: npx electron-builder --publish never

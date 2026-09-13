@@ -9,7 +9,8 @@ import { BlockContainer } from "./components/Block";
 import { SettingsModal } from "./components/SettingsModal";
 import { ImageUploadModal } from "./components/ImageUploadModal";
 import { SearchModal } from "./components/SearchModal";
-import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical } from "lucide-react";
+import { WorkspaceIssuesModal } from "./components/WorkspaceIssuesModal";
+import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle } from "lucide-react";
 import "./index.css";
 
 const GraphModal = React.lazy(() =>
@@ -54,6 +55,7 @@ export default function App() {
     const closeStoreTab = useStore(state => state.closeTab);
     const settings = useStore(state => state.settings);
     const persistenceError = useStore(state => state.persistenceError);
+    const workspaceIssues = useStore(state => state.workspaceIssues);
     const clearPersistenceError = useStore(state => state.clearPersistenceError);
     const flushBlock = useStore(state => state.flushBlock);
     const flushPendingSaves = useStore(state => state.flushPendingSaves);
@@ -62,6 +64,8 @@ export default function App() {
     const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
     const [isTestMode, setIsTestMode] = useState(false);
     const [isDesktop, setIsDesktop] = useState(false);
+    const [isWorkspaceIssuesOpen, setIsWorkspaceIssuesOpen] = useState(false);
+    const previousWorkspaceIssueCount = useRef(0);
     
     // Drag state for tabs
     const [draggedTab, setDraggedTab] = useState<string | null>(null);
@@ -69,6 +73,13 @@ export default function App() {
     useEffect(() => {
         initBackend();
     }, [initBackend]);
+
+    useEffect(() => {
+        if (workspaceIssues.length > 0 && previousWorkspaceIssueCount.current === 0) {
+            setIsWorkspaceIssuesOpen(true);
+        }
+        previousWorkspaceIssueCount.current = workspaceIssues.length;
+    }, [workspaceIssues.length]);
 
     useEffect(() => {
         fetch('/api/runtime')
@@ -398,6 +409,13 @@ export default function App() {
                 </div>
             )}
 
+            {workspaceIssues.length > 0 && (
+                <div className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200" role="alert">
+                    <span className="flex items-center gap-2"><AlertTriangle size={16}/>{workspaceIssues.length} duplicate label {workspaceIssues.length === 1 ? "group needs" : "groups need"} attention. Affected blocks are read-only until repaired.</span>
+                    <button onClick={() => setIsWorkspaceIssuesOpen(true)} className="shrink-0 rounded px-2 py-1 font-medium hover:bg-amber-400/15">Review</button>
+                </div>
+            )}
+
             <div className="flex flex-1 min-h-0 overflow-hidden">
                 <div className="flex-1 flex flex-col min-w-0 h-full">
                 <div role="tablist" aria-label="Open blocks" className="flex overflow-x-auto border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[42px] px-2 pt-2 gap-1">
@@ -509,6 +527,7 @@ export default function App() {
                     )}
                 </div>
             </div>
+            {isWorkspaceIssuesOpen && workspaceIssues.length > 0 && <WorkspaceIssuesModal onClose={() => setIsWorkspaceIssuesOpen(false)}/>}
             </div>
             
             <SearchModal isOpen={isSearchModalOpen} onClose={() => setIsSearchModalOpen(false)} />

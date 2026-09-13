@@ -1,9 +1,10 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import { api as backendApi, EditorSettings, parseFrontmatter, computeReferences } from './api';
+import { api as backendApi, EditorSettings, WorkspaceBackup, parseFrontmatter, computeReferences } from './api';
 import { metadataText } from '../lib/block-metadata';
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 import { SafeRelabelPlan } from '../lib/safe-relabel';
+import { DuplicateLabelIssue, findDuplicateLabelIssues } from '../lib/workspace-validation';
 
 export interface BlockData {
   id: string;
@@ -35,6 +36,7 @@ export interface AppState {
   blockOrder: string[];
   blocksById: Record<string, BlockData>;
   blockIdByLabel: Record<string, string>;
+  workspaceIssues: DuplicateLabelIssue[];
   blocksRevision: number;
   activeBlockId: string | null;
   activePath: string[] | null;
@@ -53,6 +55,8 @@ export interface AppState {
   loadBlocks: () => Promise<void>;
   loadSettings: () => Promise<void>;
   saveSettings: (settings: EditorSettings) => Promise<void>;
+  listBackups: () => Promise<WorkspaceBackup[]>;
+  restoreBackup: (path: string) => Promise<void>;
   loadBlockContent: (id: string) => Promise<void>;
   addBlock: (data?: Partial<BlockData>) => Promise<BlockData | void>;
   updateBlock: (id: string, data: Partial<BlockData>) => void;
@@ -60,6 +64,7 @@ export interface AppState {
   flushPendingSaves: () => Promise<void>;
   previewRelabel: (oldPrefix: string, newPrefix: string) => Promise<SafeRelabelPlan>;
   commitRelabel: (plan: SafeRelabelPlan) => Promise<void>;
+  repairDuplicateLabel: (id: string, newLabel: string) => Promise<boolean>;
   deleteBlock: (id: string) => Promise<void>;
   setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null, x?: number | null) => void;
   setSettings: (settings: EditorSettings) => void;
@@ -91,22 +96,23 @@ const blockSaveChains = new Map<string, Promise<void>>();
 const pendingBlockLabels = new Set<string>();
 
 let eventSource: EventSource | null = null;
+let sessionSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let sessionSavePromise: Promise<void> = Promise.resolve();
 
-const savedTabsStr = localStorage.getItem("openTabs");
-let savedTabs: string[] = [];
-if (savedTabsStr) {
-  try {
-    const parsed = JSON.parse(savedTabsStr);
-    if (Array.isArray(parsed) && parsed.every(value => typeof value === 'string')) {
-      savedTabs = parsed;
-    } else {
-      localStorage.removeItem("openTabs");
-    }
-  } catch {
-    localStorage.removeItem("openTabs");
+function persistWorkspaceSession() {
+  if (sessionSaveTimer) {
+    clearTimeout(sessionSaveTimer);
+    sessionSaveTimer = null;
   }
+  const state = useStore.getState();
+  if (state.backendMode !== 'server' && state.backendMode !== 'local') return sessionSavePromise;
+  sessionSavePromise = sessionSavePromise.then(() => {
+    const current = useStore.getState();
+    const workspaceSession = { openTabs: current.openTabs, activeTab: current.activeTab };
+    return backendApi.saveWorkspaceSession(workspaceSession);
+  });
+  return sessionSavePromise;
 }
-const savedActiveTab = localStorage.getItem("activeTab");
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -124,12 +130,19 @@ function normalizeBlocks(blocks: BlockData[]) {
   const blockOrder: string[] = [];
   const blocksById: Record<string, BlockData> = {};
   const blockIdByLabel = cloneLabelIndex();
+  const workspaceIssues = findDuplicateLabelIssues(blocks.map(block => ({
+    id: block.id,
+    title: block.title,
+    label: block.label,
+    fileName: block._fileMeta?.fileName
+  })));
+  const duplicatedLabels = new Set(workspaceIssues.map(issue => issue.label));
   for (const block of blocks) {
     blockOrder.push(block.id);
     blocksById[block.id] = block;
-    blockIdByLabel[block.label] = block.id;
+    if (!duplicatedLabels.has(block.label)) blockIdByLabel[block.label] = block.id;
   }
-  return { blockOrder, blocksById, blockIdByLabel };
+  return { blockOrder, blocksById, blockIdByLabel, workspaceIssues };
 }
 
 export function getOrderedBlocks(state: Pick<AppState, "blockOrder" | "blocksById">): BlockData[] {
@@ -159,14 +172,15 @@ export const useStore = create<AppState>((set, get) => ({
   blockOrder: [],
   blocksById: {},
   blockIdByLabel: cloneLabelIndex(),
+  workspaceIssues: [],
   blocksRevision: 0,
   activeBlockId: null,
   activePath: null,
   activeFocusPos: null,
   activeFocusX: null,
   focusDirection: null,
-  openTabs: savedTabs,
-  activeTab: savedActiveTab,
+  openTabs: [],
+  activeTab: null,
   tabFocusStates: {},
   closedTabs: [],
   backendMode: "none",
@@ -260,7 +274,8 @@ export const useStore = create<AppState>((set, get) => ({
           label: normalizeBlockLabel(metadataText(data.label)),
           references: computeReferences(content),
           content,
-          hasContent: content.trim().length > 0
+          hasContent: content.trim().length > 0,
+          _fileMeta: { fileName: file.webkitRelativePath || file.name }
         });
       } else if (file.name === 'settings.json' && file.webkitRelativePath.includes('/setting/')) {
         try {
@@ -279,11 +294,14 @@ export const useStore = create<AppState>((set, get) => ({
     }));
     
     if (loadedSettings) {
-      set(state => ({ settings: { ...state.settings, ...loadedSettings } }));
+      const validIds = new Set(newBlocks.map(block => block.id));
+      const openTabs = (loadedSettings.workspaceSession?.openTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
+      const activeTab = openTabs.includes(loadedSettings.workspaceSession?.activeTab) ? loadedSettings.workspaceSession.activeTab : openTabs[0] || null;
+      set(state => ({ settings: { ...state.settings, ...loadedSettings }, openTabs, activeTab }));
     }
     
     // Auto-open first tab if any
-    if (newBlocks.length > 0) {
+    if (newBlocks.length > 0 && get().openTabs.length === 0) {
       set({ openTabs: [newBlocks[0].id], activeTab: newBlocks[0].id });
     }
     set({ isLoadingFiles: false });
@@ -307,7 +325,10 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const data = await backendApi.loadSettings();
       if (data) {
-        set({ settings: data });
+        const validIds = new Set(get().blockOrder);
+        const openTabs = (data.workspaceSession?.openTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
+        const activeTab = openTabs.includes(data.workspaceSession?.activeTab || '') ? data.workspaceSession!.activeTab : openTabs[0] || null;
+        set({ settings: data, openTabs, activeTab });
       }
     } catch (e) {
       console.warn("Failed to load settings", e);
@@ -315,13 +336,24 @@ export const useStore = create<AppState>((set, get) => ({
   },
   saveSettings: async (settings) => {
     const previousSettings = get().settings;
+    const settingsWithSession = {
+      ...settings,
+      workspaceSession: { openTabs: get().openTabs, activeTab: get().activeTab }
+    };
     try {
-      set({ settings, persistenceError: null });
-      await backendApi.saveSettings(settings);
+      set({ settings: settingsWithSession, persistenceError: null });
+      await backendApi.saveSettings(settingsWithSession);
     } catch (e) {
       console.warn("Failed to save settings", e);
       set({ settings: previousSettings, persistenceError: errorMessage(e) });
     }
+  },
+  listBackups: () => backendApi.listBackups(),
+  restoreBackup: async (path) => {
+    await get().flushPendingSaves();
+    await backendApi.restoreBackup(path);
+    await get().loadBlocks();
+    if (path === 'setting/settings.json') await get().loadSettings();
   },
   loadBlocks: async () => {
     try {
@@ -367,16 +399,18 @@ export const useStore = create<AppState>((set, get) => ({
     }
     let label = baseLabel;
     
-    const { blockIdByLabel } = get();
-    if ((blockIdByLabel[label] || pendingBlockLabels.has(label)) && data?.label !== undefined) {
+    const { blocksById } = get();
+    const labelExists = Object.values(blocksById).some(block => block.label === label);
+    if ((labelExists || pendingBlockLabels.has(label)) && data?.label !== undefined) {
         set({ persistenceError: `Label "${label}" already exists` });
         return;
     }
-    if (blockIdByLabel[label] || pendingBlockLabels.has(label)) {
-        let counter = 1;
-        while (blockIdByLabel[`${baseLabel}-${counter}`] || pendingBlockLabels.has(`${baseLabel}-${counter}`)) {
-            counter++;
-        }
+    if (labelExists || pendingBlockLabels.has(label)) {
+      let counter = 1;
+      while (Object.values(blocksById).some(block => block.label === `${baseLabel}-${counter}`)
+        || pendingBlockLabels.has(`${baseLabel}-${counter}`)) {
+        counter++;
+      }
         label = `${baseLabel}-${counter}`;
     }
 
@@ -419,8 +453,8 @@ export const useStore = create<AppState>((set, get) => ({
     if (data.label !== undefined) {
       normalizedData.label = normalizeBlockLabel(metadataText(data.label));
       const labelError = validateBlockLabel(normalizedData.label);
-      const duplicateId = get().blockIdByLabel[normalizedData.label];
-      if (labelError || (duplicateId && duplicateId !== id)) {
+      const duplicateId = Object.values(get().blocksById).find(block => block.id !== id && block.label === normalizedData.label)?.id;
+      if (labelError || duplicateId) {
         set({ persistenceError: labelError || `Label "${normalizedData.label}" already exists` });
         return;
       }
@@ -467,6 +501,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (dirtyBlockVersions.size > 0) {
       throw new Error('Could not save all pending block edits before preparing the tree transformation.');
     }
+    await persistWorkspaceSession();
   },
   previewRelabel: async (oldPrefix, newPrefix) => {
     await get().flushPendingSaves();
@@ -491,8 +526,7 @@ export const useStore = create<AppState>((set, get) => ({
           ...(current.content !== undefined ? { content: updated.content } : {})
         };
       }
-      const blockIdByLabel = cloneLabelIndex();
-      for (const block of Object.values(blocksById)) blockIdByLabel[block.label] = block.id;
+      const normalized = normalizeBlocks(state.blockOrder.map(id => blocksById[id]).filter(Boolean));
       const remapPath = (path: string[] | null) => path?.map(label => labelMap.get(label) || label) || null;
       const tabFocusStates = Object.fromEntries(Object.entries(state.tabFocusStates).map(([id, focus]) => [id, {
         ...focus,
@@ -500,13 +534,44 @@ export const useStore = create<AppState>((set, get) => ({
       }]));
       return {
         blocksById,
-        blockIdByLabel,
+        blockIdByLabel: normalized.blockIdByLabel,
+        workspaceIssues: normalized.workspaceIssues,
         blocksRevision: state.blocksRevision + 1,
         activePath: remapPath(state.activePath),
         tabFocusStates,
         persistenceError: null
       };
     });
+  },
+  repairDuplicateLabel: async (id, newLabel) => {
+    try {
+      await get().flushBlock(id);
+      const updated = await backendApi.repairDuplicateLabel(id, newLabel);
+      set(state => {
+        const current = state.blocksById[id];
+        if (!current) return state;
+        const blocksById = { ...state.blocksById, [id]: { ...current, ...updated, content: current.content } };
+        const normalized = normalizeBlocks(state.blockOrder.map(blockId => blocksById[blockId]).filter(Boolean));
+        const remapPath = (value: string[] | null) => value?.map(label => label === current.label ? updated.label : label) || null;
+        const tabFocusStates = Object.fromEntries(Object.entries(state.tabFocusStates).map(([tabId, focus]) => [tabId, {
+          ...focus,
+          activePath: remapPath(focus.activePath)
+        }]));
+        return {
+          blocksById,
+          blockIdByLabel: normalized.blockIdByLabel,
+          workspaceIssues: normalized.workspaceIssues,
+          blocksRevision: state.blocksRevision + 1,
+          activePath: remapPath(state.activePath),
+          tabFocusStates,
+          persistenceError: null
+        };
+      });
+      return true;
+    } catch (e) {
+      set({ persistenceError: errorMessage(e) });
+      return false;
+    }
   },
   deleteBlock: async (id) => {
     if (syncTimeouts[id]) {
@@ -525,8 +590,7 @@ export const useStore = create<AppState>((set, get) => ({
         const blocksById = { ...state.blocksById };
         const removed = blocksById[id];
         delete blocksById[id];
-        const blockIdByLabel = cloneLabelIndex(state.blockIdByLabel);
-        if (removed && blockIdByLabel[removed.label] === id) delete blockIdByLabel[removed.label];
+        const normalized = normalizeBlocks(blockOrder.map(blockId => blocksById[blockId]).filter(Boolean));
         const openTabs = state.openTabs.filter(tabId => tabId !== id);
         const activeTab = state.activeTab === id ? (openTabs.at(-1) || null) : state.activeTab;
         const activeBlockId = state.activeBlockId === id ? activeTab : state.activeBlockId;
@@ -535,7 +599,8 @@ export const useStore = create<AppState>((set, get) => ({
         return {
           blockOrder,
           blocksById,
-          blockIdByLabel,
+          blockIdByLabel: normalized.blockIdByLabel,
+          workspaceIssues: normalized.workspaceIssues,
           blocksRevision: state.blocksRevision + 1,
           openTabs,
           closedTabs: state.closedTabs.filter(tab => tab.id !== id),
@@ -752,21 +817,25 @@ export const useStore = create<AppState>((set, get) => ({
               // Only update if something changed
               if (current.content !== msg.block.content || current.title !== msg.block.title || current.label !== msg.block.label || current.references !== msg.block.references) {
                 const next = { ...current, ...msg.block, content: current.content !== undefined ? msg.block.content : undefined };
-                const blockIdByLabel = cloneLabelIndex(state.blockIdByLabel);
-                if (current.label !== next.label && blockIdByLabel[current.label] === current.id) delete blockIdByLabel[current.label];
-                blockIdByLabel[next.label] = next.id;
+                const blocksById = { ...state.blocksById, [next.id]: next };
+                const normalized = normalizeBlocks(state.blockOrder.map(id => blocksById[id]).filter(Boolean));
                 return {
-                  blocksById: { ...state.blocksById, [next.id]: next },
-                  blockIdByLabel,
+                  blocksById,
+                  blockIdByLabel: normalized.blockIdByLabel,
+                  workspaceIssues: normalized.workspaceIssues,
                   blocksRevision: state.blocksRevision + 1
                 };
               }
             } else {
               const next = { ...msg.block, content: undefined };
+              const blockOrder = [...state.blockOrder, next.id];
+              const blocksById = { ...state.blocksById, [next.id]: next };
+              const normalized = normalizeBlocks(blockOrder.map(id => blocksById[id]).filter(Boolean));
               return {
-                blockOrder: [...state.blockOrder, next.id],
-                blocksById: { ...state.blocksById, [next.id]: next },
-                blockIdByLabel: labelIndexWith(state.blockIdByLabel, next.label, next.id),
+                blockOrder,
+                blocksById,
+                blockIdByLabel: normalized.blockIdByLabel,
+                workspaceIssues: normalized.workspaceIssues,
                 blocksRevision: state.blocksRevision + 1
               };
             }
@@ -780,8 +849,7 @@ export const useStore = create<AppState>((set, get) => ({
             const blocksById = { ...state.blocksById };
             const removed = blocksById[msg.id];
             delete blocksById[msg.id];
-            const blockIdByLabel = cloneLabelIndex(state.blockIdByLabel);
-            if (removed && blockIdByLabel[removed.label] === msg.id) delete blockIdByLabel[removed.label];
+            const normalized = normalizeBlocks(blockOrder.map(id => blocksById[id]).filter(Boolean));
             const newTabs = state.openTabs.filter(t => t !== msg.id);
             const newActiveTab = state.activeTab === msg.id ? (newTabs.at(-1) || null) : state.activeTab;
             const nextActive = state.activeBlockId === msg.id ? newActiveTab : state.activeBlockId;
@@ -790,7 +858,8 @@ export const useStore = create<AppState>((set, get) => ({
             return {
               blockOrder,
               blocksById,
-              blockIdByLabel,
+              blockIdByLabel: normalized.blockIdByLabel,
+              workspaceIssues: normalized.workspaceIssues,
               blocksRevision: state.blocksRevision + 1,
               activeBlockId: nextActive,
               activePath: rootFocusChanged ? (activeBlock ? [activeBlock.label] : null) : state.activePath,
@@ -906,19 +975,16 @@ async function flushBlockSave(id: string): Promise<void> {
   }
 }
 
-let lastTabs = savedTabs;
-let lastActiveTab = savedActiveTab;
+let lastTabs = useStore.getState().openTabs;
+let lastActiveTab = useStore.getState().activeTab;
 useStore.subscribe((state) => {
-    if (state.openTabs !== lastTabs) {
-        localStorage.setItem("openTabs", JSON.stringify(state.openTabs));
-        lastTabs = state.openTabs;
-    }
-    if (state.activeTab !== lastActiveTab) {
-        if (state.activeTab) {
-            localStorage.setItem("activeTab", state.activeTab);
-        } else {
-            localStorage.removeItem("activeTab");
-        }
-        lastActiveTab = state.activeTab;
-    }
+    if (state.openTabs === lastTabs && state.activeTab === lastActiveTab) return;
+    lastTabs = state.openTabs;
+    lastActiveTab = state.activeTab;
+    if (!state.isLoaded || (state.backendMode !== 'server' && state.backendMode !== 'local')) return;
+    if (sessionSaveTimer) clearTimeout(sessionSaveTimer);
+    sessionSaveTimer = setTimeout(() => {
+      void persistWorkspaceSession()
+        .catch(error => useStore.setState({ persistenceError: errorMessage(error) }));
+    }, 250);
 });

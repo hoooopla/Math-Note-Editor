@@ -100,6 +100,10 @@ The packaged application includes the web interface and local backend. It starts
 
 To test without touching your real notes, create an empty folder such as `Math Notes Test` and select it as the workspace. Notes, assets, and settings stay inside the selected folder. Use **File → Open Workspace…** to return to your normal workspace later.
 
+Open note tabs and the active tab are saved in `setting/settings.json` as part of that workspace. Switching workspaces therefore restores each workspace's own tab session, including after restarting the desktop app.
+
+Previous saved file versions can be reviewed under **Settings → General Setting → Backup Recovery**. Restoring swaps the current and backup versions, so the same action can reverse an accidental restore.
+
 Desktop updates are currently manual: build or download the newer installer, quit Math Note Editor, and install it over the existing application. Workspaces are stored separately from the application, so replacing the application does not replace your notes or workspace settings. Increase the `version` in `package.json` before creating a distributable release so the installer and operating system can distinguish versions.
 
 The GitHub Pages version is built separately from the same interface. It has no Node backend; use **Open Workspace** and grant access to a local workspace folder. Pushing desktop code does not alter note files and does not make the desktop backend available on GitHub Pages.
@@ -113,6 +117,8 @@ Desktop note-tab shortcuts:
 - `Cmd/Ctrl+Shift+W`: close the desktop window
 
 Before distributing a release, test installation, workspace switching, restart persistence, application upgrades, and uninstall behavior on a clean machine. Signing and notarization credentials are intentionally not stored in this repository.
+
+Never use your only copy of a real workspace for release testing. Copy the complete workspace folder, verify that the copy opens correctly, and run install, upgrade, restart, recovery, and uninstall tests against the copy. Keep the original app closed during destructive failure tests such as forced termination, removed-drive simulation, permissions changes, or low-disk-space testing.
 
 ## 🗺 What's Next
 Refer to [`ARCHITECTURE.md`](./ARCHITECTURE.md) for architectural notes, design decisions, and future roadmap items, such as improving global keyboard navigation and selection boundaries.

@@ -55,6 +55,18 @@ export interface EditorSettings {
         escaped: string;
     };
     mathBlockPaddingY?: number;
+    workspaceSession?: WorkspaceSession;
+}
+
+export interface WorkspaceSession {
+    openTabs: string[];
+    activeTab: string | null;
+}
+
+export interface WorkspaceBackup {
+    path: string;
+    modifiedAt: number;
+    size: number;
 }
 
 export interface BackendApi {
@@ -63,6 +75,9 @@ export interface BackendApi {
     connectLocalFS: () => Promise<boolean>;
     loadSettings: () => Promise<EditorSettings>;
     saveSettings: (settings: EditorSettings) => Promise<void>;
+    saveWorkspaceSession: (session: WorkspaceSession) => Promise<void>;
+    listBackups: () => Promise<WorkspaceBackup[]>;
+    restoreBackup: (path: string) => Promise<void>;
     saveAsset: (file: File, filename: string) => Promise<string>;
     listAssets: () => Promise<string[]>;
     getAssetUrl: (path: string) => Promise<string>;
@@ -71,6 +86,7 @@ export interface BackendApi {
     loadBlockContent: (id: string) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>) => Promise<BlockData>;
     updateBlock: (id: string, data: BlockData) => Promise<{ block: BlockData, updatedBlocks?: BlockData[] }>;
+    repairDuplicateLabel: (id: string, newLabel: string) => Promise<BlockData>;
     previewRelabel: (oldPrefix: string, newPrefix: string) => Promise<SafeRelabelPlan>;
     commitRelabel: (plan: SafeRelabelPlan) => Promise<{ plan: SafeRelabelPlan, updatedBlocks: BlockData[] }>;
     deleteBlock: (id: string) => Promise<void>;
@@ -224,6 +240,12 @@ const getFileLocationByBlockId = async (
 
 const getFileByBlockId = async (id: string) => (await getFileLocationByBlockId(id))?.handle || null;
 
+const getDirectoryForPath = async (root: FileSystemDirectoryHandle, parts: string[], create = false) => {
+    let current = root;
+    for (const part of parts) current = await current.getDirectoryHandle(part, { create });
+    return current;
+};
+
 export const api: BackendApi = {
     mode: "none",
     init: async () => {
@@ -337,6 +359,69 @@ export const api: BackendApi = {
             };
             await writeLocalFile(file, JSON.stringify(settings, null, 2), existed);
         }
+    },
+    saveWorkspaceSession: async (session) => {
+        if (useServer) {
+            const res = await fetch('/api/workspace/session', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(session)
+            });
+            await requireOk(res, 'Saving workspace session');
+        } else if (api.mode === 'local' && dirHandle) {
+            const current = await api.loadSettings();
+            await api.saveSettings({ ...current, workspaceSession: session });
+        }
+    },
+    listBackups: async () => {
+        if (useServer) {
+            const res = await fetch('/api/backups');
+            await requireOk(res, 'Listing backups');
+            return await res.json();
+        }
+        if (api.mode !== 'local' || !dirHandle) return [];
+        const results: WorkspaceBackup[] = [];
+        try {
+            const root = await dirHandle.getDirectoryHandle(LOCAL_BACKUP_DIRECTORY);
+            const scan = async (directory: FileSystemDirectoryHandle, prefix = ''): Promise<void> => {
+                for await (const entry of directory.values()) {
+                    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+                    if (entry.kind === 'directory') await scan(entry, relative);
+                    else if (entry.name.endsWith('.bak')) {
+                        const file = await entry.getFile();
+                        results.push({ path: relative.slice(0, -4), modifiedAt: file.lastModified, size: file.size });
+                    }
+                }
+            };
+            await scan(root);
+        } catch { return []; }
+        return results.sort((a, b) => b.modifiedAt - a.modifiedAt);
+    },
+    restoreBackup: async (relativePath) => {
+        if (useServer) {
+            const res = await fetch('/api/backups/restore', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: relativePath })
+            });
+            await requireOk(res, 'Restoring backup');
+            return;
+        }
+        if (api.mode !== 'local' || !dirHandle) throw new Error('No writable workspace is connected');
+        const parts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean);
+        if (!parts.length || parts.some(part => part === '..' || part === '.')) throw new Error('Invalid backup path');
+        const name = parts.pop()!;
+        const backupRoot = await dirHandle.getDirectoryHandle(LOCAL_BACKUP_DIRECTORY);
+        const backupDirectory = await getDirectoryForPath(backupRoot, parts);
+        const backupHandle = await backupDirectory.getFileHandle(`${name}.bak`);
+        const backupContents = await backupHandle.getFile();
+        const targetDirectory = await getDirectoryForPath(dirHandle, parts, true);
+        let targetHandle: FileSystemFileHandle;
+        let currentContents: File | null = null;
+        try {
+            targetHandle = await targetDirectory.getFileHandle(name);
+            currentContents = await targetHandle.getFile();
+        } catch {
+            targetHandle = await targetDirectory.getFileHandle(name, { create: true });
+        }
+        await replaceLocalFile(targetHandle, backupContents);
+        if (currentContents) await replaceLocalFile(backupHandle, currentContents);
     },
     saveAsset: async (file, filename) => {
         if (useServer) {
@@ -479,7 +564,8 @@ export const api: BackendApi = {
                             title: normalizeBlockTitle(metadataText(data.title)),
                             label: normalizeBlockLabel(metadataText(data.label)),
                             references: computeReferences(content),
-                            hasContent: content.trim().length > 0
+                            hasContent: content.trim().length > 0,
+                            _fileMeta: { fileName: currentPath ? `${currentPath}/${entry.name}` : entry.name }
                         });
                     } else if (entry.kind === 'directory') {
                         const newPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
@@ -610,6 +696,33 @@ export const api: BackendApi = {
         }
         if (api.mode === 'viewer') throw new Error('Read-only viewer cannot update blocks');
         throw new Error('No writable backend is connected');
+    },
+    repairDuplicateLabel: async (id, newLabel) => {
+        newLabel = normalizeBlockLabel(metadataText(newLabel));
+        const labelError = validateBlockLabel(newLabel);
+        if (labelError) throw new Error(labelError);
+        if (useServer) {
+            const res = await fetch(`/api/workspace/duplicate-labels/${encodeURIComponent(id)}/resolve`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ newLabel })
+            });
+            await requireOk(res, 'Resolving duplicate label');
+            return await res.json();
+        }
+        if (api.mode === 'local' && dirHandle) {
+            const blocks = await loadAllLocalBlocks();
+            const current = blocks.find(block => block.id === id);
+            if (!current) throw new Error('Block not found');
+            const duplicateCount = blocks.filter(block => normalizeBlockLabel(block.label) === current.label).length;
+            if (duplicateCount < 2) throw new Error(`Label "${current.label}" is no longer duplicated`);
+            if (blocks.some(block => block.id !== id && normalizeBlockLabel(block.label) === newLabel)) {
+                throw new Error(`Label "${newLabel}" already exists`);
+            }
+            const result = await api.updateBlock(id, { ...current, label: newLabel });
+            return result.block;
+        }
+        throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot repair labels' : 'No writable backend is connected');
     },
     previewRelabel: async (oldPrefix, newPrefix) => {
         if (useServer) {

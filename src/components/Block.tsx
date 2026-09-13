@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { findNearestExistingParentId, useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp } from "lucide-react";
+import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle } from "lucide-react";
 import { MathTitle } from "./MathTitle";
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from "../lib/label-policy";
 import { SafeRelabelModal } from "./SafeRelabelModal";
@@ -60,7 +60,9 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     const backendMode = useStore(state => state.backendMode);
     const nearestParentId = useStore(state => findNearestExistingParentId(block.label, state.blockIdByLabel));
     const nearestParentLabel = useStore(state => nearestParentId ? state.blocksById[nearestParentId]?.label : undefined);
-    const isViewOnly = isViewOnlyState ?? (backendMode === "viewer");
+    const hasDuplicateLabel = useStore(state => state.workspaceIssues.some(issue => issue.blocks.some(candidate => candidate.id === block.id)));
+    const repairDuplicateLabel = useStore(state => state.repairDuplicateLabel);
+    const isViewOnly = hasDuplicateLabel || (isViewOnlyState ?? (backendMode === "viewer"));
     const setImageUploadParams = useStore(state => state.setImageUploadParams);
     const [isEditingMeta, setIsEditingMeta] = useState(false);
     const [titleInput, setTitleInput] = useState(block.title);
@@ -68,6 +70,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     const [error, setError] = useState<string | null>(null);
     const [focusRequestKey, setFocusRequestKey] = useState(0);
     const [pendingRelabel, setPendingRelabel] = useState<{ oldPrefix: string, newPrefix: string } | null>(null);
+    const [isRepairingLabel, setIsRepairingLabel] = useState(false);
 
     const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
@@ -89,6 +92,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
         return () => window.removeEventListener('math-notes-edit-block-metadata', handleEditRequest);
     }, [beginMetaEdit, block.id]);
 
+
     const handleContentChange = useCallback((val: string) => {
         updateBlock(block.id, { content: val });
     }, [block.id, updateBlock]);
@@ -104,7 +108,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
         }
     }, [isFocused, block.id, block.label, setActive]);
 
-    const submitMeta = () => {
+    const submitMeta = async () => {
         const finalTitle = normalizeBlockTitle(titleInput);
         const finalLabel = normalizeBlockLabel(labelInput);
         const metadataError = validateBlockMetadata(finalTitle, finalLabel);
@@ -114,6 +118,18 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
         }
         setError(null);
         if (finalLabel !== block.label) {
+            if (hasDuplicateLabel) {
+                setIsRepairingLabel(true);
+                const repaired = await repairDuplicateLabel(block.id, finalLabel);
+                setIsRepairingLabel(false);
+                if (!repaired) {
+                    setError("Could not repair this label. Check the workspace warning for details.");
+                    return;
+                }
+                if (finalTitle !== block.title) updateBlock(block.id, { title: finalTitle });
+                setIsEditingMeta(false);
+                return;
+            }
             if (finalTitle !== block.title) updateBlock(block.id, { title: finalTitle });
             setPendingRelabel({ oldPrefix: block.label, newPrefix: finalLabel });
         } else if (finalTitle !== block.title) {
@@ -136,7 +152,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
             // the editor after focus returns and insert an unintended newline.
             e.preventDefault();
             e.stopPropagation();
-            submitMeta();
+            void submitMeta();
         } else if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
@@ -201,8 +217,9 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                                 />
                                 <button 
                                     aria-label="Save block metadata"
-                                    onMouseDown={e => { e.preventDefault(); submitMeta(); }}
-                                    className="p-1 hover:bg-surface/50 text-emerald-500 rounded transition-colors"
+                                    onMouseDown={e => { e.preventDefault(); void submitMeta(); }}
+                                    disabled={isRepairingLabel}
+                                    className="p-1 hover:bg-surface/50 text-emerald-500 rounded transition-colors disabled:opacity-50"
                                 >
                                     <Check size={16} />
                                 </button>
@@ -225,6 +242,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                             <span className="font-sans text-[11px] bg-transparent border border-outline px-1.5 py-0.5 rounded text-secondary tracking-widest">
                                 {block.label || 'label'}
                             </span>
+                            {hasDuplicateLabel && <span className="flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300" title="This label is used by more than one block"><AlertTriangle size={11}/> Duplicate label</span>}
                         </div>
                     )}
                 </div>
@@ -256,7 +274,8 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                         <button
                             onClick={(e) => { e.stopPropagation(); useStore.getState().toggleViewOnly(block.id); }}
                             className="text-secondary hover:text-accent transition-colors opacity-0 group-hover:opacity-100 flex items-center"
-                            title={isViewOnly ? "Unlock for editing" : "Lock for view-only"}
+                            disabled={hasDuplicateLabel}
+                            title={hasDuplicateLabel ? "Rename the duplicate label before editing" : isViewOnly ? "Unlock for editing" : "Lock for view-only"}
                         >
                             {isViewOnly ? <Lock size={16} /> : <Unlock size={16} />}
                         </button>

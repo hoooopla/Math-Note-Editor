@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { X, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
+import { BackupRecovery } from './BackupRecovery';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -670,6 +671,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <p className="mt-4 text-xs text-secondary">In the web version, close Settings and use <strong className="text-primary">Open Workspace</strong> on the main screen. The desktop version also provides File → Open Workspace….</p>
                                     )}
                                 </div>
+                                <BackupRecovery />
                             </div>
                         )}
 

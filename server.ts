@@ -39,10 +39,26 @@ interface BlockData {
 let blocksMap = new Map<string, BlockData>();
 let sseClients: express.Response[] = [];
 let testSettings: Record<string, unknown> | null = null;
+let testWorkspaceSession: { openTabs: string[]; activeTab: string | null } | null = null;
 const testAssets = new Map<string, { buffer: Buffer; contentType: string }>();
 
 app.get("/api/runtime", (_req, res) => {
     res.json({ testMode: isTestMode, desktop: process.env.MATH_NOTE_DESKTOP === "true" });
+});
+
+app.post("/api/test/duplicate-labels", (req, res) => {
+    if (!isTestMode) return res.status(404).json({ error: "Not found" });
+    const label = normalizeBlockLabel(metadataText(req.body.label, `duplicate-${Date.now()}`));
+    const blocks = ["A", "B"].map(suffix => ({
+        id: uuidv4(),
+        title: `Duplicate ${suffix}`,
+        label,
+        content: `Duplicate ${suffix} content`,
+        references: [] as string[],
+        hasContent: true
+    }));
+    for (const block of blocks) blocksMap.set(block.id, block);
+    res.json(blocks.map(blockMetadata));
 });
 
 function notifyClients(message: any) {
@@ -97,6 +113,30 @@ async function migrateLegacyBackups(directory = WORKSPACE_DIR) {
         if (shouldCopy) await atomicWriteFile(destinationPath, await fs.readFile(entryPath), { backup: false });
         await fs.unlink(entryPath);
     }
+}
+
+function safeWorkspaceRelativePath(value: unknown) {
+    const normalized = String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const parts = normalized.split('/').filter(Boolean);
+    if (!parts.length || parts.some(part => part === '.' || part === '..')) throw new Error('Invalid workspace path');
+    const target = path.resolve(WORKSPACE_DIR, ...parts);
+    if (!target.startsWith(`${WORKSPACE_DIR}${path.sep}`)) throw new Error('Invalid workspace path');
+    return { normalized: parts.join('/'), target };
+}
+
+async function listBackupFiles(directory = BACKUP_DIR, prefix = ''): Promise<Array<{ path: string, modifiedAt: number, size: number }>> {
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+    const results: Array<{ path: string, modifiedAt: number, size: number }> = [];
+    for (const entry of entries) {
+        const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) results.push(...await listBackupFiles(entryPath, relative));
+        else if (entry.isFile() && entry.name.endsWith('.bak')) {
+            const stats = await fs.stat(entryPath);
+            results.push({ path: relative.slice(0, -4), modifiedAt: stats.mtimeMs, size: stats.size });
+        }
+    }
+    return results;
 }
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
@@ -281,7 +321,8 @@ function blockMetadata(block: BlockData) {
         title: block.title,
         label: block.label,
         references: block.references || [],
-        hasContent: block.hasContent ?? (block.content !== undefined && block.content.trim().length > 0)
+        hasContent: block.hasContent ?? (block.content !== undefined && block.content.trim().length > 0),
+        _fileMeta: { fileName: blockIdToFileMap.get(block.id) }
     };
 }
 
@@ -402,7 +443,7 @@ app.get("/api/assets-list", async (req, res) => {
     }
 });
 
-app.get("/api/assets/*", async (req, res) => {
+app.get(/^\/api\/assets\/(.+)$/, async (req, res) => {
     try {
         const assetPath = req.params[0];
         const testAsset = testAssets.get(assetPath);
@@ -456,8 +497,11 @@ app.get("/api/settings", async (req, res) => {
         const settingsPath = path.join(settingDir, "settings.json");
         const content = await fs.readFile(settingsPath, "utf-8").catch(() => "{\"macros\":{},\"customCommands\":[],\"textCommands\":[]}");
         if (isTestMode) {
-            testSettings ??= JSON.parse(content);
-            return res.json(testSettings);
+            if (!testSettings) {
+                testSettings = JSON.parse(content);
+                delete testSettings.workspaceSession;
+            }
+            return res.json(testWorkspaceSession ? { ...testSettings, workspaceSession: testWorkspaceSession } : testSettings);
         }
         await ensureDir(settingDir);
         res.json(JSON.parse(content));
@@ -470,6 +514,7 @@ app.post("/api/settings", async (req, res) => {
     try {
         if (isTestMode) {
             testSettings = structuredClone(req.body || {});
+            delete testSettings.workspaceSession;
             return res.json({ success: true });
         }
         const settingDir = path.join(WORKSPACE_DIR, "setting");
@@ -477,6 +522,77 @@ app.post("/api/settings", async (req, res) => {
         const settingsPath = path.join(settingDir, "settings.json");
         await writeWorkspaceFile(settingsPath, JSON.stringify(req.body || {}, null, 2));
         res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.post('/api/workspace/session', async (req, res) => {
+    try {
+        const openTabs = Array.isArray(req.body?.openTabs) ? req.body.openTabs.filter((id: unknown) => typeof id === 'string') : [];
+        const activeTab = typeof req.body?.activeTab === 'string' && openTabs.includes(req.body.activeTab) ? req.body.activeTab : null;
+        if (isTestMode) {
+            if (req.body?.persistForTest === true) testWorkspaceSession = { openTabs, activeTab };
+            return res.json({ success: true });
+        }
+        const settingsPath = path.join(WORKSPACE_DIR, 'setting', 'settings.json');
+        const current = JSON.parse(await fs.readFile(settingsPath, 'utf8').catch(() => '{}'));
+        await ensureDir(path.dirname(settingsPath));
+        await writeWorkspaceFile(settingsPath, JSON.stringify({ ...current, workspaceSession: { openTabs, activeTab } }, null, 2));
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.get('/api/backups', async (_req, res) => {
+    try {
+        if (isTestMode) return res.json([]);
+        res.json((await listBackupFiles()).sort((a, b) => b.modifiedAt - a.modifiedAt));
+    } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.post('/api/backups/restore', async (req, res) => {
+    try {
+        if (isTestMode) return res.status(403).json({ error: 'Backup restore is disabled in test mode' });
+        const { normalized, target } = safeWorkspaceRelativePath(req.body?.path);
+        const backupPath = path.join(BACKUP_DIR, `${normalized}.bak`);
+        const backupContents = await fs.readFile(backupPath);
+        const currentContents = await fs.readFile(target).catch(() => null);
+        await ensureDir(path.dirname(target));
+        await atomicWriteFile(target, backupContents, { backup: false });
+        if (currentContents) await atomicWriteFile(backupPath, currentContents, { backup: false });
+        await initBlocks();
+        notifyClients({ type: 'reload' });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+app.post("/api/workspace/duplicate-labels/:id/resolve", async (req, res) => {
+    try {
+        if (relabelInProgress) return res.status(409).json({ error: "A tree transformation is currently running" });
+        const id = req.params.id;
+        const existing = await ensureBlockContent(id);
+        if (!existing) return res.status(404).json({ error: "Block not found" });
+        const duplicateCount = Array.from(blocksMap.values())
+            .filter(block => normalizeBlockLabel(block.label) === existing.label).length;
+        if (duplicateCount < 2) {
+            return res.status(409).json({ error: `Label "${existing.label}" is no longer duplicated` });
+        }
+        const newLabel = normalizeBlockLabel(metadataText(req.body.newLabel));
+        const labelError = validateBlockLabel(newLabel);
+        if (labelError) return res.status(400).json({ error: labelError });
+        if (Array.from(blocksMap.values()).some(block => block.id !== id && normalizeBlockLabel(block.label) === newLabel)) {
+            return res.status(409).json({ error: `Label "${newLabel}" already exists` });
+        }
+        const updated: BlockData = {
+            ...existing,
+            label: newLabel,
+            references: computeReferences(existing.content || ""),
+            hasContent: (existing.content || "").trim().length > 0
+        };
+        await writeBlockToFile(updated);
+        blocksMap.set(id, updated);
+        notifyClients({ type: "update", block: updated });
+        res.json(blockMetadata(updated));
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
