@@ -5,6 +5,11 @@ type TestBlock = { id: string; title: string; label: string; content: string };
 
 const unique = (name: string) => `relabel-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+test.beforeEach(async ({ request }) => {
+    const response = await request.post('/api/test/reset');
+    expect(response.ok()).toBeTruthy();
+});
+
 async function createBlock(request: APIRequestContext, label: string, content = '', title = label): Promise<TestBlock> {
     const response = await request.post('/api/blocks', { data: { title, label, content } });
     if (!response.ok()) throw new Error(`Creating test block failed: ${await response.text()}`);

@@ -6,6 +6,11 @@ import { makeBlockFilename, validateBlockLabel } from '../src/lib/label-policy';
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput } from '../src/lib/safe-relabel';
 import { findDuplicateLabelIssues } from '../src/lib/workspace-validation';
 
+test.beforeEach(async ({ request }) => {
+    const response = await request.post('/api/test/reset');
+    expect(response.ok()).toBeTruthy();
+});
+
 async function openEditor(page: Page) {
     const runtime = await page.request.get('/api/runtime');
     expect(runtime.ok()).toBeTruthy();
@@ -1405,7 +1410,7 @@ test('creates an open embedded editor only when it approaches the viewport', asy
         element.scrollTop = element.scrollHeight;
         element.dispatchEvent(new Event('scroll'));
     });
-    await expect(page.locator(`[data-testid^="embedded-editor-host-"]`)).toBeVisible();
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="embedded-editor-host-"]')).toBeVisible();
     await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content')).toHaveCount(2);
     await expect(page.locator('.cm-math-inline .katex')).toBeVisible();
 });

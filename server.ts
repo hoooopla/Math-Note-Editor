@@ -46,6 +46,20 @@ app.get("/api/runtime", (_req, res) => {
     res.json({ testMode: isTestMode, desktop: process.env.MATH_NOTE_DESKTOP === "true" });
 });
 
+app.post("/api/test/reset", (_req, res) => {
+    if (!isTestMode) return res.status(404).json({ error: "Not found" });
+    blocksMap.clear();
+    blockIdToFileMap.clear();
+    pendingBlockLabels.clear();
+    testAssets.clear();
+    testSettings = null;
+    testWorkspaceSession = null;
+    for (const block of INITIAL_BLOCKS) {
+        blocksMap.set(block.id, { ...block, references: computeReferences(block.content) });
+    }
+    res.json({ success: true });
+});
+
 app.post("/api/test/duplicate-labels", (req, res) => {
     if (!isTestMode) return res.status(404).json({ error: "Not found" });
     const label = normalizeBlockLabel(metadataText(req.body.label, `duplicate-${Date.now()}`));
