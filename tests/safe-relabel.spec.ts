@@ -330,7 +330,7 @@ test('Enter confirms header editing without inserting a content newline or stali
     const block = await createBlock(request, oldLabel, content, 'Enter header regression');
 
     await page.goto('/');
-    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByRole('button', { name: /Search/ }).first().click();
     const search = page.getByPlaceholder('Search blocks or create new...');
     await search.fill(oldLabel);
     await page.getByText('Enter header regression', { exact: true }).click();
@@ -363,7 +363,7 @@ test('safe relabel preview shows source and destination parent context', async (
     await createBlock(request, `${newParent}/Curves`, '', 'Destination sibling');
 
     await page.goto('/');
-    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByRole('button', { name: /Search/ }).first().click();
     const search = page.getByPlaceholder('Search blocks or create new...');
     await search.fill(oldPrefix);
     await page.getByText('Moving root', { exact: true }).click();

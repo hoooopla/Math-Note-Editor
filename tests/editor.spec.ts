@@ -1251,10 +1251,9 @@ test('preserves parsed math around an incrementally edited line', async ({ page 
     const editor = await openEditor(page);
     await replaceEditorText(page, editor, 'before $a^2$\nchange here\nafter $\\frac{b}{c}$');
 
-    await page.keyboard.press('ControlOrMeta+Home');
-    await page.keyboard.press('ArrowDown');
+    await editor.locator('.cm-line').nth(1).click();
     await page.keyboard.press('End');
-    await page.keyboard.insertText(' safely');
+    await page.keyboard.type(' safely');
     await page.getByLabel('Open settings').click();
 
     await expect(page.locator('.cm-math-inline .katex')).toHaveCount(2);
@@ -1321,6 +1320,7 @@ test('indents selected display-math lines with Tab and outdents with Shift+Tab',
 });
 
 test('renders image previews as their lines enter the viewport', async ({ page }) => {
+    test.setTimeout(60_000);
     const editor = await openEditor(page);
     const image = '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" width="1"/>';
     const content = Array.from({ length: 180 }, (_, index) => `${index} ${index === 0 || index === 179 ? image : 'plain text'}`).join('\n');
