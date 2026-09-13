@@ -10,6 +10,7 @@ export default defineConfig({
     outputDir: '.playwright-results',
     use: {
         baseURL: `http://127.0.0.1:${port}`,
+        serviceWorkers: 'block',
         trace: 'retain-on-failure'
     },
     webServer: {

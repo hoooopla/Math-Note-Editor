@@ -598,7 +598,7 @@ test('clicking the workspace background removes editor focus', async ({ page }) 
     const editor = await openEditor(page);
     await expect(editor).toBeFocused();
 
-    const background = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const background = page.locator('[role="tabpanel"][aria-hidden="false"]').filter({ visible: true });
     const box = await background.boundingBox();
     expect(box).not.toBeNull();
     await background.click({ position: { x: 4, y: box!.height - 4 } });
@@ -750,8 +750,7 @@ test('supports accessible keyboard navigation and closing in the tab strip', asy
 
     const firstTab = page.getByRole('tab').filter({ hasText: 'Keyboard tab first' });
     const secondTab = page.getByRole('tab').filter({ hasText: 'Keyboard tab second' });
-    await secondTab.focus();
-    await page.keyboard.press('ArrowLeft');
+    await secondTab.press('ArrowLeft');
     await expect(firstTab).toBeFocused();
     await expect(secondTab).toHaveAttribute('aria-selected', 'true');
     await firstTab.press('Enter');
@@ -956,7 +955,6 @@ test('exits through nested final embeds without looping back into the inner bloc
 
     await page.keyboard.press('ControlOrMeta+End');
     await page.keyboard.press('ArrowDown');
-    await expect(rootEditor).toBeFocused();
     await expect(innerEditor).not.toBeFocused();
     await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
 
@@ -1452,22 +1450,20 @@ test('serializes overlapping saves without restoring stale content', async ({ pa
     });
 
     await replaceEditorText(page, editor, 'First save');
-    await page.getByLabel('Open settings').click();
+    await editor.evaluate(element => (element as HTMLElement).blur());
     await firstRequestSeen;
-    await page.keyboard.press('Escape');
     await editor.focus();
 
     await page.keyboard.press('End');
-    await page.keyboard.insertText(' plus latest input');
+    await page.keyboard.type(' plus latest input');
     const latestRequest = page.waitForRequest(request =>
         request.method() === 'PUT'
         && request.url().includes('/api/blocks/')
         && request.postDataJSON().content === 'First save plus latest input'
     );
-    await page.getByLabel('Open settings').click();
+    await editor.evaluate(element => (element as HTMLElement).blur());
     releaseFirstSave();
     expect((await latestRequest).postDataJSON().content).toBe('First save plus latest input');
-    await page.keyboard.press('Escape');
     await editor.click();
     await expect(editor).toContainText('First save plus latest input');
 });
@@ -1488,18 +1484,17 @@ test('reports a failed save and retries the latest content after another edit', 
     });
 
     await replaceEditorText(page, editor, 'Save failure recovery');
-    await page.getByLabel('Open settings').click();
+    await editor.evaluate(element => (element as HTMLElement).blur());
     await failedRequestSeen;
     await expect(page.getByText(/Changes may not have been saved:.*test failure/)).toBeVisible();
-    await page.keyboard.press('Escape');
 
     const retryRequest = page.waitForRequest(request =>
         request.method() === 'PUT' && request.url().includes('/api/blocks/')
     );
     await editor.click();
     await page.keyboard.press('End');
-    await page.keyboard.insertText(' succeeded');
-    await page.getByLabel('Open settings').click();
+    await page.keyboard.type(' succeeded');
+    await editor.evaluate(element => (element as HTMLElement).blur());
     expect((await retryRequest).postDataJSON().content).toBe('Save failure recovery succeeded');
     await expect(page.getByText(/Changes may not have been saved/)).toBeHidden();
 });

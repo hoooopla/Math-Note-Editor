@@ -387,13 +387,17 @@ async function initBlocks() {
         });
         for (const { file, block } of metadataEntries) {
             const id = block.id;
+            const normalizedFile = file.replace(/\\/g, '/');
             const existingFilename = blockIdToFileMap.get(id);
-            if (existingFilename) {
+            // A filesystem watcher can refresh this same file while a full
+            // workspace reload is in progress (notably during backup restore).
+            // Only a different path represents a genuine duplicate id.
+            if (existingFilename && existingFilename !== normalizedFile) {
                 throw new Error(`Duplicate block id "${id}" found in "${existingFilename}" and "${file}"`);
             }
             blocksMap.set(id, block);
             // Normalize path slashes for consistency across platforms (use forward slash in map)
-            blockIdToFileMap.set(id, file.replace(/\\/g, '/'));
+            blockIdToFileMap.set(id, normalizedFile);
         }
     }
 }

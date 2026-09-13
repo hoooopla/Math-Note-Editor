@@ -4,6 +4,7 @@ dist/
 desktop-server/
 release/
 coverage/
+.playwright-results/
 .DS_Store
 *.log
 .env*
