@@ -1352,7 +1352,7 @@ test('stores portable image paths and renders portable and legacy asset referenc
         `<img src="/api/assets/${assetName}" width="1"/>`,
         'after images'
     ].join('\n'));
-    await page.getByLabel('Open settings').click();
+    await editor.evaluate(element => (element as HTMLElement).blur());
 
     const images = page.locator('.cm-image-widget img');
     await expect(images).toHaveCount(2);
