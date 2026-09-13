@@ -22,7 +22,7 @@ async function replaceEditorText(page: Page, editor: Locator, text: string) {
     await editor.focus();
     await expect(editor).toBeFocused();
     await page.keyboard.press('ControlOrMeta+A');
-    await page.keyboard.insertText(text);
+    await page.keyboard.type(text);
 }
 
 test('derives references from content without persisting duplicate metadata', async ({ request }) => {
@@ -598,7 +598,7 @@ test('clicking the workspace background removes editor focus', async ({ page }) 
     const editor = await openEditor(page);
     await expect(editor).toBeFocused();
 
-    const background = page.getByTestId('block-workspace-background');
+    const background = page.locator('[role="tabpanel"][aria-hidden="false"]');
     const box = await background.boundingBox();
     expect(box).not.toBeNull();
     await background.click({ position: { x: 4, y: box!.height - 4 } });
@@ -751,7 +751,7 @@ test('supports accessible keyboard navigation and closing in the tab strip', asy
     const firstTab = page.getByRole('tab').filter({ hasText: 'Keyboard tab first' });
     const secondTab = page.getByRole('tab').filter({ hasText: 'Keyboard tab second' });
     await secondTab.focus();
-    await secondTab.press('ArrowLeft');
+    await page.keyboard.press('ArrowLeft');
     await expect(firstTab).toBeFocused();
     await expect(secondTab).toHaveAttribute('aria-selected', 'true');
     await firstTab.press('Enter');
@@ -1327,7 +1327,10 @@ test('renders image previews as their lines enter the viewport', async ({ page }
 
     await page.keyboard.press('ControlOrMeta+Home');
     await expect(page.locator('.cm-image-widget')).toBeVisible();
-    await page.keyboard.press('Control+End');
+    await page.locator('.cm-scroller').evaluate(element => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event('scroll'));
+    });
     await expect(page.locator('.cm-image-widget')).toBeVisible();
 });
 
@@ -1436,18 +1439,23 @@ test('serializes overlapping saves without restoring stale content', async ({ pa
     const editor = await openEditor(page);
     let releaseFirstSave!: () => void;
     const firstSaveGate = new Promise<void>(resolve => { releaseFirstSave = resolve; });
+    let markFirstRequestSeen!: (request: import('playwright/test').Request) => void;
+    const firstRequestSeen = new Promise<import('playwright/test').Request>(resolve => { markFirstRequestSeen = resolve; });
     let isFirstSave = true;
-    await page.route('**/api/blocks/*', async route => {
-        if (route.request().method() === 'PUT' && isFirstSave) {
+    await page.route('**/*', async route => {
+        if (route.request().method() === 'PUT' && route.request().url().includes('/api/blocks/') && isFirstSave) {
             isFirstSave = false;
+            markFirstRequestSeen(route.request());
             await firstSaveGate;
         }
         await route.continue();
     });
 
-    const firstRequest = page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/api/blocks/'));
     await replaceEditorText(page, editor, 'First save');
-    await firstRequest;
+    await page.getByLabel('Open settings').click();
+    await firstRequestSeen;
+    await page.keyboard.press('Escape');
+    await editor.focus();
 
     await page.keyboard.press('End');
     await page.keyboard.insertText(' plus latest input');
@@ -1467,9 +1475,12 @@ test('serializes overlapping saves without restoring stale content', async ({ pa
 test('reports a failed save and retries the latest content after another edit', async ({ page }) => {
     const editor = await openEditor(page);
     let failNextSave = true;
-    await page.route('**/api/blocks/*', async route => {
-        if (route.request().method() === 'PUT' && failNextSave) {
+    let markFailedRequestSeen!: () => void;
+    const failedRequestSeen = new Promise<void>(resolve => { markFailedRequestSeen = resolve; });
+    await page.route('**/*', async route => {
+        if (route.request().method() === 'PUT' && route.request().url().includes('/api/blocks/') && failNextSave) {
             failNextSave = false;
+            markFailedRequestSeen();
             await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'test failure' }) });
             return;
         }
@@ -1478,6 +1489,7 @@ test('reports a failed save and retries the latest content after another edit', 
 
     await replaceEditorText(page, editor, 'Save failure recovery');
     await page.getByLabel('Open settings').click();
+    await failedRequestSeen;
     await expect(page.getByText(/Changes may not have been saved:.*test failure/)).toBeVisible();
     await page.keyboard.press('Escape');
 
