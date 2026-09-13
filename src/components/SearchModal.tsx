@@ -4,10 +4,14 @@ import { Search, FolderOpen, Plus } from 'lucide-react';
 import { MathTitle } from './MathTitle';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from '../lib/label-policy';
+import { rankSearchResults } from '../lib/search-ranking';
 
 export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
     const blocksRevision = useStore(state => state.blocksRevision);
     const blocks = useMemo(() => getOrderedBlocks(useStore.getState()), [blocksRevision]);
+    const openTabs = useStore(state => state.openTabs);
+    const activeTab = useStore(state => state.activeTab);
+    const closedTabs = useStore(state => state.closedTabs);
     const addBlock = useStore(state => state.addBlock);
     const activateRootBlock = useStore(state => state.activateRootBlock);
     const settings = useStore(state => state.settings);
@@ -19,15 +23,13 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
     const parentRef = useRef<HTMLDivElement>(null);
 
     const searchResults = useMemo(() => {
-        if (!searchQuery) {
-            return blocks;
-        }
-        const lower = searchQuery.toLowerCase();
-        return blocks.filter(b => 
-             b.title.toLowerCase().includes(lower) || 
-             b.label.toLowerCase().includes(lower)
-        );
-    }, [blocks, searchQuery]);
+        const recentIds = [
+            ...(activeTab ? [activeTab] : []),
+            ...closedTabs.map(tab => tab.id),
+            ...[...openTabs].reverse()
+        ];
+        return rankSearchResults(blocks, searchQuery, recentIds, 10);
+    }, [activeTab, blocks, closedTabs, openTabs, searchQuery]);
 
     const createTitle = normalizeBlockTitle(searchQuery);
     const createLabel = normalizeBlockLabel(searchQuery);

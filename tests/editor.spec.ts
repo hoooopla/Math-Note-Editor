@@ -5,6 +5,7 @@ import { encodeEmbeddedLabel, findActiveEmbeddedTarget, parseEmbeddedLinks } fro
 import { makeBlockFilename, validateBlockLabel } from '../src/lib/label-policy';
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput } from '../src/lib/safe-relabel';
 import { findDuplicateLabelIssues } from '../src/lib/workspace-validation';
+import { rankSearchResults } from '../src/lib/search-ranking';
 
 test.beforeEach(async ({ request }) => {
     const response = await request.post('/api/test/reset');
@@ -50,6 +51,25 @@ test('derives references from content without persisting duplicate metadata', as
     const metadata = await (await request.get('/api/blocks?metaOnly=true')).json();
     expect(metadata.find((block: { id: string }) => block.id === created.id)?.references)
         .toEqual(['target', '/child', 'standout']);
+});
+
+test('ranks empty and typed searches by recency, relevance, and natural label order', () => {
+    const blocks = [
+        { id: 'title-prefix', title: 'Topology overview', label: 'Notes/Chapter 10' },
+        { id: 'label-substring', title: 'Reference', label: 'Notes/My topology reference' },
+        { id: 'segment-prefix', title: 'Manifold note', label: 'Math/Topology' },
+        { id: 'label-prefix-10', title: 'Later', label: 'Topology/Chapter 10' },
+        { id: 'label-prefix-2', title: 'Earlier', label: 'Topology/Chapter 2' },
+        { id: 'exact', title: 'Exact', label: 'Topology' },
+        { id: 'alphabetical', title: 'Other', label: 'Algebra' }
+    ];
+
+    expect(rankSearchResults(blocks, '', ['segment-prefix', 'exact'], 10).map(block => block.id)).toEqual([
+        'segment-prefix', 'exact', 'alphabetical', 'title-prefix', 'label-substring', 'label-prefix-2', 'label-prefix-10'
+    ]);
+    expect(rankSearchResults(blocks, 'topology').map(block => block.id)).toEqual([
+        'exact', 'label-prefix-2', 'label-prefix-10', 'segment-prefix', 'title-prefix', 'label-substring'
+    ]);
 });
 
 test('round-trips special-character labels with math-aware embed syntax', () => {
