@@ -26,8 +26,10 @@ async function openEditor(page: Page) {
 async function replaceEditorText(page: Page, editor: Locator, text: string) {
     await editor.focus();
     await expect(editor).toBeFocused();
-    await page.keyboard.press('ControlOrMeta+A');
-    await page.keyboard.type(text);
+    // Playwright's contenteditable fill emits one deterministic input update.
+    // Character-by-character typing is slow for large documents and the
+    // platform's Select All shortcut can race CodeMirror's focus effects.
+    await editor.fill(text);
 }
 
 test('derives references from content without persisting duplicate metadata', async ({ request }) => {
