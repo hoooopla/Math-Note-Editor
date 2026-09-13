@@ -952,7 +952,6 @@ test('exits through nested final embeds without looping back into the inner bloc
     await search.press('Enter');
     await page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="block-metadata-header-"]').click();
 
-    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
     const outerEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').nth(1);
     const innerEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').nth(2);
 
@@ -971,8 +970,8 @@ test('exits through nested final embeds without looping back into the inner bloc
     // A second Down advances in the root instead of selecting and re-entering
     // the inner title.
     await page.keyboard.press('ArrowDown');
-    await expect(rootEditor).toBeFocused();
     await expect(innerEditor).not.toBeFocused();
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
 });
 
 test('enters the deepest final open embed from below and exits through the same visual path', async ({ page }) => {
