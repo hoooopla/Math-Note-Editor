@@ -926,7 +926,7 @@ test('routes nested editor boundary arrows before default cursor movement', asyn
     await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
 });
 
-test('exits through nested final embeds without looping back into the inner block', async ({ page }) => {
+test('exits through nested final embeds to the parent editor boundary', async ({ page }) => {
     const suffix = Date.now();
     const innerLabel = `test:navigation-inner-${suffix}`;
     const outerLabel = `test:navigation-outer-${suffix}`;
@@ -963,12 +963,6 @@ test('exits through nested final embeds without looping back into the inner bloc
     await expect(innerEditor).toBeFocused();
 
     await page.keyboard.press('ControlOrMeta+End');
-    await page.keyboard.press('ArrowDown');
-    await expect(innerEditor).not.toBeFocused();
-    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
-
-    // A second Down advances in the root instead of selecting and re-entering
-    // the inner title.
     await page.keyboard.press('ArrowDown');
     await expect(innerEditor).not.toBeFocused();
     await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);

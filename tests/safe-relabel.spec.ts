@@ -375,8 +375,9 @@ test('safe relabel preview shows source and destination parent context', async (
 
     const header = page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="block-metadata-header-"]');
     await header.dblclick();
-    await page.getByLabel('Block label').fill(newPrefix);
-    await page.getByLabel('Save block metadata').click();
+    const labelInput = page.getByLabel('Block label');
+    await labelInput.fill(newPrefix);
+    await labelInput.press('Enter');
 
     const before = page.getByTestId('safe-relabel-before-tree');
     const after = page.getByTestId('safe-relabel-after-tree');
