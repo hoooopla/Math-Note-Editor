@@ -750,6 +750,9 @@ test('supports accessible keyboard navigation and closing in the tab strip', asy
 
     const firstTab = page.getByRole('tab').filter({ hasText: 'Keyboard tab first' });
     const secondTab = page.getByRole('tab').filter({ hasText: 'Keyboard tab second' });
+    // Wait for the editor autofocus scheduled by opening the second block;
+    // otherwise it can race and steal focus back from the tab on slower VMs.
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first()).toBeFocused();
     await secondTab.press('ArrowLeft');
     await expect(firstTab).toBeFocused();
     await expect(secondTab).toHaveAttribute('aria-selected', 'true');
