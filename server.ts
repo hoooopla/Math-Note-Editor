@@ -8,6 +8,7 @@ import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter
 import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from "./src/lib/label-policy";
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from "./src/lib/safe-relabel";
 import { atomicWriteFile, backupFile } from "./src/lib/atomic-file";
+import { createBlocksViewFixture } from "./src/lib/blocks-view-fixture";
 
 const app = express();
 const portArgumentIndex = process.argv.indexOf("--port");
@@ -44,6 +45,16 @@ const testAssets = new Map<string, { buffer: Buffer; contentType: string }>();
 
 app.get("/api/runtime", (_req, res) => {
     res.json({ testMode: isTestMode, desktop: process.env.MATH_NOTE_DESKTOP === "true" });
+});
+
+app.post('/api/test/blocks-view-fixture', (req, res) => {
+    if (!isTestMode) return res.status(404).json({ error: 'Not found' });
+    const requested = Number(req.body?.size || 360);
+    const size = Number.isFinite(requested) ? Math.min(10000, Math.max(360, Math.floor(requested))) : 360;
+    const examples = createBlocksViewFixture(size);
+    for (const block of examples) blocksMap.set(block.id, block);
+    notifyClients({ type: 'reload' });
+    res.json({ count: examples.length, testMode: true });
 });
 
 app.post("/api/test/reset", (_req, res) => {
@@ -419,23 +430,22 @@ async function initBlocks() {
 app.post("/api/assets", express.json({limit: '20mb'}), async (req, res) => {
     try {
         const { filePath, content } = req.body;
-        const absolutePath = path.join(BLOCKS_DIR, filePath);
-        if (!absolutePath.startsWith(path.join(BLOCKS_DIR, 'assets'))) {
-            return res.status(400).json({error: "Invalid path"});
-        }
+        const { normalized, target: absolutePath } = safeWorkspaceRelativePath(filePath);
+        if (!normalized.startsWith('assets/') || normalized === 'assets') return res.status(400).json({error: "Invalid asset path"});
+        const assetPath = normalized.slice('assets/'.length);
+        if (typeof content !== 'string' || !/^data:[^;]+;base64,/.test(content)) return res.status(400).json({ error: 'Invalid asset content' });
         const base64Data = content.replace(/^data:[^;]+;base64,/, "");
         const buffer = Buffer.from(base64Data, 'base64');
         if (isTestMode) {
-            const assetPath = filePath.replace(/^assets\//, '');
             const contentType = content.match(/^data:([^;]+);base64,/)?.[1] || 'application/octet-stream';
             testAssets.set(assetPath, { buffer, contentType });
             return res.json({ success: true, url: `assets/${assetPath}` });
         }
         await ensureDir(path.dirname(absolutePath));
         await writeWorkspaceFile(absolutePath, buffer);
-        res.json({ success: true, url: `assets/${filePath.replace(/^assets\//, '')}` });
+        res.json({ success: true, url: `assets/${assetPath}` });
     } catch (e) {
-        res.status(500).json({ error: String(e) });
+        res.status(400).json({ error: String(e) });
     }
 });
 
@@ -463,16 +473,17 @@ app.get("/api/assets-list", async (req, res) => {
 
 app.get(/^\/api\/assets\/(.+)$/, async (req, res) => {
     try {
-        const assetPath = req.params[0];
+        const { normalized, target: absolutePath } = safeWorkspaceRelativePath(`assets/${req.params[0]}`);
+        if (!normalized.startsWith('assets/')) return res.status(400).json({ error: 'Invalid asset path' });
+        const assetPath = normalized.slice('assets/'.length);
         const testAsset = testAssets.get(assetPath);
         if (testAsset) {
             res.type(testAsset.contentType);
             return res.send(testAsset.buffer);
         }
-        const absolutePath = path.join(BLOCKS_DIR, "assets", assetPath);
         res.sendFile(absolutePath);
     } catch (e) {
-        res.status(500).json({ error: String(e) });
+        res.status(400).json({ error: String(e) });
     }
 });
 

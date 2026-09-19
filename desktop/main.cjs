@@ -307,6 +307,26 @@ async function createWindow() {
   });
   installMenu();
   await mainWindow.loadURL(`http://127.0.0.1:${port}`);
+  const appOrigin = `http://127.0.0.1:${port}`;
+  const openExternal = url => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:' || parsed.protocol === 'mailto:') {
+        void shell.openExternal(parsed.href).catch(() => {});
+      }
+    } catch {}
+  };
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternal(url);
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    try {
+      if (new URL(url).origin === appOrigin) return;
+    } catch {}
+    event.preventDefault();
+    openExternal(url);
+  });
   mainWindow.on('close', event => {
     if (allowQuit) return;
     event.preventDefault();

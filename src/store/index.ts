@@ -442,6 +442,14 @@ export const useStore = create<AppState>((set, get) => ({
     const current = get().blocksById[id];
     if (!current) return;
     const normalizedData = { ...data };
+    if (data.content !== undefined) {
+      const references = computeReferences(data.content);
+      const currentReferences = current.references || [];
+      if (references.length !== currentReferences.length || references.some((reference, index) => reference !== currentReferences[index])) {
+        normalizedData.references = references;
+      }
+      normalizedData.hasContent = data.content.trim().length > 0;
+    }
     if (data.title !== undefined) {
       normalizedData.title = normalizeBlockTitle(metadataText(data.title));
       const titleError = validateBlockTitle(normalizedData.title);

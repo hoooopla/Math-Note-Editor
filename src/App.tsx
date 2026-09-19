@@ -10,11 +10,14 @@ import { SettingsModal } from "./components/SettingsModal";
 import { ImageUploadModal } from "./components/ImageUploadModal";
 import { SearchModal } from "./components/SearchModal";
 import { WorkspaceIssuesModal } from "./components/WorkspaceIssuesModal";
-import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle } from "lucide-react";
+import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes } from "lucide-react";
 import "./index.css";
 
 const GraphModal = React.lazy(() =>
     import("./components/GraphModal").then(module => ({ default: module.GraphModal }))
+);
+const BlockMapModal = React.lazy(() =>
+    import("./components/BlockMapModal").then(module => ({ default: module.BlockMapModal }))
 );
 
 const shortcutMatches = (event: KeyboardEvent, shortcut: string) => {
@@ -62,6 +65,7 @@ export default function App() {
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
     const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
+    const [isBlockMapOpen, setIsBlockMapOpen] = useState(false);
     const [isTestMode, setIsTestMode] = useState(false);
     const [isDesktop, setIsDesktop] = useState(false);
     const [isWorkspaceIssuesOpen, setIsWorkspaceIssuesOpen] = useState(false);
@@ -173,7 +177,7 @@ export default function App() {
                 return;
             }
 
-            if (!isMacroModalOpen && !isSearchModalOpen && !isGraphModalOpen
+            if (!isMacroModalOpen && !isSearchModalOpen && !isGraphModalOpen && !isBlockMapOpen
                 && shortcutMatches(e, settings.editMetadataShortcut || 'f2')) {
                 const rootBlockId = useStore.getState().activeTab;
                 if (rootBlockId) {
@@ -185,7 +189,7 @@ export default function App() {
                 return;
             }
 
-            if (!isMacroModalOpen && !isSearchModalOpen && !isGraphModalOpen
+            if (!isMacroModalOpen && !isSearchModalOpen && !isGraphModalOpen && !isBlockMapOpen
                 && shortcutMatches(e, settings.goToParentShortcut || 'mod+shift+arrowup')) {
                 if (useStore.getState().goToNearestParent()) e.preventDefault();
                 return;
@@ -210,7 +214,7 @@ export default function App() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen]);
+    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen, isBlockMapOpen]);
 
     const closeTab = (id: string, e?: React.SyntheticEvent) => {
         e?.stopPropagation();
@@ -364,6 +368,14 @@ export default function App() {
                         aria-label="Open graph view"
                     >
                         <Network size={18} />
+                    </button>
+                    <button
+                        onClick={() => setIsBlockMapOpen(true)}
+                        className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
+                        title="Blocks View"
+                        aria-label="Open blocks view"
+                    >
+                        <Boxes size={18} />
                     </button>
                     <div className="w-px h-6 bg-outline mx-1"></div>
                     <button 
@@ -538,6 +550,15 @@ export default function App() {
                     </div>
                 }>
                     <GraphModal isOpen onClose={() => setIsGraphModalOpen(false)} />
+                </React.Suspense>
+            )}
+            {isBlockMapOpen && (
+                <React.Suspense fallback={
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="status" aria-label="Loading blocks view">
+                        <Loader2 size={32} className="animate-spin text-accent" aria-hidden="true" />
+                    </div>
+                }>
+                    <BlockMapModal isOpen onClose={() => setIsBlockMapOpen(false)} />
                 </React.Suspense>
             )}
             <SettingsModal isOpen={isMacroModalOpen} onClose={() => setIsMacroModalOpen(false)} />

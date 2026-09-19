@@ -1,10 +1,12 @@
-import React, { useState, useCallback, useEffect } from "react";
-import { findNearestExistingParentId, useStore } from "../store";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
+import { findNearestExistingParentId, getOrderedBlocks, useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle } from "lucide-react";
+import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle, Link2 } from "lucide-react";
 import { MathTitle } from "./MathTitle";
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from "../lib/label-policy";
 import { SafeRelabelModal } from "./SafeRelabelModal";
+import { BacklinksPopover } from "./BacklinksPopover";
+import { buildBacklinkIndex } from "../lib/backlinks";
 
 export const BlockContainer: React.FC<{ id: string }> = ({ id }) => {
     const block = useStore(state => state.blocksById[id]);
@@ -60,6 +62,11 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     const backendMode = useStore(state => state.backendMode);
     const nearestParentId = useStore(state => findNearestExistingParentId(block.label, state.blockIdByLabel));
     const nearestParentLabel = useStore(state => nearestParentId ? state.blocksById[nearestParentId]?.label : undefined);
+    const blocksRevision = useStore(state => state.blocksRevision);
+    const backlinkSourceIds = useMemo(() => {
+        const state = useStore.getState();
+        return buildBacklinkIndex(getOrderedBlocks(state))[block.label] || [];
+    }, [block.label, blocksRevision]);
     const hasDuplicateLabel = useStore(state => state.workspaceIssues.some(issue => issue.blocks.some(candidate => candidate.id === block.id)));
     const repairDuplicateLabel = useStore(state => state.repairDuplicateLabel);
     const isViewOnly = hasDuplicateLabel || (isViewOnlyState ?? (backendMode === "viewer"));
@@ -71,6 +78,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     const [focusRequestKey, setFocusRequestKey] = useState(0);
     const [pendingRelabel, setPendingRelabel] = useState<{ oldPrefix: string, newPrefix: string } | null>(null);
     const [isRepairingLabel, setIsRepairingLabel] = useState(false);
+    const [showBacklinks, setShowBacklinks] = useState(false);
 
     const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
@@ -169,7 +177,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
 
             <div 
                 data-testid={`block-metadata-header-${block.id}`}
-                className="flex items-center justify-between px-4 py-2 bg-transparent border-b border-outline text-sm text-secondary cursor-text select-none rounded-t-[8px] relative z-10"
+                className={`flex items-center justify-between px-4 py-2 bg-transparent border-b border-outline text-sm text-secondary cursor-text select-none rounded-t-[8px] relative ${showBacklinks ? 'z-40' : 'z-10'}`}
                 onClick={(e) => {
                     e.stopPropagation();
                     if (!isEditingMeta) {
@@ -248,7 +256,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                 </div>
                 
                 {isFocused && (
-                    <div className="flex items-center gap-2">
+                    <div className="relative flex items-center gap-2">
                         {nearestParentId && nearestParentLabel && (
                             <button
                                 onClick={(e) => { e.stopPropagation(); useStore.getState().goToNearestParent(); }}
@@ -258,6 +266,26 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                             >
                                 <CornerLeftUp size={16} />
                             </button>
+                        )}
+                        <button
+                            type="button"
+                            data-testid="backlinks-button"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => { e.stopPropagation(); setShowBacklinks(open => !open); }}
+                            className={`flex items-center gap-0.5 transition-colors ${showBacklinks ? 'text-accent opacity-100' : 'text-secondary hover:text-accent opacity-0 group-hover:opacity-100'}`}
+                            title={`${backlinkSourceIds.length} backlinks`}
+                            aria-label={`Show ${backlinkSourceIds.length} backlinks`}
+                            aria-expanded={showBacklinks}
+                        >
+                            <Link2 size={16} />
+                            <span className="min-w-3 rounded-full bg-accent/15 px-1 text-center text-[9px] font-semibold leading-4 text-accent">{backlinkSourceIds.length}</span>
+                        </button>
+                        {showBacklinks && (
+                            <BacklinksPopover
+                                targetLabel={block.label}
+                                sourceIds={backlinkSourceIds}
+                                onClose={() => setShowBacklinks(false)}
+                            />
                         )}
                         {backendMode === "server" && (
                             <a 

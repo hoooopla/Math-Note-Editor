@@ -6,6 +6,8 @@ import { makeBlockFilename, validateBlockLabel } from '../src/lib/label-policy';
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput } from '../src/lib/safe-relabel';
 import { findDuplicateLabelIssues } from '../src/lib/workspace-validation';
 import { rankSearchResults } from '../src/lib/search-ranking';
+import { buildBacklinkIndex, findBacklinkOccurrences } from '../src/lib/backlinks';
+import { buildBlockMapModel } from '../src/lib/block-map';
 
 test.beforeEach(async ({ request }) => {
     const response = await request.post('/api/test/reset');
@@ -51,6 +53,98 @@ test('derives references from content without persisting duplicate metadata', as
     const metadata = await (await request.get('/api/blocks?metaOnly=true')).json();
     expect(metadata.find((block: { id: string }) => block.id === created.id)?.references)
         .toEqual(['target', '/child', 'standout']);
+});
+
+test('builds backlinks and line excerpts for absolute, aliased, standout, and relative references', () => {
+    const blocks = [
+        { id: 'target', title: 'Target', label: 'topic/result', references: [] },
+        { id: 'absolute', title: 'Absolute', label: 'notes/absolute', references: ['topic/result'] },
+        { id: 'relative', title: 'Relative', label: 'topic', references: ['/result'] },
+        { id: 'other', title: 'Other', label: 'notes/other', references: ['elsewhere'] }
+    ];
+    expect(buildBacklinkIndex(blocks)['topic/result']).toEqual(['absolute', 'relative']);
+
+    const content = [
+        'First use: [[topic/result || the main result]].',
+        'Unrelated [[elsewhere]].',
+        'Second use: [[@topic/result]].'
+    ].join('\n');
+    expect(findBacklinkOccurrences(content, 'notes/absolute', 'topic/result').map(item => item.line)).toEqual([
+        'First use: [[topic/result || the main result]].',
+        'Second use: [[@topic/result]].'
+    ]);
+    expect(findBacklinkOccurrences('Relative use: [[/result]].', 'topic', 'topic/result')).toHaveLength(1);
+});
+
+test('derives block-map hierarchy, references, broken targets, and health states', () => {
+    const model = buildBlockMapModel([
+        { id: 'root', title: 'Root', label: 'analysis', hasContent: true, references: [] },
+        { id: 'child', title: 'Child', label: 'analysis/child', hasContent: false, references: ['/result', 'missing'] },
+        { id: 'result', title: 'Result', label: 'analysis/child/result', hasContent: true, references: ['analysis'] },
+        { id: 'orphan', title: 'Orphan', label: 'detached', hasContent: true, references: [] },
+        { id: 'duplicate-a', title: 'Duplicate A', label: 'duplicate', hasContent: true, references: [] },
+        { id: 'duplicate-b', title: 'Duplicate B', label: 'duplicate', hasContent: true, references: [] }
+    ]);
+
+    expect(model.nodeById.child.parentId).toBe('root');
+    expect(model.nodeById.result.parentId).toBe('child');
+    expect(model.nodeById.child.outgoingIds).toEqual(['result']);
+    expect(model.nodeById.root.incomingIds).toEqual(['result']);
+    expect(model.nodeById.child.brokenTargets).toEqual(['missing']);
+    expect(model.nodeById.child.health).toEqual(expect.arrayContaining(['empty', 'broken']));
+    expect(model.nodeById.orphan.health).toContain('orphan');
+    expect(model.nodeById['duplicate-a'].health).toContain('duplicate');
+});
+
+test('shows grouped backlinks with on-demand excerpts and opens the source block', async ({ page, request }) => {
+    const target = await (await request.post('/api/blocks', {
+        data: { title: 'Bounded monotone convergence', label: 'analysis/results/monotone', content: 'Target theorem.' }
+    })).json();
+    const repeated = await (await request.post('/api/blocks', {
+        data: {
+            title: 'Application with two mentions',
+            label: 'analysis/applications',
+            content: 'Use [[analysis/results/monotone || convergence]] here.\nUse [[@analysis/results/monotone]] again.'
+        }
+    })).json();
+    await request.post('/api/blocks', {
+        data: {
+            title: 'Relative source',
+            label: 'analysis/results',
+            content: 'A relative reference to [[/monotone]] finishes the argument.'
+        }
+    });
+    await request.post('/api/blocks', {
+        data: { title: 'Unrelated source', label: 'analysis/unrelated', content: 'See [[showcase:math]].' }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByPlaceholder('Search blocks or create new...').fill(target.label);
+    await page.getByPlaceholder('Search blocks or create new...').press('Enter');
+
+    const backlinkButton = page.getByTestId('backlinks-button');
+    await expect(backlinkButton).toHaveAttribute('aria-label', 'Show 2 backlinks');
+    await expect(backlinkButton).toHaveAttribute('title', '2 backlinks');
+    await backlinkButton.click();
+
+    const popover = page.getByTestId('backlinks-popover');
+    await expect(popover).toBeVisible();
+    await expect(popover.getByText('Application with two mentions')).toBeVisible();
+    await expect(popover.getByText('Relative source')).toBeVisible();
+    await expect(popover.getByText('2 mentions')).toBeVisible();
+    await expect(popover.getByText('Use [[analysis/results/monotone || convergence]] here.')).toBeVisible();
+    await expect(popover.getByText('A relative reference to [[/monotone]] finishes the argument.')).toBeVisible();
+    await expect(popover.getByText('Unrelated source')).toHaveCount(0);
+
+    await backlinkButton.click();
+    await expect(popover).toHaveCount(0);
+    await backlinkButton.click();
+    await expect(popover).toBeVisible();
+
+    await page.getByTestId(`backlink-source-${repeated.id}`).click();
+    await expect(popover).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: /Application with two mentions/ })).toHaveAttribute('aria-selected', 'true');
 });
 
 test('ranks empty and typed searches by recency, relevance, and natural label order', () => {
@@ -1382,6 +1476,18 @@ test('stores portable image paths and renders portable and legacy asset referenc
         .toEqual([1, 1]);
 });
 
+test('rejects asset uploads outside the workspace assets directory', async ({ request }) => {
+    const content = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+    for (const filePath of ['assets/../outside.gif', 'assets-elsewhere/outside.gif', '../assets/outside.gif']) {
+        const response = await request.post('/api/assets', { data: { filePath, content } });
+        expect(response.status(), filePath).toBe(400);
+    }
+    const invalidContent = await request.post('/api/assets', {
+        data: { filePath: 'assets/not-an-image.gif', content: 'not a data URI' }
+    });
+    expect(invalidContent.status()).toBe(400);
+});
+
 test('renders workspace assets in the web read-only viewer', async ({ page }) => {
     await page.route('**/api/blocks?metaOnly=true', route => route.abort());
     await page.goto('/');
@@ -1435,6 +1541,51 @@ test('creates an open embedded editor only when it approaches the viewport', asy
 test('loads the graph feature only when it is opened', async ({ page }) => {
     await openEditor(page);
     await expect(page.getByRole('heading', { name: 'Graph View' })).toBeHidden();
+    await page.getByLabel('Open graph view').click();
+    await expect(page.getByRole('heading', { name: 'Graph View' })).toBeVisible();
+});
+
+test('opens the separate blocks view and filters workspace health without replacing graph view', async ({ page, request }) => {
+    const root = await (await request.post('/api/blocks', {
+        data: { title: 'Map root', label: 'map-demo', content: 'Root content.' }
+    })).json();
+    const emptyChild = await (await request.post('/api/blocks', {
+        data: { title: 'Empty child', label: 'map-demo/empty', content: '' }
+    })).json();
+    const brokenSource = await (await request.post('/api/blocks', {
+        data: { title: 'Broken source', label: 'map-demo/source', content: 'See [[map-demo]] and [[map-demo/missing]].' }
+    })).json();
+    const orphan = await (await request.post('/api/blocks', {
+        data: { title: 'Detached orphan', label: 'detached-orphan', content: 'No relationships.' }
+    })).json();
+
+    await openEditor(page);
+    await expect(page.getByLabel('Open graph view')).toBeVisible();
+    await page.getByLabel('Open blocks view').click();
+    await expect(page.getByRole('heading', { name: 'Blocks View' })).toBeVisible();
+    await expect(page.getByTestId(`block-map-node-${root.id}`)).toBeVisible();
+    await page.getByLabel('Expand map-demo', { exact: true }).click();
+    await expect(page.getByTestId(`block-map-node-${emptyChild.id}`)).toBeVisible();
+    await expect(page.getByTestId(`block-map-node-${brokenSource.id}`)).toBeVisible();
+    await page.getByTestId(`block-map-node-${brokenSource.id}`).click();
+    await expect(page.getByTestId('block-map-missing-target').filter({ hasText: 'map-demo/missing' })).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'Block inspector' })).toBeVisible();
+
+    await page.locator('.bv-filter-menu summary').click();
+    await page.getByLabel('Filter by state').selectOption('broken');
+    await expect(page.getByTestId(`block-map-node-${brokenSource.id}`)).toBeVisible();
+    await expect(page.getByTestId(`block-map-node-${root.id}`)).toBeVisible();
+    await expect(page.getByTestId(`block-map-node-${emptyChild.id}`)).toHaveCount(0);
+
+    await page.getByLabel('Filter by state').selectOption('all');
+    await page.getByLabel('Search blocks view').fill('Detached orphan');
+    await expect(page.getByTestId(`block-map-node-${orphan.id}`)).toBeVisible();
+    await expect(page.getByRole('status')).toContainText('1 of');
+    await page.getByTestId(`block-map-node-${orphan.id}`).click();
+    await expect(page.getByLabel('Relationship map').locator('.bv-graph-selected')).toContainText('Detached orphan');
+
+    await page.getByLabel('Close blocks view').click();
+    await expect(page.getByRole('heading', { name: 'Blocks View' })).toBeHidden();
     await page.getByLabel('Open graph view').click();
     await expect(page.getByRole('heading', { name: 'Graph View' })).toBeVisible();
 });
