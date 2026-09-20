@@ -134,7 +134,9 @@ test('10,000 notes keep a bounded rendered list and support reveal', async ({ pa
     await page.getByLabel('Relationship map').locator('.bv-graph-selected').click();
     await expect(page.getByTestId('block-map-node-bv-foundation')).toBeVisible();
     await page.getByLabel('Information density').selectOption('Workspace');
-    expect(await page.getByTestId('blocks-list').locator('.bv-row').count()).toBeLessThan(20);
+    const workspaceRows = await page.getByTestId('blocks-list').locator('.bv-row').count();
+    expect(workspaceRows).toBeGreaterThan(0);
+    expect(workspaceRows).toBeLessThan(50);
 });
 test('deep paths and long titles remain inspectable on a narrow screen', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });

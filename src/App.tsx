@@ -39,6 +39,7 @@ const shortcutMatches = (event: KeyboardEvent, shortcut: string) => {
 
 export default function App() {
     const fileInputRef = React.useRef<HTMLInputElement>(null);
+    const settingsButtonRef = React.useRef<HTMLButtonElement>(null);
     const loadViewerFiles = useStore(state => state.loadViewerFiles);
     const blocksRevision = useStore(state => state.blocksRevision);
     const blocks = useMemo(() => getOrderedBlocks(useStore.getState()), [blocksRevision]);
@@ -72,6 +73,10 @@ export default function App() {
     const [isDesktop, setIsDesktop] = useState(false);
     const [isWorkspaceIssuesOpen, setIsWorkspaceIssuesOpen] = useState(false);
     const previousWorkspaceIssueCount = useRef(0);
+    const closeSettings = React.useCallback(() => {
+        setIsMacroModalOpen(false);
+        window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
+    }, []);
     
     // Drag state for tabs
     const [draggedTab, setDraggedTab] = useState<string | null>(null);
@@ -174,7 +179,7 @@ export default function App() {
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
-                if (isMacroModalOpen) setIsMacroModalOpen(false);
+                if (isMacroModalOpen) closeSettings();
                 else if (isSearchModalOpen) setIsSearchModalOpen(false);
                 else if (isGraphModalOpen) setIsGraphModalOpen(false);
                 else if (isBlockMapOpen) setIsBlockMapOpen(false);
@@ -227,7 +232,7 @@ export default function App() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen, isBlockMapOpen, isWorkspaceIssuesOpen, imageUploadParams, setImageUploadParams]);
+    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen, isBlockMapOpen, isWorkspaceIssuesOpen, imageUploadParams, setImageUploadParams, closeSettings]);
 
     const closeTab = (id: string, e?: React.SyntheticEvent) => {
         e?.stopPropagation();
@@ -392,6 +397,7 @@ export default function App() {
                     </button>
                     <div className="w-px h-6 bg-outline mx-1"></div>
                     <button 
+                        ref={settingsButtonRef}
                         onClick={() => setIsMacroModalOpen(true)}
                         className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
                         title="Settings"
@@ -574,7 +580,7 @@ export default function App() {
                     <BlockMapModal isOpen onClose={() => setIsBlockMapOpen(false)} />
                 </React.Suspense>
             )}
-            {isMacroModalOpen && <React.Suspense fallback={<ModalLoading label="Loading settings"/>}><SettingsModal isOpen onClose={() => setIsMacroModalOpen(false)} /></React.Suspense>}
+            {isMacroModalOpen && <React.Suspense fallback={<ModalLoading label="Loading settings"/>}><SettingsModal isOpen onClose={closeSettings} /></React.Suspense>}
             {imageUploadParams && <React.Suspense fallback={<ModalLoading label="Loading image upload"/>}><ImageUploadModal /></React.Suspense>}
         </div>
     );
