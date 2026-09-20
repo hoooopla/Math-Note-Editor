@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { visualizer } from 'rollup-plugin-visualizer';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', 'VITE_');
@@ -42,8 +43,15 @@ export default defineConfig(({mode}) => {
             }
           ]
         }
+      }),
+      env.VITE_BUNDLE_ANALYZE === 'true' && visualizer({
+        filename: 'bundle-report.html',
+        template: 'treemap',
+        gzipSize: true,
+        brotliSize: true,
+        open: false
       })
-    ],
+    ].filter(Boolean),
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
