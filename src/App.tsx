@@ -6,13 +6,13 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { getOrderedBlocks, useStore } from "./store";
 import { BlockContainer } from "./components/Block";
-import { SettingsModal } from "./components/SettingsModal";
-import { ImageUploadModal } from "./components/ImageUploadModal";
-import { SearchModal } from "./components/SearchModal";
-import { WorkspaceIssuesModal } from "./components/WorkspaceIssuesModal";
 import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes } from "lucide-react";
 import "./index.css";
 
+const SettingsModal = React.lazy(() => import("./components/SettingsModal").then(module => ({ default: module.SettingsModal })));
+const ImageUploadModal = React.lazy(() => import("./components/ImageUploadModal").then(module => ({ default: module.ImageUploadModal })));
+const SearchModal = React.lazy(() => import("./components/SearchModal").then(module => ({ default: module.SearchModal })));
+const WorkspaceIssuesModal = React.lazy(() => import("./components/WorkspaceIssuesModal").then(module => ({ default: module.WorkspaceIssuesModal })));
 const GraphModal = React.lazy(() =>
     import("./components/GraphModal").then(module => ({ default: module.GraphModal }))
 );
@@ -59,6 +59,8 @@ export default function App() {
     const settings = useStore(state => state.settings);
     const persistenceError = useStore(state => state.persistenceError);
     const workspaceIssues = useStore(state => state.workspaceIssues);
+    const imageUploadParams = useStore(state => state.imageUploadParams);
+    const setImageUploadParams = useStore(state => state.setImageUploadParams);
     const clearPersistenceError = useStore(state => state.clearPersistenceError);
     const flushBlock = useStore(state => state.flushBlock);
     const flushPendingSaves = useStore(state => state.flushPendingSaves);
@@ -171,6 +173,17 @@ export default function App() {
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                if (isMacroModalOpen) setIsMacroModalOpen(false);
+                else if (isSearchModalOpen) setIsSearchModalOpen(false);
+                else if (isGraphModalOpen) setIsGraphModalOpen(false);
+                else if (isBlockMapOpen) setIsBlockMapOpen(false);
+                else if (isWorkspaceIssuesOpen) setIsWorkspaceIssuesOpen(false);
+                else if (imageUploadParams) setImageUploadParams(null);
+                else return;
+                e.preventDefault();
+                return;
+            }
             if (shortcutMatches(e, settings.searchShortcut || 'meta+k')) {
                 e.preventDefault();
                 setIsSearchModalOpen(true);
@@ -214,7 +227,7 @@ export default function App() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen, isBlockMapOpen]);
+    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen, isBlockMapOpen, isWorkspaceIssuesOpen, imageUploadParams, setImageUploadParams]);
 
     const closeTab = (id: string, e?: React.SyntheticEvent) => {
         e?.stopPropagation();
@@ -539,10 +552,10 @@ export default function App() {
                     )}
                 </div>
             </div>
-            {isWorkspaceIssuesOpen && workspaceIssues.length > 0 && <WorkspaceIssuesModal onClose={() => setIsWorkspaceIssuesOpen(false)}/>}
+            {isWorkspaceIssuesOpen && workspaceIssues.length > 0 && <React.Suspense fallback={<ModalLoading label="Loading workspace issues"/>}><WorkspaceIssuesModal onClose={() => setIsWorkspaceIssuesOpen(false)}/></React.Suspense>}
             </div>
             
-            <SearchModal isOpen={isSearchModalOpen} onClose={() => setIsSearchModalOpen(false)} />
+            {isSearchModalOpen && <React.Suspense fallback={<ModalLoading label="Loading search"/>}><SearchModal isOpen onClose={() => setIsSearchModalOpen(false)} /></React.Suspense>}
             {isGraphModalOpen && (
                 <React.Suspense fallback={
                     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" role="status" aria-label="Loading graph view">
@@ -561,8 +574,12 @@ export default function App() {
                     <BlockMapModal isOpen onClose={() => setIsBlockMapOpen(false)} />
                 </React.Suspense>
             )}
-            <SettingsModal isOpen={isMacroModalOpen} onClose={() => setIsMacroModalOpen(false)} />
-            <ImageUploadModal />
+            {isMacroModalOpen && <React.Suspense fallback={<ModalLoading label="Loading settings"/>}><SettingsModal isOpen onClose={() => setIsMacroModalOpen(false)} /></React.Suspense>}
+            {imageUploadParams && <React.Suspense fallback={<ModalLoading label="Loading image upload"/>}><ImageUploadModal /></React.Suspense>}
         </div>
     );
+}
+
+function ModalLoading({ label }: { label: string }) {
+    return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50" role="status" aria-label={label}><Loader2 size={32} className="animate-spin text-accent" aria-hidden="true"/></div>;
 }

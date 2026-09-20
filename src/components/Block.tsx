@@ -4,9 +4,10 @@ import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle, Link2 } from "lucide-react";
 import { MathTitle } from "./MathTitle";
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from "../lib/label-policy";
-import { SafeRelabelModal } from "./SafeRelabelModal";
 import { BacklinksPopover } from "./BacklinksPopover";
 import { buildBacklinkIndex } from "../lib/backlinks";
+
+const SafeRelabelModal = React.lazy(() => import("./SafeRelabelModal").then(module => ({ default: module.SafeRelabelModal })));
 
 export const BlockContainer: React.FC<{ id: string }> = ({ id }) => {
     const block = useStore(state => state.blocksById[id]);
@@ -343,14 +344,27 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                     onImagePaste={(file, insertContent) => setImageUploadParams({ file, onInsert: insertContent })}
                 />
             </div>
-            {pendingRelabel && <SafeRelabelModal
+            {pendingRelabel && <React.Suspense fallback={<RelabelLoading onCancel={() => setPendingRelabel(null)}/>}><SafeRelabelModal
                 oldPrefix={pendingRelabel.oldPrefix}
                 newPrefix={pendingRelabel.newPrefix}
                 onClose={(completed) => {
                     if (!completed) setLabelInput(block.label);
                     setPendingRelabel(null);
                 }}
-            />}
+            /></React.Suspense>}
         </div>
     )
+}
+
+function RelabelLoading({ onCancel }: { onCancel: () => void }) {
+    useEffect(() => {
+        const cancel = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            onCancel();
+        };
+        window.addEventListener('keydown', cancel);
+        return () => window.removeEventListener('keydown', cancel);
+    }, [onCancel]);
+    return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 text-sm text-secondary" role="status">Loading label preview…</div>;
 }
