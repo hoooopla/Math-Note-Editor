@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from '../lib/block-metadata';
 import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from '../lib/safe-relabel';
+import { googleDriveWorkspace } from '../lib/google-drive-workspace';
 
 export { computeReferences, parseFrontmatter } from '../lib/block-metadata';
 
@@ -70,9 +71,11 @@ export interface WorkspaceBackup {
 }
 
 export interface BackendApi {
-    mode: "server" | "local" | "none" | "viewer";
+    mode: "server" | "local" | "google" | "none" | "viewer";
     init: () => Promise<boolean>;
     connectLocalFS: () => Promise<boolean>;
+    connectGoogleDrive: () => Promise<{ id: string, name: string }>;
+    disconnectGoogleDrive: () => Promise<void>;
     loadSettings: () => Promise<EditorSettings>;
     saveSettings: (settings: EditorSettings) => Promise<void>;
     saveWorkspaceSession: (session: WorkspaceSession) => Promise<void>;
@@ -189,6 +192,12 @@ const loadAllLocalBlocks = async (): Promise<BlockData[]> => {
         .filter((block): block is BlockData => !!block);
 };
 
+const loadAllGoogleBlocks = async (): Promise<BlockData[]> => {
+    const metadata = await googleDriveWorkspace.loadBlocks();
+    return (await Promise.all(metadata.map(block => googleDriveWorkspace.loadBlock(block.id))))
+        .filter((block): block is BlockData => !!block);
+};
+
 const requireOk = async (response: Response, operation: string) => {
     if (response.ok) return;
     let detail = '';
@@ -274,6 +283,16 @@ export const api: BackendApi = {
             return false;
         }
     },
+    connectGoogleDrive: async () => {
+        const selected = await googleDriveWorkspace.connect();
+        useServer = false;
+        api.mode = 'google';
+        return selected;
+    },
+    disconnectGoogleDrive: async () => {
+        await googleDriveWorkspace.disconnect();
+        api.mode = 'none';
+    },
     loadSettings: async () => {
         const defaultSettings: EditorSettings = { 
             macros: {}, 
@@ -321,6 +340,7 @@ export const api: BackendApi = {
             await requireOk(res, 'Loading settings');
             return await res.json();
         }
+        if (api.mode === 'google') return googleDriveWorkspace.loadSettings(defaultSettings);
         if (api.mode === "local" && dirHandle) {
             try {
                 const settingDirHandle = await dirHandle.getDirectoryHandle('setting');
@@ -341,6 +361,8 @@ export const api: BackendApi = {
                 body: JSON.stringify(settings),
             });
             await requireOk(res, 'Saving settings');
+        } else if (api.mode === 'google') {
+            await googleDriveWorkspace.saveSettings(settings);
         } else if (api.mode === "local" && dirHandle) {
             const settingDirHandle = await dirHandle.getDirectoryHandle('setting', { create: true });
             let existed = true;
@@ -366,6 +388,9 @@ export const api: BackendApi = {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(session)
             });
             await requireOk(res, 'Saving workspace session');
+        } else if (api.mode === 'google') {
+            const current = await api.loadSettings();
+            await api.saveSettings({ ...current, workspaceSession: session });
         } else if (api.mode === 'local' && dirHandle) {
             const current = await api.loadSettings();
             await api.saveSettings({ ...current, workspaceSession: session });
@@ -424,6 +449,7 @@ export const api: BackendApi = {
         if (currentContents) await replaceLocalFile(backupHandle, currentContents);
     },
     saveAsset: async (file, filename) => {
+        if (api.mode === 'google') throw new Error('Image attachments are not supported in Google Drive workspaces yet.');
         if (useServer) {
             const base64: string = await new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -547,6 +573,7 @@ export const api: BackendApi = {
             await requireOk(res, 'Loading blocks');
             return await res.json();
         }
+        if (api.mode === 'google') return googleDriveWorkspace.loadBlocks();
         if (api.mode === "local" && dirHandle) {
             const blocksMap = new Map<string, BlockData>();
             
@@ -587,6 +614,7 @@ export const api: BackendApi = {
             const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`);
             return res.ok ? await res.json() : null;
         }
+        if (api.mode === 'google') return googleDriveWorkspace.loadBlock(id);
         if (api.mode === "local" && dirHandle) {
             const entry = await getFileByBlockId(id);
             if (entry) {
@@ -611,6 +639,13 @@ export const api: BackendApi = {
             });
             await requireOk(res, 'Creating block');
             return await res.json();
+        }
+        if (api.mode === 'google') {
+            const title = normalizeBlockTitle(metadataText(data.title, 'New Block'));
+            const label = normalizeBlockLabel(metadataText(data.label, 'block'));
+            const metadataError = validateBlockMetadata(title, label);
+            if (metadataError) throw new Error(metadataError);
+            return googleDriveWorkspace.addBlock({ ...data, title, label });
         }
         if (api.mode === "local" && dirHandle) {
             const id = uuidv4();
@@ -657,6 +692,10 @@ export const api: BackendApi = {
             });
             await requireOk(res, 'Saving block');
             return await res.json();
+        }
+        if (api.mode === 'google') {
+            const updated = await googleDriveWorkspace.updateBlock(block);
+            return { block: updated };
         }
         if (api.mode === "local" && dirHandle) {
             const location = await getFileLocationByBlockId(id);
@@ -710,8 +749,8 @@ export const api: BackendApi = {
             await requireOk(res, 'Resolving duplicate label');
             return await res.json();
         }
-        if (api.mode === 'local' && dirHandle) {
-            const blocks = await loadAllLocalBlocks();
+        if ((api.mode === 'local' && dirHandle) || api.mode === 'google') {
+            const blocks = api.mode === 'google' ? await loadAllGoogleBlocks() : await loadAllLocalBlocks();
             const current = blocks.find(block => block.id === id);
             if (!current) throw new Error('Block not found');
             const duplicateCount = blocks.filter(block => normalizeBlockLabel(block.label) === current.label).length;
@@ -734,8 +773,8 @@ export const api: BackendApi = {
             await requireOk(res, 'Previewing tree transformation');
             return await res.json();
         }
-        if (api.mode === 'local' && dirHandle) {
-            const blocks = await loadAllLocalBlocks();
+        if ((api.mode === 'local' && dirHandle) || api.mode === 'google') {
+            const blocks = api.mode === 'google' ? await loadAllGoogleBlocks() : await loadAllLocalBlocks();
             const plan = buildSafeRelabelPlan(blocks, oldPrefix, newPrefix);
             plan.revision = localRevision(blocks);
             plan.signature = shortHash(relabelPlanSignatureInput(plan));
@@ -744,8 +783,13 @@ export const api: BackendApi = {
                 ...plan.blockChanges.map(change => change.id),
                 ...plan.referenceImpacts.map(impact => impact.blockId)
             ])) {
-                const location = await getFileLocationByBlockId(id);
-                if (location) fileNames.set(id, location.relativePath);
+                if (api.mode === 'google') {
+                    const block = blocks.find(item => item.id === id);
+                    if (block?._fileMeta?.fileName) fileNames.set(id, block._fileMeta.fileName);
+                } else {
+                    const location = await getFileLocationByBlockId(id);
+                    if (location) fileNames.set(id, location.relativePath);
+                }
             }
             for (const change of plan.blockChanges) change.fileName = fileNames.get(change.id);
             for (const impact of plan.referenceImpacts) impact.fileName = fileNames.get(impact.blockId);
@@ -763,8 +807,8 @@ export const api: BackendApi = {
             await requireOk(res, 'Applying tree transformation');
             return await res.json();
         }
-        if (api.mode === 'local' && dirHandle) {
-            const blocks = await loadAllLocalBlocks();
+        if ((api.mode === 'local' && dirHandle) || api.mode === 'google') {
+            const blocks = api.mode === 'google' ? await loadAllGoogleBlocks() : await loadAllLocalBlocks();
             const current = buildSafeRelabelPlan(blocks, preview.oldPrefix, preview.newPrefix);
             current.revision = localRevision(blocks);
             current.signature = shortHash(relabelPlanSignatureInput(current));
@@ -773,6 +817,22 @@ export const api: BackendApi = {
             }
             if (current.conflicts.length) throw new Error(current.conflicts.join(' '));
             const planned = applySafeRelabelPlan(blocks, current);
+            if (api.mode === 'google') {
+                const updatedBlocks: BlockData[] = [];
+                for (let index = 0; index < blocks.length; index++) {
+                    const before = blocks[index];
+                    const after = planned[index];
+                    if (before.label === after.label && before.content === after.content) continue;
+                    updatedBlocks.push(await googleDriveWorkspace.updateBlock({
+                        ...before,
+                        label: after.label,
+                        content: after.content,
+                        references: computeReferences(after.content || ''),
+                        hasContent: (after.content || '').trim().length > 0
+                    }));
+                }
+                return { plan: current, updatedBlocks };
+            }
             const updatedBlocks: BlockData[] = [];
             const prepared: Array<{ file: LocalBlockFile, original: string, updated: BlockData }> = [];
             for (let index = 0; index < blocks.length; index++) {
@@ -814,6 +874,8 @@ export const api: BackendApi = {
         if (useServer) {
             const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
             await requireOk(res, 'Deleting block');
+        } else if (api.mode === 'google') {
+            await googleDriveWorkspace.deleteBlock(id);
         } else if (api.mode === "local" && dirHandle) {
             const file = await getFileLocationByBlockId(id);
             if (file) {

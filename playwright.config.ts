@@ -16,7 +16,13 @@ export default defineConfig({
     },
     webServer: {
         command: `npm run dev:test -- --port ${port}`,
-        env: { DISABLE_HMR: 'true' },
+        env: {
+            DISABLE_HMR: 'true',
+            VITE_ENABLE_GOOGLE_DRIVE: 'true',
+            VITE_GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com',
+            VITE_GOOGLE_API_KEY: 'test-api-key',
+            VITE_GOOGLE_APP_ID: '123456789'
+        },
         url: `http://127.0.0.1:${port}/api/runtime`,
         reuseExistingServer: false,
         timeout: 120_000

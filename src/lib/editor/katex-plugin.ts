@@ -79,16 +79,10 @@ function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new 
             let end = doc.indexOf("\\]", i + 2);
             if (end !== -1) {
                 const text = doc.slice(i + 2, end).trim();
-                if (text.length > 0) {
-                    ranges.push({
-                        from: i, 
-                        to: end + 2, 
-                        text: text,
-                        type: "blockMath"
-                    });
-                    i = end + 2;
-                    continue;
-                }
+                // Empty pairs still establish math context for subsequent typing.
+                ranges.push({ from: i, to: end + 2, text, type: "blockMath" });
+                i = end + 2;
+                continue;
             }
         }
         i++;
@@ -323,18 +317,35 @@ function updateParsedRanges(value: ParsedRange[], tr: Transaction): ParsedRange[
         newRegions.push({ from: newStart.from, to: newEnd.to });
     });
 
-    const mergedOld = mergeRegions(oldRegions);
-    const mergedNew = mergeRegions(newRegions);
     const overlaps = (range: ChangedRegion, region: ChangedRegion) => range.from <= region.to && range.to >= region.from;
 
-    // Display math can cross line boundaries. Changes inside it, or changes that
-    // create/remove its delimiters, use the full parser for correctness.
-    const touchesBlockMath = value.some(range => range.type === "blockMath" && mergedOld.some(region => overlaps(range, region)));
-    const touchesBlockDelimiter = mergedOld.some(region => containsBlockMathDelimiter(tr.startState.doc.sliceString(region.from, region.to))) ||
-        mergedNew.some(region => containsBlockMathDelimiter(tr.state.doc.sliceString(region.from, region.to)));
-    if (touchesBlockMath || touchesBlockDelimiter) {
+    // Delimiter edits can change pairing across the document. Ordinary edits
+    // inside an existing display formula only need its complete source range.
+    const touchesBlockDelimiter = oldRegions.some(region => containsBlockMathDelimiter(tr.startState.doc.sliceString(region.from, region.to))) ||
+        newRegions.some(region => containsBlockMathDelimiter(tr.state.doc.sliceString(region.from, region.to)));
+    if (touchesBlockDelimiter) {
         return parseRanges(tr.state.doc.toString(), tr.state.field(autoClosingDollarField));
     }
+    // Expand transitively: another formula may share the boundary line.
+    const included = new Set<ParsedRange>();
+    let expanded = true;
+    while (expanded) {
+        expanded = false;
+        for (const range of value) {
+            if (range.type !== "blockMath" || included.has(range) || !oldRegions.some(region => overlaps(range, region))) continue;
+            included.add(range);
+            const from = tr.startState.doc.lineAt(range.from).from;
+            const to = tr.startState.doc.lineAt(range.to).to;
+            oldRegions.push({ from, to });
+            newRegions.push({
+                from: tr.state.doc.lineAt(tr.changes.mapPos(from, -1)).from,
+                to: tr.state.doc.lineAt(tr.changes.mapPos(to, 1)).to
+            });
+            expanded = true;
+        }
+    }
+    const mergedOld = mergeRegions(oldRegions);
+    const mergedNew = mergeRegions(newRegions);
 
     const mapped = value
         .filter(range => !mergedOld.some(region => overlaps(range, region)))
@@ -404,7 +415,7 @@ class MathWidget extends WidgetType {
     toDOM(view: EditorView) {
         const span = document.createElement(this.isBlock ? "div" : "span");
         const baseClass = this.isBlock
-            ? "cm-math-block text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all"
+            ? "cm-math-block cm-math-rendered text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all"
             : `cm-math-inline${this.isQuoted ? " cm-quote-math" : ""}`;
         span.className = baseClass;
         span.style.cursor = "text";
@@ -444,30 +455,66 @@ class MathWidget extends WidgetType {
     }
 }
 
+// Keep preview DOM stable during typing and render only the latest formula.
+const previewControllers = new WeakMap<HTMLElement, ReturnType<typeof mathPreview>>();
+function mathPreview(dom: HTMLElement, view: EditorView, displayMode: boolean, baseClass: string) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let text: string | undefined;
+    let macrosKey = "";
+    let destroyed = false;
+    return {
+        update(nextText: string, macros: Record<string, string>, immediate = false) {
+            const nextKey = JSON.stringify(macros);
+            if (text === nextText && macrosKey === nextKey) return;
+            text = nextText;
+            macrosKey = nextKey;
+            clearTimeout(timer);
+            const render = () => {
+                if (destroyed) return;
+                try {
+                    katex.render(nextText, dom, { displayMode, throwOnError: true, macros: { ...macros } });
+                    dom.className = baseClass;
+                } catch {
+                    dom.textContent = nextText;
+                    dom.className = `${baseClass} text-red-500 bg-red-500/10 font-mono text-sm`;
+                }
+                view.requestMeasure();
+            };
+            if (immediate) render();
+            else timer = setTimeout(render, 70);
+        },
+        destroy() {
+            destroyed = true;
+            clearTimeout(timer);
+        }
+    };
+}
+
 class BlockMathEditingPreviewWidget extends WidgetType {
-    constructor(public text: string, public macros: Record<string, string>) {
-        super();
-    }
+    constructor(public text: string, public macros: Record<string, string>) { super(); }
 
     eq(other: BlockMathEditingPreviewWidget) {
         return this.text === other.text && JSON.stringify(this.macros) === JSON.stringify(other.macros);
     }
 
-    toDOM() {
+    toDOM(view: EditorView) {
         const dom = document.createElement("div");
-        const baseClass = "cm-math-block text-center pointer-events-none";
-        dom.className = baseClass;
-        try {
-            katex.render(this.text, dom, {
-                displayMode: true,
-                throwOnError: true,
-                macros: {...this.macros}
-            });
-        } catch (e: any) {
-            dom.innerText = this.text;
-            dom.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
-        }
+        const controller = mathPreview(dom, view, true, "cm-math-block text-center pointer-events-none");
+        previewControllers.set(dom, controller);
+        controller.update(this.text, this.macros, true);
         return dom;
+    }
+
+    updateDOM(dom: HTMLElement) {
+        const controller = previewControllers.get(dom);
+        if (!controller) return false;
+        controller.update(this.text, this.macros);
+        return true;
+    }
+
+    destroy(dom: HTMLElement) {
+        previewControllers.get(dom)?.destroy();
+        previewControllers.delete(dom);
     }
 
     ignoreEvent() { return true; }
@@ -558,14 +605,14 @@ function buildBlockMathDecorations(state: EditorState) {
 
     for (const range of state.field(parsedRangesField).filter(range => range.type === "blockMath")) {
         const overlapping = isFocused !== false && selection.from <= range.to && selection.to >= range.from;
-        if (overlapping) {
+        if (overlapping || !range.text) {
             decos.push({
                 from: range.from,
                 to: range.to,
                 deco: Decoration.mark({ class: "cm-math-editing", inclusive: true })
             });
             appendMathSyntaxDecorations(doc, range, decos);
-            decos.push({
+            if (range.text) decos.push({
                 from: range.to,
                 to: range.to,
                 deco: Decoration.widget({
@@ -591,10 +638,14 @@ function buildBlockMathDecorations(state: EditorState) {
 
 export const blockMathDecorationField = StateField.define<DecorationSet>({
     create: buildBlockMathDecorations,
-    update(_value, transaction) {
-        // Block math is normally sparse, so rebuilding this small set on each
-        // transaction is both predictable and keeps selection/facet changes in sync.
-        return buildBlockMathDecorations(transaction.state);
+    update(value, transaction) {
+        const before = transaction.startState;
+        const after = transaction.state;
+        if (before.field(parsedRangesField) === after.field(parsedRangesField) &&
+            before.selection.eq(after.selection) &&
+            before.field(editorFocusField) === after.field(editorFocusField) &&
+            before.facet(livePreviewMacros) === after.facet(livePreviewMacros)) return value;
+        return buildBlockMathDecorations(after);
     },
     provide: field => EditorView.decorations.from(field)
 });
@@ -716,72 +767,35 @@ export const mathPlugin = ViewPlugin.fromClass(class {
     decorations: plugin => plugin.decorations
 });
 
-function getMathTooltip(state: EditorState): Tooltip | null {
-    const isFocused = state.field(editorFocusField, false);
-    if (!isFocused) return null;
-
-    const ranges = state.field(parsedRangesField);
+function activeInlineMath(state: EditorState) {
+    if (!state.field(editorFocusField, false)) return undefined;
     const selection = state.selection.main;
-    const macros = state.facet(livePreviewMacros);
-
-    for (const r of ranges) {
-        if (r.type === "inlineMath" && r.text.trim().length > 0) {
-            const overlapping = selection.from <= r.to && selection.to >= r.from;
-            if (overlapping) {
-                return {
-                    pos: r.from,
-                    above: true,
-                    create(view: EditorView) {
-                        let currentText = r.text;
-                        const dom = document.createElement("div");
-                        dom.className = "p-3 bg-surface border border-outline shadow-lg rounded-xl text-primary z-50 pointer-events-none mb-3 max-w-[90vw]";
-                        
-                        const renderMath = (text: string) => {
-                            try {
-                                katex.render(text, dom, {
-                                    displayMode: false,
-                                    throwOnError: true,
-                                    macros: {...macros}
-                                });
-                                dom.className = "p-3 bg-surface border border-outline shadow-lg rounded-xl text-primary z-50 pointer-events-none mb-3 max-w-[90vw]";
-                            } catch (e: any) {
-                                dom.innerText = text;
-                                dom.className = "p-3 bg-surface border border-outline shadow-lg rounded-xl text-primary z-50 pointer-events-none mb-3 max-w-[90vw] text-red-500 bg-red-500/10 font-mono text-sm";
-                            }
-                        };
-                        
-                        renderMath(currentText);
-
-                        return {
-                            dom,
-                            update(update) {
-                                const newRanges = update.state.field(parsedRangesField);
-                                const newSelection = update.state.selection.main;
-                                // Find if we are still overlapping an inline math, and if the text has changed
-                                const activeRange = newRanges.find(nr => 
-                                    nr.type === "inlineMath" && 
-                                    newSelection.from <= nr.to && 
-                                    newSelection.to >= nr.from &&
-                                    nr.from === r.from // Pos remains the same anchor
-                                );
-                                
-                                if (activeRange && activeRange.text !== currentText) {
-                                    currentText = activeRange.text;
-                                    renderMath(currentText);
-                                }
-                            }
-                        };
-                    }
-                };
-            }
-        }
-    }
-    return null;
+    return state.field(parsedRangesField).find(range =>
+        range.type === "inlineMath" && range.text.length > 0 &&
+        selection.from <= range.to && selection.to >= range.from);
 }
 
+// CodeMirror uses the factory identity to retain a tooltip across transactions.
+const createMathTooltip: Tooltip["create"] = view => {
+    const dom = document.createElement("div");
+    const controller = mathPreview(dom, view, false,
+        "cm-math-preview p-3 bg-surface border border-outline shadow-lg rounded-xl text-primary z-50 pointer-events-none mb-3 max-w-[90vw]");
+    const range = activeInlineMath(view.state);
+    if (range) controller.update(range.text, view.state.facet(livePreviewMacros), true);
+    return {
+        dom,
+        update(update) {
+            const range = activeInlineMath(update.state);
+            if (range) controller.update(range.text, update.state.facet(livePreviewMacros));
+        },
+        destroy() { controller.destroy(); }
+    };
+};
+
 export const mathTooltipField = showTooltip.compute(
-    ["doc", "selection", editorFocusField, parsedRangesField],
-    (state) => {
-        return getMathTooltip(state);
+    ["doc", "selection", editorFocusField, parsedRangesField, livePreviewMacros],
+    (state): Tooltip | null => {
+        const range = activeInlineMath(state);
+        return range ? { pos: range.from, above: true, create: createMathTooltip } : null;
     }
 );

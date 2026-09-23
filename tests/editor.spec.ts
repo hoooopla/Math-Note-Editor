@@ -1417,6 +1417,86 @@ test('renders and edits display math without crashing the editor', async ({ page
     expect(editorErrors).toEqual([]);
 });
 
+test('scrolls only wide rendered display math', async ({ page }) => {
+    const editor = await openEditor(page);
+    await page.setViewportSize({ width: 800, height: 700 });
+    const wideFormula = Array(45).fill('x^2').join('+');
+    await replaceEditorText(page, editor, `\\[x^2\\]\n\\[${wideFormula}\\]`);
+    await page.getByLabel('Open settings').click();
+    await page.keyboard.press('Escape');
+
+    const rendered = page.locator('.cm-math-rendered');
+    await expect(rendered).toHaveCount(2);
+    const short = await rendered.nth(0).evaluate(element => ({
+        client: element.clientWidth,
+        scroll: element.scrollWidth
+    }));
+    const wide = await rendered.nth(1).evaluate(element => {
+        const before = { client: element.clientWidth, scroll: element.scrollWidth };
+        element.scrollLeft = element.scrollWidth;
+        return { ...before, position: element.scrollLeft };
+    });
+    expect(short.scroll).toBeLessThanOrEqual(short.client + 1);
+    expect(wide.scroll).toBeGreaterThan(wide.client + 20);
+    expect(wide.position).toBeGreaterThan(0);
+    await rendered.nth(1).evaluate(element => { element.scrollLeft = 0; });
+    await rendered.nth(1).hover();
+    await page.mouse.wheel(250, 0);
+    await expect.poll(() => rendered.nth(1).evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+});
+
+test('recognizes math typed into an initially empty display block', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, '\\[\n\n\\]');
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Home');
+    await page.keyboard.insertText('\\frac');
+    await expect(page.locator('.cm-tooltip-autocomplete')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.keyboard.insertText('{1}{2}');
+    await expect(page.locator('.cm-math-block .katex .mfrac')).toBeVisible();
+    await page.getByLabel('Open settings').click();
+    await expect(page.locator('.cm-math-block .katex .mfrac')).toBeVisible();
+});
+
+test('reuses inline preview DOM while typing and moving the cursor', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, '$x$');
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowRight');
+    const preview = page.locator('.cm-math-preview');
+    await expect(preview.locator('.katex')).toBeVisible();
+    await preview.evaluate(dom => { (window as any).__mathPreview = dom; });
+    await page.keyboard.insertText('y');
+    await expect(preview.locator('annotation')).toHaveText('yx');
+    await page.keyboard.press('ArrowRight');
+    expect(await preview.evaluate(dom => dom === (window as any).__mathPreview)).toBe(true);
+    await page.keyboard.insertText('^2');
+    await expect(preview.locator('annotation')).toHaveText('yx^2');
+    await page.getByLabel('Open settings').click();
+    await expect(preview).toHaveCount(0);
+    await expect(page.locator('.cm-math-inline .katex')).toBeVisible();
+});
+
+test('updates display previews in place and preserves surrounding formulas', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, '$a$\n\\[\nx\n\\]\n$b$');
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('End');
+    const preview = page.locator('.cm-math-block');
+    await expect(preview.locator('.katex')).toBeVisible();
+    await preview.evaluate(dom => { (window as any).__blockPreview = dom; });
+    await page.keyboard.insertText('^2');
+    await expect(preview.locator('annotation')).toHaveText('x^2');
+    expect(await preview.evaluate(dom => dom === (window as any).__blockPreview)).toBe(true);
+    await page.getByLabel('Open settings').click();
+    await expect(page.locator('.cm-math-inline .katex')).toHaveCount(2);
+    await expect(preview.locator('annotation')).toHaveText('x^2');
+});
+
 test('indents selected display-math lines with Tab and outdents with Shift+Tab', async ({ page }) => {
     const editor = await openEditor(page);
     await replaceEditorText(page, editor, '\\[\nfirst\nsecond\n\\]');

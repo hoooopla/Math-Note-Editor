@@ -48,10 +48,13 @@ export interface AppState {
   activeTab: string | null;
   tabFocusStates: Record<string, TabFocusState>;
   closedTabs: ClosedTab[];
-  backendMode: "server" | "local" | "viewer" | "none";
+  backendMode: "server" | "local" | "google" | "viewer" | "none";
+  googleFolderName: string | null;
   loadViewerFiles: (files: FileList) => Promise<void>;
   initBackend: () => Promise<void>;
   connectLocalFS: () => Promise<void>;
+  connectGoogleDrive: () => Promise<void>;
+  disconnectGoogleDrive: () => Promise<void>;
   loadBlocks: () => Promise<void>;
   loadSettings: () => Promise<void>;
   saveSettings: (settings: EditorSettings) => Promise<void>;
@@ -105,7 +108,7 @@ function persistWorkspaceSession() {
     sessionSaveTimer = null;
   }
   const state = useStore.getState();
-  if (state.backendMode !== 'server' && state.backendMode !== 'local') return sessionSavePromise;
+  if (state.backendMode !== 'server' && state.backendMode !== 'local' && state.backendMode !== 'google') return sessionSavePromise;
   sessionSavePromise = sessionSavePromise.then(() => {
     const current = useStore.getState();
     const workspaceSession = { openTabs: current.openTabs, activeTab: current.activeTab };
@@ -184,6 +187,7 @@ export const useStore = create<AppState>((set, get) => ({
   tabFocusStates: {},
   closedTabs: [],
   backendMode: "none",
+  googleFolderName: null,
   viewOnlyBlocks: {},
   toggleViewOnly: (id) => set(state => {
     const current = state.viewOnlyBlocks[id] ?? (state.backendMode === "viewer");
@@ -319,6 +323,40 @@ export const useStore = create<AppState>((set, get) => ({
       }
     } finally {
       set({ isLoadingFiles: false });
+    }
+  },
+  connectGoogleDrive: async () => {
+    set({ isLoadingFiles: true, persistenceError: null });
+    try {
+      await get().flushPendingSaves();
+      const selected = await backendApi.connectGoogleDrive();
+      set({ backendMode: 'google', googleFolderName: selected.name });
+      await get().loadBlocks();
+      await get().loadSettings();
+      const first = get().blockOrder[0];
+      if (first && get().openTabs.length === 0) set({ openTabs: [first], activeTab: first });
+      set({ isLoaded: true });
+    } catch (error) {
+      set({ persistenceError: errorMessage(error) });
+    } finally {
+      set({ isLoadingFiles: false });
+    }
+  },
+  disconnectGoogleDrive: async () => {
+    try {
+      await get().flushPendingSaves();
+      await backendApi.disconnectGoogleDrive();
+      set(state => ({
+        ...normalizeBlocks([]),
+        blocksRevision: state.blocksRevision + 1,
+        backendMode: 'none',
+        googleFolderName: null,
+        openTabs: [],
+        activeTab: null,
+        persistenceError: null
+      }));
+    } catch (error) {
+      set({ persistenceError: errorMessage(error) });
     }
   },
   loadSettings: async () => {
@@ -989,7 +1027,7 @@ useStore.subscribe((state) => {
     if (state.openTabs === lastTabs && state.activeTab === lastActiveTab) return;
     lastTabs = state.openTabs;
     lastActiveTab = state.activeTab;
-    if (!state.isLoaded || (state.backendMode !== 'server' && state.backendMode !== 'local')) return;
+    if (!state.isLoaded || (state.backendMode !== 'server' && state.backendMode !== 'local' && state.backendMode !== 'google')) return;
     if (sessionSaveTimer) clearTimeout(sessionSaveTimer);
     sessionSaveTimer = setTimeout(() => {
       void persistWorkspaceSession()

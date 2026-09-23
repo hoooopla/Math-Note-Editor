@@ -35,6 +35,16 @@ body {
   padding: 0 !important;
 }
 
+.cm-math-rendered {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.cm-scroller > .cm-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .cm-underline-element {
   border-bottom: 1.5px solid currentColor;
   box-decoration-break: clone;
@@ -103,6 +113,11 @@ body {
 
 .cm-tooltip-autocomplete {
   z-index: 9999 !important;
+}
+
+/* The keyword key glyph causes expensive font layout in command suggestions. */
+.cm-tooltip-autocomplete .cm-completionIcon-keyword {
+  display: none;
 }
 
 .cm-completionIcon-create:after {

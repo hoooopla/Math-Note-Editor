@@ -6,8 +6,10 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { getOrderedBlocks, useStore } from "./store";
 import { BlockContainer } from "./components/Block";
-import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes } from "lucide-react";
+import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut } from "lucide-react";
 import "./index.css";
+
+const enableGoogleDrive = import.meta.env.VITE_ENABLE_GOOGLE_DRIVE === 'true';
 
 const SettingsModal = React.lazy(() => import("./components/SettingsModal").then(module => ({ default: module.SettingsModal })));
 const ImageUploadModal = React.lazy(() => import("./components/ImageUploadModal").then(module => ({ default: module.ImageUploadModal })));
@@ -50,6 +52,9 @@ export default function App() {
     const setActiveBlock = useStore(state => state.setActiveBlock);
     const initBackend = useStore(state => state.initBackend);
     const connectLocalFS = useStore(state => state.connectLocalFS);
+    const connectGoogleDrive = useStore(state => state.connectGoogleDrive);
+    const disconnectGoogleDrive = useStore(state => state.disconnectGoogleDrive);
+    const googleFolderName = useStore(state => state.googleFolderName);
     const openTabs = useStore(state => state.openTabs);
     const activeTab = useStore(state => state.activeTab);
     const setOpenTabs = useStore(state => state.setOpenTabs);
@@ -341,6 +346,26 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center gap-2">
+                    {backendMode === 'google' && (
+                        <div className="mr-2 flex items-center gap-1 rounded-lg border border-outline bg-base px-2 py-1 text-xs text-secondary" title="The connected Google Drive folder">
+                            <Cloud size={14} className="text-accent" />
+                            <span className="max-w-40 truncate">{googleFolderName || 'Google Drive'}</span>
+                            <button onClick={() => void disconnectGoogleDrive()} className="ml-1 rounded p-1 hover:bg-outline hover:text-primary" aria-label="Disconnect Google Drive" title="Disconnect Google Drive">
+                                <LogOut size={13} />
+                            </button>
+                        </div>
+                    )}
+                    {enableGoogleDrive && backendMode !== 'google' && backendMode !== 'viewer' && (
+                        <button
+                            onClick={() => void connectGoogleDrive()}
+                            disabled={isLoadingFiles}
+                            className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 disabled:opacity-50"
+                            title="Sign in to Google and choose a Drive folder. This app needs Drive access to edit files in the chosen folder."
+                        >
+                            {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <Cloud size={16} />}
+                            Google Drive
+                        </button>
+                    )}
 {backendMode === "none" && (
                         <div className="flex items-center gap-2">
                             <button 
@@ -521,6 +546,15 @@ export default function App() {
                                         <FolderOpen size={48} className="mb-4 opacity-50 text-accent" />
                                         <p className="mb-4">Connect a workspace folder to begin.</p>
                                         <div className="flex flex-col gap-3">
+                                            {enableGoogleDrive && <button
+                                                onClick={() => void connectGoogleDrive()}
+                                                disabled={isLoadingFiles}
+                                                className="px-4 py-2 bg-accent/20 hover:bg-accent/30 text-accent rounded-lg transition-colors flex items-center gap-2 justify-center disabled:opacity-50"
+                                                title="Sign in to Google and choose a Drive folder. This app needs Drive access to edit files in the chosen folder."
+                                            >
+                                                {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <Cloud size={16} />}
+                                                Choose Google Drive Folder
+                                            </button>}
                                             <button 
                                                 onClick={() => connectLocalFS()}
                                                 disabled={isLoadingFiles}
