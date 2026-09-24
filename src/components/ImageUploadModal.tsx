@@ -11,6 +11,7 @@ export function ImageUploadModal() {
     const [width, setWidth] = useState('500');
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [isSaving, setIsSaving] = useState(false);
+    const [saveError, setSaveError] = useState<string | null>(null);
     const [existingAssets, setExistingAssets] = useState<string[]>([]);
     
     useEffect(() => {
@@ -38,6 +39,7 @@ export function ImageUploadModal() {
 
     const handleSave = async () => {
         setIsSaving(true);
+        setSaveError(null);
         try {
             const savedUrl = await saveAsset(imageUploadParams.file, finalPath);
             const wAttr = width.trim() ? ` width="${width.trim()}"` : '';
@@ -46,7 +48,7 @@ export function ImageUploadModal() {
             setImageUploadParams(null);
         } catch (e) {
             console.warn("Save asset failed", e);
-            alert("Failed to save asset");
+            setSaveError(e instanceof Error ? e.message : 'Failed to save image');
         } finally {
             setIsSaving(false);
         }
@@ -89,6 +91,7 @@ export function ImageUploadModal() {
                     </div>
                     
                     <div className="p-4 space-y-4 overflow-y-auto flex-1">
+                        {saveError && <p role="alert" className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{saveError}</p>}
                         {previewUrl && (
                             <div className="flex justify-center bg-base tracking-pattern rounded-lg border border-outline overflow-hidden p-2">
                                 <img src={previewUrl} alt="Preview" className="max-h-48 object-contain rounded drop-shadow-md" />

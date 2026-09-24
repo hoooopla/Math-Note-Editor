@@ -458,7 +458,7 @@ export const api: BackendApi = {
         if (currentContents) await replaceLocalFile(backupHandle, currentContents);
     },
     saveAsset: async (file, filename) => {
-        if (api.mode === 'google') throw new Error('Image attachments are not supported in Google Drive workspaces yet.');
+        if (api.mode === 'google') return googleDriveWorkspace.saveAsset(file, filename);
         if (useServer) {
             const base64: string = await new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -502,6 +502,7 @@ export const api: BackendApi = {
         return '';
     },
     listAssets: async () => {
+        if (api.mode === 'google') return googleDriveWorkspace.listAssets();
         if (useServer) {
             try {
                 const res = await fetch('/api/assets-list');
@@ -550,6 +551,7 @@ export const api: BackendApi = {
     getAssetUrl: async (path) => {
         if (/^(?:https?:|data:|blob:)/.test(path)) return path;
         const assetPath = portableAssetPath(path);
+        if (api.mode === 'google' && assetPath) return googleDriveWorkspace.getAssetUrl(assetPath);
         if (useServer) {
             if (assetPath) return `/api/${assetPath}`;
             return path; // fallback

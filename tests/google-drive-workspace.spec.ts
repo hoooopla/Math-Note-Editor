@@ -2,12 +2,15 @@ import { expect, test, type Page, type Route } from 'playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 
 const note = `---\nid: drive-note\ntitle: Drive Note\nlabel: cloud/note\n---\nOriginal Drive content`;
+const imageSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>';
+const imageGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
 
-async function installGoogleDriveMock(page: Page, nestedSettings?: string) {
+async function installGoogleDriveMock(page: Page, nestedSettings?: string, withAssets = false) {
     let patched = 0;
     let remoteVersion = '1';
     let settingsText: string | null = nestedSettings ?? null;
     let settingsVersion = nestedSettings ? 1 : 0;
+    let uploadedImage = false;
     const settingsName = nestedSettings ? 'settings.json' : '.math-note-settings.json';
     const uploadedSettings = (body: string | null) => {
         const match = body?.match(/Content-Type: application\/json; charset=UTF-8\r\n\r\n([\s\S]*?)\r\n--math-note-/g);
@@ -27,15 +30,30 @@ async function installGoogleDriveMock(page: Page, nestedSettings?: string) {
         const request = route.request();
         const url = new URL(request.url());
         if (url.pathname === '/drive/v3/files' && request.method() === 'GET') {
-            const settingFolderQuery = url.searchParams.get('q')?.includes("'setting-folder' in parents");
+            const query = url.searchParams.get('q') || '';
+            const rootQuery = query.includes("'folder-1' in parents");
+            const settingFolderQuery = query.includes("'setting-folder' in parents");
+            const assetsQuery = query.includes("'assets-folder' in parents");
+            const figuresQuery = query.includes("'figures-folder' in parents");
             return route.fulfill({ json: { files: [
-                ...(!settingFolderQuery ? [{ id: 'file-1', name: 'Drive Note.md', mimeType: 'text/markdown', version: '1' }] : []),
-                ...(nestedSettings && !settingFolderQuery ? [{ id: 'setting-folder', name: 'setting', mimeType: 'application/vnd.google-apps.folder' }] : []),
-                ...(settingsText && Boolean(settingFolderQuery) === Boolean(nestedSettings) ? [{ id: 'settings-1', name: settingsName, mimeType: 'application/json', version: String(settingsVersion) }] : [])
+                ...(rootQuery ? [{ id: 'file-1', name: 'Drive Note.md', mimeType: 'text/markdown', version: '1' }] : []),
+                ...(nestedSettings && rootQuery ? [{ id: 'setting-folder', name: 'setting', mimeType: 'application/vnd.google-apps.folder' }] : []),
+                ...(settingsText && (nestedSettings ? settingFolderQuery : rootQuery) ? [{ id: 'settings-1', name: settingsName, mimeType: 'application/json', version: String(settingsVersion) }] : []),
+                ...(withAssets && rootQuery ? [{ id: 'assets-folder', name: 'assets', mimeType: 'application/vnd.google-apps.folder' }] : []),
+                ...(withAssets && assetsQuery ? [{ id: 'figures-folder', name: 'figures', mimeType: 'application/vnd.google-apps.folder' }] : []),
+                ...(withAssets && figuresQuery ? [{ id: 'image-1', name: 'test-image.svg', mimeType: 'image/svg+xml', version: '1' }] : []),
+                ...(uploadedImage && figuresQuery ? [{ id: 'image-2', name: 'new.gif', mimeType: 'image/gif', version: '1' }] : [])
             ] } });
         }
         if (url.pathname === '/drive/v3/files/file-1' && url.searchParams.get('alt') === 'media') {
-            return route.fulfill({ contentType: 'text/plain', body: note });
+            const text = withAssets ? `${note}\n<img src="assets/figures/test-image.svg" width="2" />\n<img src="/api/assets/figures/test-image.svg" width="2" />` : note;
+            return route.fulfill({ contentType: 'text/plain', body: text });
+        }
+        if (url.pathname === '/drive/v3/files/image-1' && url.searchParams.get('alt') === 'media') {
+            return route.fulfill({ contentType: 'image/svg+xml', body: imageSvg });
+        }
+        if (url.pathname === '/drive/v3/files/image-2' && url.searchParams.get('alt') === 'media') {
+            return route.fulfill({ contentType: 'image/gif', body: imageGif });
         }
         if (url.pathname === '/drive/v3/files/file-1') {
             return route.fulfill({ json: { id: 'file-1', name: 'Drive Note.md', version: remoteVersion } });
@@ -51,6 +69,12 @@ async function installGoogleDriveMock(page: Page, nestedSettings?: string) {
             return route.fulfill({ json: { id: 'file-1', name: 'Drive Note.md', version: String(patched + 1) } });
         }
         if (url.pathname === '/upload/drive/v3/files' && request.method() === 'POST') {
+            if (withAssets && request.postData()?.includes('"name":"new.gif"')) {
+                expect(request.postData()).toContain('"parents":["figures-folder"]');
+                expect(request.postDataBuffer()?.includes(imageGif)).toBe(true);
+                uploadedImage = true;
+                return route.fulfill({ json: { id: 'image-2', name: 'new.gif', version: '1' } });
+            }
             settingsText = uploadedSettings(request.postData());
             settingsVersion += 1;
             return route.fulfill({ json: { id: 'settings-1', name: settingsName, version: '1' } });
@@ -62,7 +86,7 @@ async function installGoogleDriveMock(page: Page, nestedSettings?: string) {
         }
         return route.fulfill({ status: 404, body: 'Unexpected mocked Drive request' });
     });
-    return { patched: () => patched, settings: () => settingsText, setRemoteVersion: (value: string) => { remoteVersion = value; } };
+    return { patched: () => patched, settings: () => settingsText, uploadedImage: () => uploadedImage, setRemoteVersion: (value: string) => { remoteVersion = value; } };
 }
 
 test('signs in, picks a folder, loads a note, and saves edits to Drive', async ({ page }) => {
@@ -93,6 +117,34 @@ test('reports a blocked Google sign-in popup', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
     await expect(page.getByRole('alert')).toContainText('Google sign-in popup was blocked');
+});
+
+test('renders existing Drive images and uploads new images into the assets folder', async ({ page }) => {
+    const drive = await installGoogleDriveMock(page, undefined, true);
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await expect(editor).toContainText('Original Drive content');
+    const images = page.locator('.cm-image-widget img');
+    await expect(images).toHaveCount(2);
+    await expect.poll(() => images.evaluateAll(elements => elements.map(element => (element as HTMLImageElement).naturalWidth)))
+        .toEqual([2, 2]);
+
+    await editor.focus();
+    await editor.evaluate((element, bytes) => {
+        const data = new DataTransfer();
+        data.items.add(new File([new Uint8Array(bytes)], 'new.gif', { type: 'image/gif' }));
+        element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+    }, Array.from(imageGif));
+    await expect(page.getByRole('heading', { name: 'Upload Image' })).toBeVisible();
+    await page.getByPlaceholder('folder/image.png').fill('figures/new.gif');
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(drive.uploadedImage).toBe(true);
+    await editor.press('ArrowRight');
+    await expect(images).toHaveCount(3);
+    await expect.poll(() => images.evaluateAll(elements => elements.map(element => (element as HTMLImageElement).naturalWidth)))
+        .toEqual([1, 2, 2]);
 });
 
 test('stops instead of overwriting a newer Drive file', async ({ page }) => {

@@ -6,6 +6,7 @@ import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle } from './l
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const SETTINGS_NAME = '.math-note-settings.json';
+const MAX_MULTIPART_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 type DriveFile = { id: string; name: string; mimeType?: string; modifiedTime?: string; version?: string };
 type TokenResponse = { access_token?: string; error?: string; error_description?: string; expires_in?: number };
@@ -155,6 +156,73 @@ async function readText(fileId: string) {
     return await (await driveFetch(`/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`)).text();
 }
 
+function assetSegments(path: string): string[] {
+    const normalized = path.replace(/\\/g, '/');
+    const parts = normalized.split('/');
+    if (parts[0] !== 'assets' || parts.length < 2 || parts.some(part => !part || part === '.' || part === '..' || part.includes('\0'))) {
+        throw new Error('Invalid image path. Images must be inside the workspace assets folder.');
+    }
+    return parts.slice(1);
+}
+
+async function assetDirectory(parts: string[], create: boolean): Promise<string | null> {
+    if (!folder) throw new Error('No Google Drive folder is connected');
+    let parentId = folder.id;
+    for (const name of ['assets', ...parts]) {
+        const existing = (await listFilesIn(parentId)).find(file => file.name === name && file.mimeType === FOLDER_MIME);
+        if (existing) {
+            parentId = existing.id;
+        } else if (create) {
+            const response = await driveFetch('/drive/v3/files?fields=id,name,mimeType', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] })
+            });
+            parentId = (await response.json() as DriveFile).id;
+        } else {
+            return null;
+        }
+    }
+    return parentId;
+}
+
+async function findAsset(path: string): Promise<DriveFile | null> {
+    const parts = assetSegments(path);
+    const parentId = await assetDirectory(parts.slice(0, -1), false);
+    return parentId
+        ? (await listFilesIn(parentId)).find(file => file.name === parts.at(-1) && file.mimeType !== FOLDER_MIME) || null
+        : null;
+}
+
+async function uploadAsset(file: File, path: string): Promise<void> {
+    const parts = assetSegments(path);
+    if (file.size > MAX_MULTIPART_UPLOAD_BYTES) throw new Error('Google Drive image uploads are limited to 5 MB. Choose a smaller image.');
+    const parentId = await assetDirectory(parts.slice(0, -1), true);
+    if (!parentId) throw new Error('Could not create the Google Drive assets folder.');
+    const existing = await findAsset(path);
+    if (existing?.version) {
+        const latest = await (await driveFetch(`/drive/v3/files/${encodeURIComponent(existing.id)}?fields=id,name,version`)).json() as DriveFile;
+        if (latest.version && latest.version !== existing.version) {
+            throw new Error(`“${existing.name}” changed in Google Drive. Reload the workspace before overwriting it.`);
+        }
+    }
+    const mimeType = file.type || 'application/octet-stream';
+    const boundary = `math-note-${uuidv4()}`;
+    const metadata = { name: parts.at(-1), mimeType, ...(!existing && { parents: [parentId] }) };
+    const body = new Blob([
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`,
+        `--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`,
+        file,
+        `\r\n--${boundary}--`
+    ]);
+    const target = existing ? `/upload/drive/v3/files/${encodeURIComponent(existing.id)}` : '/upload/drive/v3/files';
+    await driveFetch(`${target}?uploadType=multipart&fields=id,name,version`, {
+        method: existing ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+        body
+    });
+}
+
 async function createTextFile(name: string, contents: string, mimeType = 'text/markdown') {
     if (!folder) throw new Error('No Google Drive folder is connected');
     const boundary = `math-note-${uuidv4()}`;
@@ -190,6 +258,31 @@ export const googleDriveWorkspace = {
     async disconnect() {
         if (accessToken) window.google?.accounts?.oauth2?.revoke(accessToken, () => undefined);
         accessToken = ''; folder = null; fileByBlockId.clear();
+    },
+    async getAssetUrl(path: string): Promise<string> {
+        const asset = await findAsset(path);
+        if (!asset) throw new Error(`Image not found in Google Drive: ${path}`);
+        const blob = await (await driveFetch(`/drive/v3/files/${encodeURIComponent(asset.id)}?alt=media`)).blob();
+        return URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: asset.mimeType || 'application/octet-stream' }));
+    },
+    async listAssets(): Promise<string[]> {
+        const assetsId = await assetDirectory([], false);
+        if (!assetsId) return [];
+        const files: string[] = [];
+        async function scan(parentId: string, prefix: string) {
+            for (const file of await listFilesIn(parentId)) {
+                const path = `${prefix}${file.name}`;
+                if (file.mimeType === FOLDER_MIME) await scan(file.id, `${path}/`);
+                else files.push(`assets/${path}`);
+            }
+        }
+        await scan(assetsId, '');
+        return files;
+    },
+    async saveAsset(file: File, filename: string): Promise<string> {
+        const path = `assets/${filename}`;
+        await uploadAsset(file, path);
+        return path;
     },
     async loadBlocks(): Promise<BlockData[]> {
         const markdown = (await listFiles()).filter(file => file.mimeType !== FOLDER_MIME && file.name.toLowerCase().endsWith('.md'));

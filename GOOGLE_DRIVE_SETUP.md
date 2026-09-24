@@ -21,4 +21,4 @@ Restart the web server after changing environment variables.
 - The app requests full Drive access because Google’s narrower `drive.file` scope cannot enumerate and edit arbitrary existing Markdown files in a selected folder.
 - Before overwriting a file, the app compares its Drive version and stops if another user or device changed it.
 - Tokens are short-lived. If one expires, the user is asked to reconnect.
-- Image attachments and workspace backups are not yet available in Google Drive mode.
+- Images referenced as `assets/...` (including older `/api/assets/...` links) load from the selected folder's `assets` subfolder. New image uploads are saved there, including nested paths, with a 5 MB per-image limit. Workspace backups are not yet available in Google Drive mode.
