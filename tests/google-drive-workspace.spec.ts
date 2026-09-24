@@ -17,7 +17,7 @@ async function installGoogleDriveMock(page: Page, nestedSettings?: string) {
     await page.route('**/api/blocks?metaOnly=true', route => route.abort());
     await page.route('https://accounts.google.com/gsi/client', route => route.fulfill({
         contentType: 'application/javascript',
-        body: `window.google={accounts:{oauth2:{initTokenClient:(options)=>({callback:options.callback,requestAccessToken(){this.callback({access_token:'test-token',expires_in:3600})}}),revoke:(_,done)=>done()}},picker:{ViewId:{FOLDERS:'folders'},DocsViewMode:{LIST:'list'},Action:{PICKED:'picked',CANCEL:'cancel'},DocsView:class{setIncludeFolders(){return this}setSelectFolderEnabled(){return this}setMode(){return this}},PickerBuilder:class{setAppId(){return this}setDeveloperKey(){return this}setOAuthToken(){return this}addView(){return this}setCallback(callback){this.callback=callback;return this}build(){return{setVisible:()=>this.callback({action:'picked',docs:[{id:'folder-1',name:'Shared Math Notes'}]})}}}}};`
+        body: `window.google={accounts:{oauth2:{initTokenClient:(options)=>({callback:options.callback,requestAccessToken(){window.__driveRequestHadUserActivation=navigator.userActivation.isActive;this.callback({access_token:'test-token',expires_in:3600})}}),revoke:(_,done)=>done()}},picker:{ViewId:{FOLDERS:'folders'},DocsViewMode:{LIST:'list'},Action:{PICKED:'picked',CANCEL:'cancel'},DocsView:class{setIncludeFolders(){return this}setSelectFolderEnabled(){return this}setMode(){return this}},PickerBuilder:class{setAppId(){return this}setDeveloperKey(){return this}setOAuthToken(){return this}addView(){return this}setCallback(callback){this.callback=callback;return this}build(){return{setVisible:()=>this.callback({action:'picked',docs:[{id:'folder-1',name:'Shared Math Notes'}]})}}}}};`
     }));
     await page.route('https://apis.google.com/js/api.js', route => route.fulfill({
         contentType: 'application/javascript',
@@ -70,6 +70,7 @@ test('signs in, picks a folder, loads a note, and saves edits to Drive', async (
     await page.goto('/');
     await expect(page.getByRole('button', { name: 'Choose Google Drive Folder' })).toBeVisible();
     await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+    expect(await page.evaluate(() => (window as any).__driveRequestHadUserActivation)).toBe(true);
 
     await expect(page.getByText('Shared Math Notes')).toBeVisible();
     await expect(page.getByRole('tab', { name: /Drive Note/ })).toBeVisible();
@@ -81,6 +82,17 @@ test('signs in, picks a folder, loads a note, and saves edits to Drive', async (
 
     await page.getByRole('button', { name: 'Disconnect Google Drive' }).click();
     await expect(page.getByRole('button', { name: 'Choose Google Drive Folder' })).toBeVisible();
+});
+
+test('reports a blocked Google sign-in popup', async ({ page }) => {
+    await page.route('**/api/blocks?metaOnly=true', route => route.abort());
+    await page.route('https://accounts.google.com/gsi/client', route => route.fulfill({
+        contentType: 'application/javascript',
+        body: `window.google={accounts:{oauth2:{initTokenClient:(options)=>({requestAccessToken(){options.error_callback({type:'popup_failed_to_open'})}})}}};`
+    }));
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+    await expect(page.getByRole('alert')).toContainText('Google sign-in popup was blocked');
 });
 
 test('stops instead of overwriting a newer Drive file', async ({ page }) => {

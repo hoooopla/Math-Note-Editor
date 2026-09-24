@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { getOrderedBlocks, useStore } from "./store";
+import { preloadGoogleSignIn } from "./lib/google-drive-workspace";
 import { BlockContainer } from "./components/Block";
 import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut } from "lucide-react";
 import "./index.css";
@@ -76,6 +77,8 @@ export default function App() {
     const [isBlockMapOpen, setIsBlockMapOpen] = useState(false);
     const [isTestMode, setIsTestMode] = useState(false);
     const [isDesktop, setIsDesktop] = useState(false);
+    const [googleSignInReady, setGoogleSignInReady] = useState(false);
+    const [googleSignInError, setGoogleSignInError] = useState<string | null>(null);
     const [isWorkspaceIssuesOpen, setIsWorkspaceIssuesOpen] = useState(false);
     const previousWorkspaceIssueCount = useRef(0);
     const closeSettings = React.useCallback(() => {
@@ -89,6 +92,13 @@ export default function App() {
     useEffect(() => {
         initBackend();
     }, [initBackend]);
+
+    useEffect(() => {
+        if (!enableGoogleDrive) return;
+        void preloadGoogleSignIn()
+            .then(() => setGoogleSignInReady(true))
+            .catch(error => setGoogleSignInError(error instanceof Error ? error.message : String(error)));
+    }, []);
 
     useEffect(() => {
         if (workspaceIssues.length > 0 && previousWorkspaceIssueCount.current === 0) {
@@ -358,7 +368,7 @@ export default function App() {
                     {enableGoogleDrive && backendMode !== 'google' && backendMode !== 'viewer' && (
                         <button
                             onClick={() => void connectGoogleDrive()}
-                            disabled={isLoadingFiles}
+                            disabled={isLoadingFiles || !googleSignInReady}
                             className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 disabled:opacity-50"
                             title="Sign in to Google and choose a Drive folder. This app needs Drive access to edit files in the chosen folder."
                         >
@@ -466,6 +476,18 @@ export default function App() {
                 </div>
             )}
 
+            {googleSignInError && (
+                <div className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300" role="alert">
+                    <span>Google sign-in could not load: {googleSignInError}</span>
+                    <button onClick={() => {
+                        setGoogleSignInError(null);
+                        void preloadGoogleSignIn()
+                            .then(() => setGoogleSignInReady(true))
+                            .catch(error => setGoogleSignInError(error instanceof Error ? error.message : String(error)));
+                    }} className="shrink-0 rounded px-2 py-1 font-medium hover:bg-red-500/20">Retry</button>
+                </div>
+            )}
+
             {workspaceIssues.length > 0 && (
                 <div className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200" role="alert">
                     <span className="flex items-center gap-2"><AlertTriangle size={16}/>{workspaceIssues.length} duplicate label {workspaceIssues.length === 1 ? "group needs" : "groups need"} attention. Affected blocks are read-only until repaired.</span>
@@ -549,7 +571,7 @@ export default function App() {
                                         <div className="flex flex-col gap-3">
                                             {enableGoogleDrive && <button
                                                 onClick={() => void connectGoogleDrive()}
-                                                disabled={isLoadingFiles}
+                                                disabled={isLoadingFiles || !googleSignInReady}
                                                 className="px-4 py-2 bg-accent/20 hover:bg-accent/30 text-accent rounded-lg transition-colors flex items-center gap-2 justify-center disabled:opacity-50"
                                                 title="Sign in to Google and choose a Drive folder. This app needs Drive access to edit files in the chosen folder."
                                             >

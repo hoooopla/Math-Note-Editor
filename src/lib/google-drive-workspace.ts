@@ -12,8 +12,8 @@ type TokenResponse = { access_token?: string; error?: string; error_description?
 
 let accessToken = '';
 let folder: { id: string; name: string } | null = null;
-let tokenClient: any = null;
-let scriptsPromise: Promise<void> | null = null;
+let signInScriptPromise: Promise<void> | null = null;
+let pickerScriptPromise: Promise<void> | null = null;
 const fileByBlockId = new Map<string, DriveFile>();
 
 const config = () => ({
@@ -31,37 +31,56 @@ function loadScript(src: string) {
         script.async = true;
         script.defer = true;
         script.onload = () => { script.dataset.loaded = 'true'; resolve(); };
-        script.onerror = () => reject(new Error(`Could not load ${src}`));
+        script.onerror = () => { script.remove(); reject(new Error(`Could not load ${src}`)); };
         if (!existing) document.head.appendChild(script);
     });
 }
 
-async function loadGoogleLibraries() {
-    scriptsPromise ||= Promise.all([
-        loadScript('https://accounts.google.com/gsi/client'),
-        loadScript('https://apis.google.com/js/api.js')
-    ]).then(() => new Promise<void>((resolve, reject) => {
-        window.gapi.load('picker', { callback: resolve, onerror: () => reject(new Error('Google Picker could not load')) });
-    }));
-    return scriptsPromise;
+export function preloadGoogleSignIn() {
+    signInScriptPromise ||= loadScript('https://accounts.google.com/gsi/client').catch(error => {
+        signInScriptPromise = null;
+        throw error;
+    });
+    return signInScriptPromise;
 }
 
-async function authorize() {
+function loadGooglePicker() {
+    pickerScriptPromise ||= loadScript('https://apis.google.com/js/api.js').then(() => new Promise<void>((resolve, reject) => {
+        window.gapi.load('picker', { callback: resolve, onerror: () => reject(new Error('Google Picker could not load')) });
+    })).catch(error => {
+        pickerScriptPromise = null;
+        throw error;
+    });
+    return pickerScriptPromise;
+}
+
+function authorize(): Promise<string> {
     const { clientId } = config();
-    if (!clientId) throw new Error('Google Drive is not configured. Set VITE_GOOGLE_CLIENT_ID, VITE_GOOGLE_API_KEY, and VITE_GOOGLE_APP_ID.');
-    await loadGoogleLibraries();
-    return await new Promise<string>((resolve, reject) => {
-        tokenClient ||= window.google.accounts.oauth2.initTokenClient({
+    if (!clientId) return Promise.reject(new Error('Google Drive is not configured. Set VITE_GOOGLE_CLIENT_ID, VITE_GOOGLE_API_KEY, and VITE_GOOGLE_APP_ID.'));
+    if (!window.google?.accounts?.oauth2) return Promise.reject(new Error('Google sign-in is still loading. Please tap Google Drive again in a moment.'));
+    // Keep this request in the original click handler so mobile browsers allow its popup.
+    return new Promise<string>((resolve, reject) => {
+        const tokenClient = window.google.accounts.oauth2.initTokenClient({
             client_id: clientId,
             scope: DRIVE_SCOPE,
-            callback: () => undefined
+            callback: (response: TokenResponse) => {
+                if (response.error || !response.access_token) return reject(new Error(response.error_description || response.error || 'Google authorization was cancelled'));
+                accessToken = response.access_token;
+                resolve(accessToken);
+            },
+            error_callback: (error: { type?: string }) => {
+                reject(new Error(error.type === 'popup_failed_to_open'
+                    ? 'Google sign-in popup was blocked. Allow popups for this site and try again.'
+                    : error.type === 'popup_closed'
+                        ? 'Google sign-in was closed before authorization finished.'
+                        : 'Google sign-in could not open. Try again in Safari or your default browser.'));
+            }
         });
-        tokenClient.callback = (response: TokenResponse) => {
-            if (response.error || !response.access_token) return reject(new Error(response.error_description || response.error || 'Google authorization was cancelled'));
-            accessToken = response.access_token;
-            resolve(accessToken);
-        };
-        tokenClient.requestAccessToken({ prompt: accessToken ? '' : 'consent' });
+        try {
+            tokenClient.requestAccessToken({ prompt: accessToken ? '' : 'consent' });
+        } catch (error) {
+            reject(error);
+        }
     });
 }
 
@@ -85,6 +104,7 @@ async function driveFetch(path: string, init: RequestInit = {}) {
 async function pickFolder(): Promise<{ id: string; name: string }> {
     const { apiKey, appId } = config();
     if (!apiKey || !appId) throw new Error('Google Picker is not configured. Set VITE_GOOGLE_API_KEY and VITE_GOOGLE_APP_ID.');
+    await loadGooglePicker();
     return await new Promise((resolve, reject) => {
         const view = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
             .setIncludeFolders(true)
@@ -169,7 +189,7 @@ export const googleDriveWorkspace = {
     },
     async disconnect() {
         if (accessToken) window.google?.accounts?.oauth2?.revoke(accessToken, () => undefined);
-        accessToken = ''; folder = null; tokenClient = null; fileByBlockId.clear();
+        accessToken = ''; folder = null; fileByBlockId.clear();
     },
     async loadBlocks(): Promise<BlockData[]> {
         const markdown = (await listFiles()).filter(file => file.mimeType !== FOLDER_MIME && file.name.toLowerCase().endsWith('.md'));
