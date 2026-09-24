@@ -43,7 +43,17 @@ type SettingsTab = typeof settingsTabs[number]['id'];
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const settings = useStore(state => state.settings);
     const saveSettings = useStore(state => state.saveSettings);
+    const backendMode = useStore(state => state.backendMode);
+    const workspaceName = useStore(state => state.workspaceName);
+    const connectLocalFS = useStore(state => state.connectLocalFS);
+    const connectGoogleDrive = useStore(state => state.connectGoogleDrive);
+    const disconnectGoogleDrive = useStore(state => state.disconnectGoogleDrive);
+    const loadViewerFiles = useStore(state => state.loadViewerFiles);
+    const persistenceError = useStore(state => state.persistenceError);
+    const isLoadingFiles = useStore(state => state.isLoadingFiles);
     const dialogRef = useRef<HTMLDivElement>(null);
+    const settingsFileRef = useRef<HTMLInputElement>(null);
+    const viewerFolderRef = useRef<HTMLInputElement>(null);
     const closeButtonRef = useRef<HTMLButtonElement>(null);
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
@@ -59,6 +69,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localNextTabShortcut, setLocalNextTabShortcut] = useState<string>('ctrl+tab');
     const [localPreviousTabShortcut, setLocalPreviousTabShortcut] = useState<string>('ctrl+shift+tab');
     const [workspacePath, setWorkspacePath] = useState<string | null>(null);
+    const [importMessage, setImportMessage] = useState<string | null>(null);
     const [localMathHighlightColor, setLocalMathHighlightColor] = useState<string>('#d19a66');
     const [localInlineBlockColorFilled, setLocalInlineBlockColorFilled] = useState<string>('#a8b5c2');
     const [localInlineBlockColorEmpty, setLocalInlineBlockColorEmpty] = useState<string>('#FF997D');
@@ -187,6 +198,23 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }, [isOpen]);
 
     if (!isOpen) return null;
+
+    const importSettings = async (file: File) => {
+        try {
+            const parsed: unknown = JSON.parse(await file.text());
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+                !['macros', 'customCommands', 'textCommands'].some(key => key in parsed)) {
+                throw new Error('Choose a Math Note Editor settings.json file.');
+            }
+            const preferences = { ...(parsed as Record<string, unknown>) };
+            delete preferences.workspaceSession;
+            await saveSettings({ ...settings, ...preferences });
+            const error = useStore.getState().persistenceError;
+            setImportMessage(error || 'Settings imported into this Google Drive folder. Open tabs were kept separate.');
+        } catch (error) {
+            setImportMessage(error instanceof Error ? error.message : String(error));
+        }
+    };
 
     const handleSave = () => {
         const errors: string[] = [];
@@ -637,10 +665,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         {activeTab === 'general' && (
                             <div className="max-w-2xl">
                                 <h3 className="text-base font-semibold text-primary mb-1">General Setting</h3>
-                                <p className="text-sm text-secondary mb-6">Manage the workspace used by the desktop application.</p>
+                                <p className="text-sm text-secondary mb-6">Manage the current workspace and its settings.</p>
                                 <div className="rounded-lg border border-outline bg-base/40 p-4">
                                     <h4 className="text-sm font-semibold text-primary">Workspace Folder</h4>
-                                    <p className="mt-1 text-xs text-secondary">Your Markdown notes, assets, macros, and settings are stored together in the selected workspace folder.</p>
+                                    <p className="mt-1 text-xs text-secondary">Your notes and workspace settings belong to the selected folder.</p>
                                     {window.mathNotesDesktop ? (
                                         <>
                                             <div className="mt-4 rounded-md border border-outline bg-surface px-3 py-2">
@@ -667,9 +695,32 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 </button>
                                             </div>
                                         </>
-                                    ) : (
-                                        <p className="mt-4 text-xs text-secondary">In the web version, close Settings and use <strong className="text-primary">Open Workspace</strong> on the main screen. The desktop version also provides File → Open Workspace….</p>
-                                    )}
+                                    ) : <>
+                                        <div className="mt-4 rounded-md border border-outline bg-surface px-3 py-2">
+                                            <p className="text-[11px] font-medium uppercase tracking-wide text-secondary">Current workspace</p>
+                                            <p className="mt-1 break-all text-sm text-primary" aria-label="Current workspace">
+                                                {backendMode === 'google' ? `Google Drive · ${workspaceName || 'Selected folder'}` :
+                                                    backendMode === 'server' ? `Local server · ${workspaceName || 'Workspace'}` :
+                                                    backendMode === 'local' ? `Local folder · ${workspaceName || 'Selected folder'}` :
+                                                    backendMode === 'viewer' ? `Read-only folder · ${workspaceName || 'Selected folder'}` : 'None connected'}
+                                            </p>
+                                        </div>
+                                        <div className="mt-4 flex flex-wrap gap-2">
+                                            {backendMode === 'google' ? <>
+                                                <button type="button" onClick={() => void connectGoogleDrive()} disabled={isLoadingFiles} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50">Change Drive folder…</button>
+                                                <button type="button" onClick={() => void disconnectGoogleDrive()} disabled={isLoadingFiles} className="rounded-lg border border-outline px-4 py-2 text-sm text-primary hover:bg-outline/40 disabled:opacity-50">Disconnect Drive</button>
+                                            </> : backendMode !== 'viewer' ? <button type="button" onClick={() => void connectLocalFS()} disabled={isLoadingFiles} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50">{backendMode === 'none' ? 'Open local folder…' : 'Change local folder…'}</button> : null}
+                                            <input ref={viewerFolderRef} type="file" className="hidden" webkitdirectory="" onChange={event => { if (event.target.files?.length) void loadViewerFiles(event.target.files); event.target.value = ''; }} />
+                                            <button type="button" onClick={() => viewerFolderRef.current?.click()} disabled={isLoadingFiles} className="rounded-lg border border-outline px-4 py-2 text-sm text-primary hover:bg-outline/40 disabled:opacity-50">{backendMode === 'viewer' ? 'Change read-only folder…' : 'View folder read-only…'}</button>
+                                        </div>
+                                        {backendMode === 'google' && <div className="mt-4 border-t border-outline pt-4">
+                                            <p className="text-xs text-secondary">Settings from this folder's setting/settings.json load automatically. To copy preferences from a different local workspace, choose its settings file. This replaces Drive preferences, not its open tabs.</p>
+                                            <input ref={settingsFileRef} type="file" accept=".json,application/json" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) void importSettings(file); event.target.value = ''; }} />
+                                            <button type="button" onClick={() => settingsFileRef.current?.click()} className="mt-3 rounded-lg border border-outline px-4 py-2 text-sm text-primary hover:bg-outline/40">Import local settings…</button>
+                                            {importMessage && <p className="mt-2 text-xs text-secondary" role="status">{importMessage}</p>}
+                                        </div>}
+                                        {persistenceError && <p className="mt-3 text-xs text-red-500" role="alert">{persistenceError}</p>}
+                                    </>}
                                 </div>
                                 <BackupRecovery />
                             </div>

@@ -106,12 +106,11 @@ async function pickFolder(): Promise<{ id: string; name: string }> {
     });
 }
 
-async function listFiles(): Promise<DriveFile[]> {
-    if (!folder) return [];
+async function listFilesIn(parentId: string): Promise<DriveFile[]> {
     const files: DriveFile[] = [];
     let pageToken = '';
     do {
-        const query = `'${folder.id.replace(/'/g, "\\'")}' in parents and trashed = false`;
+        const query = `'${parentId.replace(/'/g, "\\'")}' in parents and trashed = false`;
         const params = new URLSearchParams({ q: query, fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,version)', pageSize: '1000' });
         if (pageToken) params.set('pageToken', pageToken);
         const body = await (await driveFetch(`/drive/v3/files?${params}`)).json();
@@ -119,6 +118,17 @@ async function listFiles(): Promise<DriveFile[]> {
         pageToken = body.nextPageToken || '';
     } while (pageToken);
     return files;
+}
+
+async function listFiles(): Promise<DriveFile[]> {
+    return folder ? listFilesIn(folder.id) : [];
+}
+
+async function findSettingsFile(): Promise<DriveFile | null> {
+    const root = await listFiles();
+    const settingsFolder = root.find(file => file.name === 'setting' && file.mimeType === FOLDER_MIME);
+    const workspaceSettings = settingsFolder && (await listFilesIn(settingsFolder.id)).find(file => file.name === 'settings.json');
+    return workspaceSettings || root.find(file => file.name === SETTINGS_NAME) || null;
 }
 
 async function readText(fileId: string) {
@@ -149,7 +159,14 @@ async function updateTextFile(file: DriveFile, name: string, contents: string, m
 
 export const googleDriveWorkspace = {
     get folderName() { return folder?.name || null; },
-    async connect() { await authorize(); folder = await pickFolder(); fileByBlockId.clear(); return folder; },
+    async connect(beforeSwitch?: () => Promise<void>) {
+        await authorize();
+        const selected = await pickFolder();
+        await beforeSwitch?.();
+        folder = selected;
+        fileByBlockId.clear();
+        return selected;
+    },
     async disconnect() {
         if (accessToken) window.google?.accounts?.oauth2?.revoke(accessToken, () => undefined);
         accessToken = ''; folder = null; tokenClient = null; fileByBlockId.clear();
@@ -183,6 +200,13 @@ export const googleDriveWorkspace = {
         return { ...block, references: computeReferences(block.content || ''), _fileMeta: { driveFileId: next.id, version: next.version, fileName: next.name } };
     },
     async deleteBlock(id: string) { const file = fileByBlockId.get(id); if (file) await driveFetch(`/drive/v3/files/${encodeURIComponent(file.id)}`, { method: 'DELETE' }); fileByBlockId.delete(id); },
-    async loadSettings<T>(fallback: T): Promise<T> { const file = (await listFiles()).find(item => item.name === SETTINGS_NAME); if (!file) return fallback; return JSON.parse(await readText(file.id)); },
-    async saveSettings(settings: unknown) { const file = (await listFiles()).find(item => item.name === SETTINGS_NAME); if (file) await updateTextFile(file, SETTINGS_NAME, JSON.stringify(settings, null, 2), 'application/json'); else await createTextFile(SETTINGS_NAME, JSON.stringify(settings, null, 2), 'application/json'); }
+    async loadSettings<T>(fallback: T): Promise<T> {
+        const file = await findSettingsFile();
+        return file ? JSON.parse(await readText(file.id)) : fallback;
+    },
+    async saveSettings(settings: unknown) {
+        const file = await findSettingsFile();
+        if (file) await updateTextFile(file, file.name, JSON.stringify(settings, null, 2), 'application/json');
+        else await createTextFile(SETTINGS_NAME, JSON.stringify(settings, null, 2), 'application/json');
+    }
 };

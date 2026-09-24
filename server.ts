@@ -44,7 +44,7 @@ let testWorkspaceSession: { openTabs: string[]; activeTab: string | null } | nul
 const testAssets = new Map<string, { buffer: Buffer; contentType: string }>();
 
 app.get("/api/runtime", (_req, res) => {
-    res.json({ testMode: isTestMode, desktop: process.env.MATH_NOTE_DESKTOP === "true" });
+    res.json({ testMode: isTestMode, desktop: process.env.MATH_NOTE_DESKTOP === "true", workspaceName: path.basename(WORKSPACE_DIR) });
 });
 
 app.post('/api/test/blocks-view-fixture', (req, res) => {

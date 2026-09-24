@@ -50,6 +50,7 @@ export interface AppState {
   closedTabs: ClosedTab[];
   backendMode: "server" | "local" | "google" | "viewer" | "none";
   googleFolderName: string | null;
+  workspaceName: string | null;
   loadViewerFiles: (files: FileList) => Promise<void>;
   initBackend: () => Promise<void>;
   connectLocalFS: () => Promise<void>;
@@ -188,6 +189,7 @@ export const useStore = create<AppState>((set, get) => ({
   closedTabs: [],
   backendMode: "none",
   googleFolderName: null,
+  workspaceName: null,
   viewOnlyBlocks: {},
   toggleViewOnly: (id) => set(state => {
     const current = state.viewOnlyBlocks[id] ?? (state.backendMode === "viewer");
@@ -252,7 +254,14 @@ export const useStore = create<AppState>((set, get) => ({
   },
   initBackend: async () => {
     await backendApi.init();
-    set({ backendMode: backendApi.mode });
+    let workspaceName: string | null = null;
+    if (backendApi.mode === 'server') {
+      try {
+        const response = await fetch('/api/runtime');
+        if (response.ok) workspaceName = (await response.json()).workspaceName || null;
+      } catch { /* The server can still load notes without a workspace label. */ }
+    }
+    set({ backendMode: backendApi.mode, workspaceName });
     if (backendApi.mode !== "none") {
       await get().loadBlocks();
       await get().loadSettings();
@@ -263,7 +272,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   loadViewerFiles: async (files: FileList) => {
     set({ isLoadingFiles: true });
-    backendApi.setViewerFiles(files);
+    try {
+    await get().flushPendingSaves();
     const newBlocks: BlockData[] = [];
     let loadedSettings: any = null;
     for (let i = 0; i < files.length; i++) {
@@ -288,14 +298,23 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     
+    if (backendApi.mode === 'google') await backendApi.disconnectGoogleDrive();
+    backendApi.setViewerFiles(files);
     backendApi.mode = 'viewer';
+    const firstPath = files[0]?.webkitRelativePath || '';
+    const workspaceName = firstPath.split('/')[0] || 'Selected folder';
     set(state => ({
       ...normalizeBlocks(newBlocks),
       blocksRevision: state.blocksRevision + 1,
       backendMode: 'viewer',
+      workspaceName,
+      googleFolderName: null,
+      openTabs: [],
+      activeTab: null,
       isLoaded: true,
       persistenceError: null
     }));
+    await get().loadSettings();
     
     if (loadedSettings) {
       const validIds = new Set(newBlocks.map(block => block.id));
@@ -308,19 +327,25 @@ export const useStore = create<AppState>((set, get) => ({
     if (newBlocks.length > 0 && get().openTabs.length === 0) {
       set({ openTabs: [newBlocks[0].id], activeTab: newBlocks[0].id });
     }
-    set({ isLoadingFiles: false });
+    } catch (error) {
+      set({ persistenceError: errorMessage(error) });
+    } finally {
+      set({ isLoadingFiles: false });
+    }
   },
 
   connectLocalFS: async () => {
     set({ isLoadingFiles: true });
     try {
-      const success = await backendApi.connectLocalFS();
+      const success = await backendApi.connectLocalFS(() => get().flushPendingSaves());
       if (success) {
-        set({ backendMode: backendApi.mode });
+        set({ backendMode: backendApi.mode, workspaceName: backendApi.localFolderName, googleFolderName: null });
         await get().loadBlocks();
         await get().loadSettings();
         set({ isLoaded: true });
       }
+    } catch (error) {
+      set({ persistenceError: errorMessage(error) });
     } finally {
       set({ isLoadingFiles: false });
     }
@@ -328,9 +353,8 @@ export const useStore = create<AppState>((set, get) => ({
   connectGoogleDrive: async () => {
     set({ isLoadingFiles: true, persistenceError: null });
     try {
-      await get().flushPendingSaves();
-      const selected = await backendApi.connectGoogleDrive();
-      set({ backendMode: 'google', googleFolderName: selected.name });
+      const selected = await backendApi.connectGoogleDrive(() => get().flushPendingSaves());
+      set({ backendMode: 'google', googleFolderName: selected.name, workspaceName: selected.name });
       await get().loadBlocks();
       await get().loadSettings();
       const first = get().blockOrder[0];
@@ -351,6 +375,7 @@ export const useStore = create<AppState>((set, get) => ({
         blocksRevision: state.blocksRevision + 1,
         backendMode: 'none',
         googleFolderName: null,
+        workspaceName: null,
         openTabs: [],
         activeTab: null,
         persistenceError: null
@@ -370,6 +395,7 @@ export const useStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       console.warn("Failed to load settings", e);
+      set({ persistenceError: `Could not load workspace settings: ${errorMessage(e)}` });
     }
   },
   saveSettings: async (settings) => {

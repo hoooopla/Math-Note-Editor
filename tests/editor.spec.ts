@@ -1771,7 +1771,7 @@ test('validates settings and supports keyboard dialog navigation', async ({ page
     await expect(page.getByRole('tab', { name: 'Math Macros' })).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('Home');
     await expect(page.getByRole('tab', { name: 'General Setting' })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByText(/File → Open Workspace/)).toBeVisible();
+    await expect(page.getByLabel('Current workspace')).toContainText('Local server · blocks');
     await keyboardTab.click();
 
     await page.getByLabel('Global Search Shortcut').fill('k');

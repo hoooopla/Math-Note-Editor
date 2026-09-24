@@ -17,6 +17,7 @@ Restart the web server after changing environment variables.
 
 - Access tokens are kept in browser memory, not local storage, and are revoked on disconnect.
 - The user explicitly chooses a folder through Google Picker.
+- If the chosen folder contains `setting/settings.json`, its workspace settings load automatically and future changes save there. Existing `.math-note-settings.json` files at the folder root remain supported.
 - The app requests full Drive access because Google’s narrower `drive.file` scope cannot enumerate and edit arbitrary existing Markdown files in a selected folder.
 - Before overwriting a file, the app compares its Drive version and stops if another user or device changed it.
 - Tokens are short-lived. If one expires, the user is asked to reconnect.

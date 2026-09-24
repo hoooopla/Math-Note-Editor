@@ -374,30 +374,31 @@ export default function App() {
                                 className="px-3 py-1.5 bg-accent/20 text-accent rounded-lg font-medium text-sm hover:bg-accent/30 transition-colors flex items-center gap-2 mr-2 disabled:opacity-50"
                             >
                                 {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FolderOpen size={16} />} 
-                                Open Workspace
-                            </button>
-                            <input 
-                                type="file" 
-                                ref={fileInputRef} 
-                                style={{display: 'none'}} 
-                                webkitdirectory="" 
-                                onChange={(e) => {
-                                    if (e.target.files && e.target.files.length > 0) {
-                                        loadViewerFiles(e.target.files);
-                                    }
-                                }}
-                            />
-                            <button 
-                                onClick={() => fileInputRef.current?.click()}
-                                disabled={isLoadingFiles}
-                                className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 mr-2 disabled:opacity-50"
-                                title="Read-only viewer (Works on iPad)"
-                            >
-                                {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />} 
-                                Read-Only Viewer
+                                Open Local Folder
                             </button>
                         </div>
                     )}
+                    {!isDesktop && <>
+                        <input
+                            type="file"
+                            ref={fileInputRef}
+                            style={{ display: 'none' }}
+                            webkitdirectory=""
+                            onChange={event => {
+                                if (event.target.files?.length) void loadViewerFiles(event.target.files);
+                                event.target.value = '';
+                            }}
+                        />
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={isLoadingFiles}
+                            className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 mr-2 disabled:opacity-50"
+                            title="View a local folder without changing its files"
+                        >
+                            {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
+                            Read-Only Viewer
+                        </button>
+                    </>}
                     <button 
                         onClick={() => setIsSearchModalOpen(true)}
                         className="px-3 py-1.5 text-secondary hover:text-primary hover:bg-outline rounded flex items-center gap-2 text-sm transition-colors border border-transparent hover:border-outline"
@@ -561,7 +562,7 @@ export default function App() {
                                                 className="px-4 py-2 bg-accent/20 hover:bg-accent/30 text-accent rounded-lg transition-colors flex items-center gap-2 justify-center disabled:opacity-50"
                                             >
                                                 {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FolderOpen size={16} />} 
-                                                Open Workspace
+                                                Open Local Folder
                                             </button>
                                             <button 
                                                 onClick={() => fileInputRef.current?.click()}

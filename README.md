@@ -94,7 +94,7 @@ npm run build
 npm start -- --port 3100
 ```
 
-Open `http://127.0.0.1:3100`. The GitHub Pages version has no server; use **Open Workspace** to grant access to a local directory, or use the read-only folder viewer where direct file access is unavailable.
+Open `http://127.0.0.1:3100`. The GitHub Pages version has no server; use **Open Local Folder** to grant access to a local directory, or use the read-only folder viewer where direct file access is unavailable.
 
 ## Data safety
 

@@ -32,6 +32,10 @@ jobs:
         run: npm run build
         env:
           VITE_BASE_PATH: /Math-Note-Editor/
+          VITE_ENABLE_GOOGLE_DRIVE: 'true'
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_API_KEY: ${{ vars.VITE_GOOGLE_API_KEY }}
+          VITE_GOOGLE_APP_ID: ${{ vars.VITE_GOOGLE_APP_ID }}
       - name: Setup Pages
         uses: actions/configure-pages@v4
       - name: Upload artifact

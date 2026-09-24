@@ -72,9 +72,10 @@ export interface WorkspaceBackup {
 
 export interface BackendApi {
     mode: "server" | "local" | "google" | "none" | "viewer";
+    localFolderName: string | null;
     init: () => Promise<boolean>;
-    connectLocalFS: () => Promise<boolean>;
-    connectGoogleDrive: () => Promise<{ id: string, name: string }>;
+    connectLocalFS: (beforeSwitch?: () => Promise<void>) => Promise<boolean>;
+    connectGoogleDrive: (beforeSwitch?: () => Promise<void>) => Promise<{ id: string, name: string }>;
     disconnectGoogleDrive: () => Promise<void>;
     loadSettings: () => Promise<EditorSettings>;
     saveSettings: (settings: EditorSettings) => Promise<void>;
@@ -257,6 +258,7 @@ const getDirectoryForPath = async (root: FileSystemDirectoryHandle, parts: strin
 
 export const api: BackendApi = {
     mode: "none",
+    get localFolderName() { return dirHandle?.name || null; },
     init: async () => {
         try {
             const res = await fetch('/api/blocks?metaOnly=true');
@@ -272,19 +274,26 @@ export const api: BackendApi = {
         api.mode = "none"; // requires user gesture to connect
         return false;
     },
-    connectLocalFS: async () => {
+    connectLocalFS: async (beforeSwitch) => {
+        if (typeof window.showDirectoryPicker !== 'function') {
+            throw new Error('This browser cannot open a writable local folder. Use a supported browser or View Folder (Read-Only).');
+        }
         try {
-            dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-            await migrateLocalLegacyBackups(dirHandle).catch(error => console.warn('Could not migrate legacy backups', error));
+            const selected = await window.showDirectoryPicker({ mode: 'readwrite' });
+            await beforeSwitch?.();
+            await migrateLocalLegacyBackups(selected).catch(error => console.warn('Could not migrate legacy backups', error));
+            if (api.mode === 'google') await googleDriveWorkspace.disconnect();
+            dirHandle = selected;
+            useServer = false;
             api.mode = "local";
             return true;
         } catch (e) {
-            console.warn(e);
-            return false;
+            if (e instanceof DOMException && e.name === 'AbortError') return false;
+            throw e;
         }
     },
-    connectGoogleDrive: async () => {
-        const selected = await googleDriveWorkspace.connect();
+    connectGoogleDrive: async (beforeSwitch) => {
+        const selected = await googleDriveWorkspace.connect(beforeSwitch);
         useServer = false;
         api.mode = 'google';
         return selected;
@@ -525,6 +534,7 @@ export const api: BackendApi = {
         return [];
     },
     setViewerFiles: (files) => {
+        useServer = false;
         viewerAssets.clear();
         for (const file of Array.from(files)) {
             const relativePath = file.webkitRelativePath.replace(/\\/g, '/');
