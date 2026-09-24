@@ -271,13 +271,14 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   loadViewerFiles: async (files: FileList) => {
+    // The input is cleared after this handler starts; keep its files before awaiting.
+    const selectedFiles = Array.from(files);
     set({ isLoadingFiles: true });
     try {
     await get().flushPendingSaves();
     const newBlocks: BlockData[] = [];
     let loadedSettings: any = null;
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    for (const file of selectedFiles) {
       if (file.name.endsWith('.md')) {
         const text = await file.text();
         const { data, content } = parseFrontmatter(text);
@@ -299,9 +300,9 @@ export const useStore = create<AppState>((set, get) => ({
     }
     
     if (backendApi.mode === 'google') await backendApi.disconnectGoogleDrive();
-    backendApi.setViewerFiles(files);
+    backendApi.setViewerFiles(selectedFiles);
     backendApi.mode = 'viewer';
-    const firstPath = files[0]?.webkitRelativePath || '';
+    const firstPath = selectedFiles[0]?.webkitRelativePath || '';
     const workspaceName = firstPath.split('/')[0] || 'Selected folder';
     set(state => ({
       ...normalizeBlocks(newBlocks),

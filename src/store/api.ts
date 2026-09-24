@@ -85,7 +85,7 @@ export interface BackendApi {
     saveAsset: (file: File, filename: string) => Promise<string>;
     listAssets: () => Promise<string[]>;
     getAssetUrl: (path: string) => Promise<string>;
-    setViewerFiles: (files: FileList) => void;
+    setViewerFiles: (files: readonly File[]) => void;
     loadBlocks: () => Promise<BlockData[]>;
     loadBlockContent: (id: string) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>) => Promise<BlockData>;
