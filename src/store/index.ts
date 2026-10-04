@@ -1,10 +1,12 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import { api as backendApi, EditorSettings, WorkspaceBackup, parseFrontmatter, computeReferences } from './api';
+import { api as backendApi, createDefaultEditorSettings, EditorSettings, WorkspaceBackup, parseFrontmatter, computeReferences } from './api';
 import { metadataText } from '../lib/block-metadata';
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 import { SafeRelabelPlan } from '../lib/safe-relabel';
 import { DuplicateLabelIssue, findDuplicateLabelIssues } from '../lib/workspace-validation';
+import { resetEmbeddedEditorLifecycle } from '../lib/embedded-editor-lifecycle';
+import { resetEmbeddedPrefetchWorkspace } from '../lib/embedded-prefetch';
 
 export interface BlockData {
   id: string;
@@ -19,6 +21,7 @@ export interface BlockData {
 interface TabFocusState {
   activeBlockId: string | null;
   activePath: string[] | null;
+  activeOccurrenceKey: string | null;
   activeFocusPos: number | null;
   activeFocusX: number | null;
   focusDirection: "start" | "end" | null;
@@ -40,6 +43,7 @@ export interface AppState {
   blocksRevision: number;
   activeBlockId: string | null;
   activePath: string[] | null;
+  activeOccurrenceKey: string | null;
   activeFocusPos: number | null;
   activeFocusX: number | null;
   focusDirection: "start" | "end" | null;
@@ -70,7 +74,7 @@ export interface AppState {
   commitRelabel: (plan: SafeRelabelPlan) => Promise<void>;
   repairDuplicateLabel: (id: string, newLabel: string) => Promise<boolean>;
   deleteBlock: (id: string) => Promise<void>;
-  setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null, x?: number | null) => void;
+  setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null, x?: number | null, occurrenceKey?: string | null) => void;
   setSettings: (settings: EditorSettings) => void;
   setOpenTabs: (tabs: string[]) => void;
   setActiveTab: (id: string | null) => void;
@@ -91,6 +95,7 @@ export interface AppState {
   imageUploadParams: { file: File, onInsert: (text: string) => void } | null;
   setImageUploadParams: (params: { file: File, onInsert: (text: string) => void } | null) => void;
   persistenceError: string | null;
+  blockLoadErrors: Record<string, string>;
   clearPersistenceError: () => void;
 }
 
@@ -98,6 +103,7 @@ const syncTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
 const dirtyBlockVersions = new Map<string, number>();
 const blockSaveChains = new Map<string, Promise<void>>();
 const pendingBlockLabels = new Set<string>();
+let workspaceGeneration = 0;
 
 let eventSource: EventSource | null = null;
 let sessionSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -149,6 +155,53 @@ function normalizeBlocks(blocks: BlockData[]) {
   return { blockOrder, blocksById, blockIdByLabel, workspaceIssues };
 }
 
+function resetEmbeddedWorkspaceCaches() {
+  workspaceGeneration += 1;
+  resetEmbeddedEditorLifecycle();
+  resetEmbeddedPrefetchWorkspace();
+}
+
+function stopServerSync() {
+  eventSource?.close();
+  eventSource = null;
+}
+
+function prepareWorkspaceSwitch() {
+  resetEmbeddedWorkspaceCaches();
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('math-note-workspace-reset'));
+  stopServerSync();
+  if (sessionSaveTimer) {
+    clearTimeout(sessionSaveTimer);
+    sessionSaveTimer = null;
+  }
+}
+
+function emptyWorkspaceState(
+  state: AppState,
+  workspace: Pick<AppState, "backendMode" | "workspaceName" | "googleFolderName">
+): Partial<AppState> {
+  return {
+    ...normalizeBlocks([]),
+    blocksRevision: state.blocksRevision + 1,
+    isLoaded: false,
+    activeBlockId: null,
+    activePath: null,
+    activeOccurrenceKey: null,
+    activeFocusPos: null,
+    activeFocusX: null,
+    focusDirection: null,
+    openTabs: [],
+    activeTab: null,
+    tabFocusStates: {},
+    closedTabs: [],
+    viewOnlyBlocks: {},
+    blockLoadErrors: {},
+    settings: createDefaultEditorSettings(),
+    persistenceError: null,
+    ...workspace
+  };
+}
+
 export function getOrderedBlocks(state: Pick<AppState, "blockOrder" | "blocksById">): BlockData[] {
   return state.blockOrder.map(id => state.blocksById[id]).filter((block): block is BlockData => !!block);
 }
@@ -180,6 +233,7 @@ export const useStore = create<AppState>((set, get) => ({
   blocksRevision: 0,
   activeBlockId: null,
   activePath: null,
+  activeOccurrenceKey: null,
   activeFocusPos: null,
   activeFocusX: null,
   focusDirection: null,
@@ -198,51 +252,9 @@ export const useStore = create<AppState>((set, get) => ({
   imageUploadParams: null,
   setImageUploadParams: (params) => set({ imageUploadParams: params }),
   persistenceError: null,
+  blockLoadErrors: {},
   clearPersistenceError: () => set({ persistenceError: null }),
-  settings: {
-    macros: {
-      "\\R": "\\mathbb{R}",
-      "\\N": "\\mathbb{N}"
-    },
-    customCommands: [],
-    textCommands: [],
-    searchShortcut: "meta+k",
-    editMetadataShortcut: "f2",
-    goToParentShortcut: "mod+shift+arrowup",
-    closeTabShortcut: "mod+w",
-    reopenClosedTabShortcut: "mod+shift+t",
-    nextTabShortcut: "ctrl+tab",
-    previousTabShortcut: "ctrl+shift+tab",
-    inlineBlockTitleColorWithContent: "#a8b5c2", // or whatever secondary is
-    inlineBlockTitleColorEmpty: "#FF997D",
-    inlineBlockTitleUnderlineOpacity: 100,
-    inlineBlockIndentWidth: 16,
-    standoutBlockTitleColorWithContent: "#a8b5c2",
-    standoutBlockTitleColorEmpty: "#FF997D",
-    standoutBlockIndentWidth: 0,
-    standoutBlockTitlePaddingLeft: 10,
-    standoutBlockTitlePaddingRight: 6,
-    standoutBlockTitlePaddingTop: 5,
-    standoutBlockTitlePaddingBottom: 5,
-    standoutBlockContentPaddingLeft: 10,
-    standoutBlockContentPaddingTop: 8,
-    standoutBlockContentPaddingRight: 12,
-    standoutBlockContentPaddingBottom: 12,
-    standoutBlockBorderColor: "#ffffff",
-    standoutBlockDividerColor: "#ffffff",
-    standoutBlockBorderWidth: 1,
-    standoutBlockDividerWidth: 1,
-    mathHighlightColor: "#d19a66",
-    mathColors: {
-      command: "#61afef",
-      brace: "#e5c07b",
-      script: "#c678dd",
-      comment: "#8b949e",
-      delimiter: "#98c379",
-      align: "#e06c75",
-      escaped: "#56b6c2"
-    }
-  },
+  settings: createDefaultEditorSettings({ "\\R": "\\mathbb{R}", "\\N": "\\mathbb{N}" }),
   saveAsset: async (file: File, filename: string) => {
     return await backendApi.saveAsset(file, filename);
   },
@@ -304,16 +316,12 @@ export const useStore = create<AppState>((set, get) => ({
     backendApi.mode = 'viewer';
     const firstPath = selectedFiles[0]?.webkitRelativePath || '';
     const workspaceName = firstPath.split('/')[0] || 'Selected folder';
+    prepareWorkspaceSwitch();
     set(state => ({
+      ...emptyWorkspaceState(state, { backendMode: 'viewer', workspaceName, googleFolderName: null }),
       ...normalizeBlocks(newBlocks),
-      blocksRevision: state.blocksRevision + 1,
-      backendMode: 'viewer',
-      workspaceName,
-      googleFolderName: null,
-      openTabs: [],
-      activeTab: null,
       isLoaded: true,
-      persistenceError: null
+      blockLoadErrors: {}
     }));
     await get().loadSettings();
     
@@ -340,7 +348,12 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const success = await backendApi.connectLocalFS(() => get().flushPendingSaves());
       if (success) {
-        set({ backendMode: backendApi.mode, workspaceName: backendApi.localFolderName, googleFolderName: null });
+        prepareWorkspaceSwitch();
+        set(state => emptyWorkspaceState(state, {
+          backendMode: backendApi.mode,
+          workspaceName: backendApi.localFolderName,
+          googleFolderName: null
+        }));
         await get().loadBlocks();
         await get().loadSettings();
         set({ isLoaded: true });
@@ -355,7 +368,12 @@ export const useStore = create<AppState>((set, get) => ({
     set({ isLoadingFiles: true, persistenceError: null });
     try {
       const selected = await backendApi.connectGoogleDrive(() => get().flushPendingSaves());
-      set({ backendMode: 'google', googleFolderName: selected.name, workspaceName: selected.name });
+      prepareWorkspaceSwitch();
+      set(state => emptyWorkspaceState(state, {
+        backendMode: 'google',
+        googleFolderName: selected.name,
+        workspaceName: selected.name
+      }));
       await get().loadBlocks();
       await get().loadSettings();
       const first = get().blockOrder[0];
@@ -371,23 +389,21 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       await get().flushPendingSaves();
       await backendApi.disconnectGoogleDrive();
-      set(state => ({
-        ...normalizeBlocks([]),
-        blocksRevision: state.blocksRevision + 1,
+      prepareWorkspaceSwitch();
+      set(state => emptyWorkspaceState(state, {
         backendMode: 'none',
         googleFolderName: null,
-        workspaceName: null,
-        openTabs: [],
-        activeTab: null,
-        persistenceError: null
+        workspaceName: null
       }));
     } catch (error) {
       set({ persistenceError: errorMessage(error) });
     }
   },
   loadSettings: async () => {
+    const generation = workspaceGeneration;
     try {
       const data = await backendApi.loadSettings();
+      if (generation !== workspaceGeneration) return;
       if (data) {
         const validIds = new Set(get().blockOrder);
         const openTabs = (data.workspaceSession?.openTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
@@ -395,6 +411,7 @@ export const useStore = create<AppState>((set, get) => ({
         set({ settings: data, openTabs, activeTab });
       }
     } catch (e) {
+      if (generation !== workspaceGeneration) return;
       console.warn("Failed to load settings", e);
       set({ persistenceError: `Could not load workspace settings: ${errorMessage(e)}` });
     }
@@ -421,37 +438,56 @@ export const useStore = create<AppState>((set, get) => ({
     if (path === 'setting/settings.json') await get().loadSettings();
   },
   loadBlocks: async () => {
+    const generation = workspaceGeneration;
     try {
       const blocks = await backendApi.loadBlocks();
+      if (generation !== workspaceGeneration) return;
       set(state => ({
         ...normalizeBlocks(blocks),
         blocksRevision: state.blocksRevision + 1,
         persistenceError: null
       }));
     } catch (e) {
+      if (generation !== workspaceGeneration) return;
       console.warn("Failed to load blocks", e);
       set({ persistenceError: errorMessage(e) });
     }
   },
   loadBlockContent: async (id: string) => {
+    const generation = workspaceGeneration;
     try {
       const block = get().blocksById[id];
       if (block && block.content !== undefined) return; // already loaded
-      
+      set(state => {
+        if (!state.blockLoadErrors[id]) return state;
+        const blockLoadErrors = { ...state.blockLoadErrors };
+        delete blockLoadErrors[id];
+        return { blockLoadErrors };
+      });
       const fullBlock = await backendApi.loadBlockContent(id);
-      if (!fullBlock) return;
+      if (generation !== workspaceGeneration) return;
+      if (!fullBlock) throw new Error('The embedded note could not be found.');
       set(state => {
         const current = state.blocksById[id];
         if (!current || current.content !== undefined) return state;
+        const blockLoadErrors = { ...state.blockLoadErrors };
+        delete blockLoadErrors[id];
         return {
           blocksById: {
             ...state.blocksById,
             [id]: { ...current, content: fullBlock.content }
-          }
+          },
+          blockLoadErrors
         };
       });
     } catch (e) {
+      if (generation !== workspaceGeneration) return;
       console.warn("Failed to load block content", e);
+      const message = errorMessage(e);
+      set(state => ({
+        blockLoadErrors: { ...state.blockLoadErrors, [id]: message }
+      }));
+      throw e;
     }
   },
   addBlock: async (data) => {
@@ -680,6 +716,7 @@ export const useStore = create<AppState>((set, get) => ({
           activeTab,
           activeBlockId,
           activePath: rootFocusChanged ? (activeBlock ? [activeBlock.label] : null) : state.activePath,
+          activeOccurrenceKey: rootFocusChanged ? null : state.activeOccurrenceKey,
           activeFocusPos: rootFocusChanged ? null : state.activeFocusPos,
           activeFocusX: rootFocusChanged ? null : state.activeFocusX,
           focusDirection: rootFocusChanged ? "start" : state.focusDirection,
@@ -691,11 +728,12 @@ export const useStore = create<AppState>((set, get) => ({
       set({ persistenceError: errorMessage(e) });
     }
   },
-  setActiveBlock: (id, dir, path, pos, x) => set(state => {
+  setActiveBlock: (id, dir, path, pos, x, occurrenceKey) => set(state => {
     const focusState = {
       activeBlockId: id,
       focusDirection: dir || null,
       activePath: path || null,
+      activeOccurrenceKey: occurrenceKey ?? null,
       activeFocusPos: pos ?? null,
       activeFocusX: x ?? null
     };
@@ -715,6 +753,7 @@ export const useStore = create<AppState>((set, get) => ({
     const outgoing = state.activeTab ? {
       activeBlockId: state.activeBlockId,
       activePath: state.activePath,
+      activeOccurrenceKey: state.activeOccurrenceKey,
       activeFocusPos: state.activeFocusPos,
       activeFocusX: state.activeFocusX,
       focusDirection: state.focusDirection
@@ -725,6 +764,7 @@ export const useStore = create<AppState>((set, get) => ({
     const restored = tabFocusStates[id] || {
       activeBlockId: id,
       activePath: [block.label],
+      activeOccurrenceKey: null,
       activeFocusPos: null,
       activeFocusX: null,
       focusDirection: null
@@ -740,6 +780,7 @@ export const useStore = create<AppState>((set, get) => ({
       const activeFocusState: TabFocusState = {
         activeBlockId: state.activeBlockId,
         activePath: state.activePath,
+        activeOccurrenceKey: state.activeOccurrenceKey,
         activeFocusPos: state.activeFocusPos,
         activeFocusX: state.activeFocusX,
         focusDirection: state.focusDirection
@@ -760,6 +801,7 @@ export const useStore = create<AppState>((set, get) => ({
         activeTab: null,
         activeBlockId: null,
         activePath: null,
+        activeOccurrenceKey: null,
         activeFocusPos: null,
         activeFocusX: null,
         focusDirection: null
@@ -768,6 +810,7 @@ export const useStore = create<AppState>((set, get) => ({
       const restored = tabFocusStates[fallback] || {
         activeBlockId: fallback,
         activePath: block ? [block.label] : null,
+        activeOccurrenceKey: null,
         activeFocusPos: null,
         activeFocusX: null,
         focusDirection: null
@@ -786,6 +829,7 @@ export const useStore = create<AppState>((set, get) => ({
     const restored = closed.focusState || {
       activeBlockId: closed.id,
       activePath: [block.label],
+      activeOccurrenceKey: null,
       activeFocusPos: null,
       activeFocusX: null,
       focusDirection: null
@@ -809,6 +853,7 @@ export const useStore = create<AppState>((set, get) => ({
     const outgoing = state.activeTab ? {
       activeBlockId: state.activeBlockId,
       activePath: state.activePath,
+      activeOccurrenceKey: state.activeOccurrenceKey,
       activeFocusPos: state.activeFocusPos,
       activeFocusX: state.activeFocusX,
       focusDirection: state.focusDirection
@@ -819,6 +864,7 @@ export const useStore = create<AppState>((set, get) => ({
     const restored = tabFocusStates[id] || {
       activeBlockId: id,
       activePath: [block.label],
+      activeOccurrenceKey: null,
       activeFocusPos: null,
       activeFocusX: null,
       focusDirection: null
@@ -840,6 +886,7 @@ export const useStore = create<AppState>((set, get) => ({
     const focusState = {
       activeBlockId: id,
       activePath: [block.label],
+      activeOccurrenceKey: null,
       activeFocusPos: null,
       activeFocusX: null,
       focusDirection: dir
@@ -936,6 +983,7 @@ export const useStore = create<AppState>((set, get) => ({
               blocksRevision: state.blocksRevision + 1,
               activeBlockId: nextActive,
               activePath: rootFocusChanged ? (activeBlock ? [activeBlock.label] : null) : state.activePath,
+              activeOccurrenceKey: rootFocusChanged ? null : state.activeOccurrenceKey,
               activeFocusPos: rootFocusChanged ? null : state.activeFocusPos,
               activeFocusX: rootFocusChanged ? null : state.activeFocusX,
               focusDirection: rootFocusChanged ? "start" : state.focusDirection,

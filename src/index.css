@@ -1,9 +1,25 @@
 @import url('https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/fira_code.css');
 @import "tailwindcss";
 
+@keyframes embedded-title-caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+.cm-focused .embedded-title-caret {
+  animation: embedded-title-caret-blink 1.2s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cm-focused .embedded-title-caret {
+    animation: none;
+  }
+}
+
 @theme {
   --color-base: #0f1115;
   --color-surface: #1a1d23;
+  --color-popup: #252a33;
   --color-sidebar: #0a0c0e;
   --color-accent: #4a90e2;
   --color-primary: #ffffff;
@@ -38,11 +54,39 @@ body {
 .cm-math-rendered {
   max-width: 100%;
   overflow-x: auto;
+  /* overflow-x:auto otherwise makes the other axis a scroll container too.
+     KaTeX's fractional-pixel ink overflow must not create a vertical bar. */
+  overflow-y: hidden;
 }
 
 .cm-scroller > .cm-content {
   min-width: 0;
   max-width: 100%;
+}
+
+/* Standalone open embeds are CodeMirror block widgets. A flow root keeps the
+   title/content margins inside the measured block instead of collapsing into
+   adjacent editor lines, so cached and live heights use the same geometry. */
+.cm-embedded-block-wrapper[data-standalone-embed="true"] {
+  display: flow-root;
+  width: 100%;
+}
+
+.cm-embedded-react-mount,
+.cm-embedded-snapshot {
+  display: contents;
+}
+
+/* A standalone body's inner mount exposes its natural height independently
+   from the temporary reservation on the outer CodeMirror block widget. */
+.cm-embedded-block-wrapper[data-standalone-embed="true"] > .cm-embedded-react-mount {
+  display: block;
+  width: 100%;
+}
+
+.cm-embedded-snapshot {
+  pointer-events: none;
+  user-select: none;
 }
 
 .cm-underline-element {
@@ -113,6 +157,37 @@ body {
 
 .cm-tooltip-autocomplete {
   z-index: 9999 !important;
+  isolation: isolate;
+  opacity: 1 !important;
+  overflow: hidden;
+  background: var(--color-popup) !important;
+  border: 1px solid rgb(255 255 255 / 22%) !important;
+  border-radius: 6px;
+  box-shadow: 0 14px 38px rgb(0 0 0 / 65%), 0 0 0 1px rgb(0 0 0 / 35%);
+}
+
+.cm-tooltip-autocomplete > ul {
+  background: var(--color-popup) !important;
+}
+
+.cm-tooltip-autocomplete > ul > li[aria-selected="true"] {
+  background: color-mix(in srgb, var(--color-accent) 22%, var(--color-popup)) !important;
+}
+
+/* A nested CodeMirror tooltip can otherwise remain below later rows in an
+   ancestor editor even with a large tooltip z-index. Raise every stacking
+   boundary that contains the active menu. */
+.cm-editor:has(.cm-tooltip-autocomplete),
+.cm-line:has(.cm-tooltip-autocomplete),
+.cm-embedded-block-wrapper:has(.cm-tooltip-autocomplete) {
+  position: relative;
+  z-index: 9998 !important;
+}
+
+/* Ellipsize the ancestor side so the most specific path suffix remains visible. */
+.standout-label-tail {
+  direction: rtl;
+  text-align: left;
 }
 
 /* The keyword key glyph causes expensive font layout in command suggestions. */

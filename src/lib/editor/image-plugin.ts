@@ -22,6 +22,12 @@ class ImageWidget extends WidgetType {
         span.style.maxWidth = "100%";
         
         const img = document.createElement("img");
+        // Image widgets are created inside the three-screen CodeMirror render
+        // window. Eager asynchronous decoding lets the browser finish the
+        // actual image before it reaches the visible viewport without blocking
+        // editor input.
+        img.loading = "eager";
+        img.decoding = "async";
         
         if (this.src.startsWith("http://") || this.src.startsWith("https://") || this.src.startsWith("data:") || this.src.startsWith("blob:")) {
             img.src = this.src;

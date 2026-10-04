@@ -70,6 +70,50 @@ export interface WorkspaceBackup {
     size: number;
 }
 
+export function createDefaultEditorSettings(macros: Record<string, string> = {}): EditorSettings {
+    return {
+        macros: { ...macros },
+        customCommands: [],
+        textCommands: [],
+        searchShortcut: "meta+k",
+        editMetadataShortcut: "f2",
+        goToParentShortcut: "mod+shift+arrowup",
+        closeTabShortcut: "mod+w",
+        reopenClosedTabShortcut: "mod+shift+t",
+        nextTabShortcut: "ctrl+tab",
+        previousTabShortcut: "ctrl+shift+tab",
+        inlineBlockTitleColorWithContent: "#a8b5c2",
+        inlineBlockTitleColorEmpty: "#FF997D",
+        inlineBlockTitleUnderlineOpacity: 100,
+        inlineBlockIndentWidth: 16,
+        standoutBlockTitleColorWithContent: "#a8b5c2",
+        standoutBlockTitleColorEmpty: "#FF997D",
+        standoutBlockIndentWidth: 0,
+        standoutBlockTitlePaddingLeft: 10,
+        standoutBlockTitlePaddingRight: 6,
+        standoutBlockTitlePaddingTop: 5,
+        standoutBlockTitlePaddingBottom: 5,
+        standoutBlockContentPaddingLeft: 10,
+        standoutBlockContentPaddingTop: 8,
+        standoutBlockContentPaddingRight: 12,
+        standoutBlockContentPaddingBottom: 12,
+        standoutBlockBorderColor: "#ffffff",
+        standoutBlockDividerColor: "#ffffff",
+        standoutBlockBorderWidth: 1,
+        standoutBlockDividerWidth: 1,
+        standoutBlockTitleFontSizeBase: 24,
+        standoutBlockTitleFontSizeStep: 2,
+        standoutBlockTitleFontSizeMin: 18,
+        standoutBlockBgLightenStep: 2,
+        standoutBlockBgOpacityClosed: 30,
+        standoutBlockBgOpacityClosedHover: 40,
+        standoutBlockBgOpacityOpen: 80,
+        standoutBlockBgOpacityOpenHover: 90,
+        mathHighlightColor: "#d19a66",
+        mathColors: { command: "#61afef", brace: "#e5c07b", script: "#c678dd", comment: "#8b949e", delimiter: "#98c379", align: "#e06c75", escaped: "#56b6c2" }
+    };
+}
+
 export interface BackendApi {
     mode: "server" | "local" | "google" | "none" | "viewer";
     localFolderName: string | null;
@@ -303,47 +347,7 @@ export const api: BackendApi = {
         api.mode = 'none';
     },
     loadSettings: async () => {
-        const defaultSettings: EditorSettings = { 
-            macros: {}, 
-            customCommands: [], 
-            textCommands: [], 
-            searchShortcut: "meta+k",
-            editMetadataShortcut: "f2",
-            goToParentShortcut: "mod+shift+arrowup",
-            closeTabShortcut: "mod+w",
-            reopenClosedTabShortcut: "mod+shift+t",
-            nextTabShortcut: "ctrl+tab",
-            previousTabShortcut: "ctrl+shift+tab",
-            inlineBlockTitleColorWithContent: "#a8b5c2",
-            inlineBlockTitleColorEmpty: "#FF997D",
-            inlineBlockTitleUnderlineOpacity: 100,
-            inlineBlockIndentWidth: 16,
-            standoutBlockTitleColorWithContent: "#a8b5c2",
-            standoutBlockTitleColorEmpty: "#FF997D",
-            standoutBlockIndentWidth: 0,
-            standoutBlockTitlePaddingLeft: 10,
-            standoutBlockTitlePaddingRight: 6,
-            standoutBlockTitlePaddingTop: 5,
-            standoutBlockTitlePaddingBottom: 5,
-            standoutBlockContentPaddingLeft: 10,
-            standoutBlockContentPaddingTop: 8,
-            standoutBlockContentPaddingRight: 12,
-            standoutBlockContentPaddingBottom: 12,
-            standoutBlockBorderColor: "#ffffff",
-            standoutBlockDividerColor: "#ffffff",
-            standoutBlockBorderWidth: 1,
-            standoutBlockDividerWidth: 1,
-            standoutBlockTitleFontSizeBase: 24,
-            standoutBlockTitleFontSizeStep: 2,
-            standoutBlockTitleFontSizeMin: 18,
-            standoutBlockBgLightenStep: 2,
-            standoutBlockBgOpacityClosed: 30,
-            standoutBlockBgOpacityClosedHover: 40,
-            standoutBlockBgOpacityOpen: 80,
-            standoutBlockBgOpacityOpenHover: 90,
-            mathHighlightColor: "#d19a66",
-            mathColors: { command: "#61afef", brace: "#e5c07b", script: "#c678dd", comment: "#8b949e", delimiter: "#98c379", align: "#e06c75", escaped: "#56b6c2" }
-        };
+        const defaultSettings = createDefaultEditorSettings();
         if (useServer) {
             const res = await fetch('/api/settings');
             await requireOk(res, 'Loading settings');
@@ -624,7 +628,9 @@ export const api: BackendApi = {
     loadBlockContent: async (id) => {
         if (useServer) {
             const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`);
-            return res.ok ? await res.json() : null;
+            if (res.status === 404) return null;
+            await requireOk(res, 'Loading block');
+            return await res.json();
         }
         if (api.mode === 'google') return googleDriveWorkspace.loadBlock(id);
         if (api.mode === "local" && dirHandle) {

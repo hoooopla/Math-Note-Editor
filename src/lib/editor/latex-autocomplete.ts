@@ -20,7 +20,7 @@ const inlineMathSnippets = [
     snippetCompletion("\\mathcal{${}}", { label: "\\mathcal" }),
     snippetCompletion("\\text{${}}", { label: "\\text" }),
     snippetCompletion("\\operatorname{${}}", { label: "\\operatorname" }),
-    snippetCompletion("\\left(${})\\right)", { label: "\\left(" }),
+    snippetCompletion("\\left(${}\\right)", { label: "\\left(" }),
     snippetCompletion("\\left\\lVert ${} \\right\\rVert", { label: "\\lVert…\\rVert" }),
     snippetCompletion("\\left\\{ ${} \\mid ${} \\right\\}", { label: "\\{…\\mid…\\}" }),
     snippetCompletion("\\frac{d ${}}{d ${x}}", { label: "\\frac d/dx" }),
@@ -158,10 +158,22 @@ export function latexCompletion(context: CompletionContext) {
     const macros = settings.macros || {};
     const customCommands = settings.customCommands || [];
 
+    const options = getCompletionOptions(macros, customCommands, activeMathType === "blockMath");
+    const completionOptions = word.text === "\\left" && afterStr.startsWith("()")
+        ? options.map(option => option.label === "\\left(" ? {
+            ...option,
+            apply(view: Parameters<NonNullable<Extract<Completion["apply"], Function>>>[0], selected: Completion, from: number) {
+                // A completion range cannot extend beyond the cursor, so the
+                // option itself consumes the auto-closed pair to its right.
+                applyCompletion(view, option, from, context.pos + 2);
+            }
+        } : option)
+        : options;
+
     return {
         from: word.from,
         to: to,
-        options: getCompletionOptions(macros, customCommands, activeMathType === "blockMath"),
+        options: completionOptions,
         validFor: /^\\[a-zA-Z]*(?:\{[a-zA-Z*]*)?$/
     };
 }

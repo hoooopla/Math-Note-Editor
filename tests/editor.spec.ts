@@ -8,10 +8,25 @@ import { findDuplicateLabelIssues } from '../src/lib/workspace-validation';
 import { rankSearchResults } from '../src/lib/search-ranking';
 import { buildBacklinkIndex, findBacklinkOccurrences } from '../src/lib/backlinks';
 import { buildBlockMapModel } from '../src/lib/block-map';
+import {
+    getEmbeddedEditorLifecycleStateForTests,
+    initialEmbeddedEditorPhase,
+    resetEmbeddedEditorLifecycle
+} from '../src/lib/embedded-editor-lifecycle';
 
 test.beforeEach(async ({ request }) => {
     const response = await request.post('/api/test/reset');
     expect(response.ok()).toBeTruthy();
+});
+
+test('bounds retained embedded editor lifecycle records', () => {
+    resetEmbeddedEditorLifecycle();
+    for (let index = 0; index < 1_200; index += 1) {
+        initialEmbeddedEditorPhase(`["occurrence-${index}"]`);
+    }
+    const state = getEmbeddedEditorLifecycleStateForTests();
+    expect(state.occurrences).toBeLessThanOrEqual(state.maximumOccurrences);
+    resetEmbeddedEditorLifecycle();
 });
 
 async function openEditor(page: Page) {
@@ -521,6 +536,91 @@ test('renders an embedded block whose label contains math bars and brackets', as
     await expect(page.getByText('Prototype-name target', { exact: true })).toBeVisible();
 });
 
+test('keeps a standout title readable while abbreviating a long label from the left', async ({ page }) => {
+    const suffix = Date.now();
+    const longLabel = `analysis/complex/functions/holomorphic/really-long-branch-${suffix}/derivatives`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: { title: 'Important theorem title', label: longLabel, content: 'Target content' }
+    })).json();
+    const sourceLabel = `standout-layout-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Standout layout source', label: sourceLabel, content: `[[@${longLabel}]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByPlaceholder('Search blocks or create new...').fill(sourceLabel);
+    await page.getByPlaceholder('Search blocks or create new...').press('Enter');
+
+    const title = page.getByText('Important theorem title', { exact: true });
+    const label = page.getByTestId(`standout-label-${target.id}`);
+    await expect(title).toBeVisible();
+    await expect(label).toHaveText(longLabel);
+    await expect(label).toHaveAttribute('title', longLabel);
+    const boxes = await Promise.all([title.boundingBox(), label.boundingBox()]);
+    expect(boxes[0]).not.toBeNull();
+    expect(boxes[1]).not.toBeNull();
+    expect(boxes[0]!.x + boxes[0]!.width).toBeLessThanOrEqual(boxes[1]!.x + 1);
+});
+
+test('renders autocomplete with an opaque surface inside an open standout block', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `opaque-menu-target-${suffix}`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: { title: 'Nested math editor', label: targetLabel, content: '$$' }
+    })).json();
+    const sourceLabel = `opaque-menu-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Opaque menu source', label: sourceLabel, content: `[[@${targetLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByPlaceholder('Search blocks or create new...').fill(sourceLabel);
+    await page.getByPlaceholder('Search blocks or create new...').press('Enter');
+
+    const embeddedHost = page.getByTestId(`embedded-editor-host-${target.id}`);
+    await expect(embeddedHost).toHaveAttribute('data-editor-mounted', 'true');
+    const nestedEditor = embeddedHost.locator('.cm-content');
+    await nestedEditor.click();
+    await expect(embeddedHost).toHaveAttribute('data-editor-activated', 'true');
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.insertText('\\fra');
+    await page.keyboard.press('Control+Space');
+    const menu = page.locator('.cm-tooltip-autocomplete').last();
+    await expect(menu).toBeVisible();
+    const appearance = await menu.evaluate(element => {
+        const style = getComputedStyle(element);
+        const editor = element.closest('.cm-editor');
+        return {
+            background: style.backgroundColor,
+            border: style.borderTopColor,
+            editorBackground: editor ? getComputedStyle(editor).backgroundColor : ''
+        };
+    });
+    expect(appearance.background).not.toBe('transparent');
+    expect(appearance.background).not.toMatch(/rgba\([^)]*,\s*0(?:\.0+)?\)$/);
+    expect(appearance.background).not.toBe(appearance.editorBackground);
+    expect(appearance.border).not.toBe(appearance.background);
+    const menuOwnsItsPixels = await menu.evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        const point = document.elementFromPoint(rect.left + rect.width / 2, rect.top + Math.min(rect.height - 4, 100));
+        return !!point && element.contains(point);
+    });
+    expect(menuOwnsItsPixels).toBe(true);
+});
+
+test('left-parenthesis completion consumes an existing auto-closed pair', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, '$\\left()$');
+    await page.keyboard.press('ControlOrMeta+Home');
+    for (let index = 0; index < '$\\left'.length; index++) await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Control+Space');
+    await page.getByText('\\left(', { exact: true }).click();
+    await expect(editor).toHaveText('$\\left(\\right)$');
+});
+
 test('validates labels created from embed autocomplete', async ({ page }) => {
     const editor = await openEditor(page);
     await replaceEditorText(page, editor, '[[bad\u200blabel]]');
@@ -835,7 +935,9 @@ test('preserves recursive cursor and scroll state while switching mounted tabs',
     await parentEditor.focus();
     await page.keyboard.press('ControlOrMeta+End');
     await parentScroller.evaluate(element => { element.scrollTop = element.scrollHeight; });
-    await expect(parentPanel.locator('[data-testid^="embedded-editor-host-"]')).toBeVisible();
+    const childHost = parentPanel.locator('[data-testid^="embedded-editor-host-"]').first();
+    await expect(childHost).toBeVisible();
+    await childHost.locator('.cm-line').filter({ hasText: 'abcdef' }).click();
     const childEditor = parentPanel.locator('.cm-content').nth(1);
     await childEditor.focus();
     await expect(childEditor).toBeFocused();
@@ -966,7 +1068,7 @@ test('keeps touching embeds rendered and enters their raw syntax with horizontal
         await expect(selectedEmbed).toHaveCSS('outline-width', '1px');
         await expect(selectedEmbed).toHaveCSS('outline-color', 'rgba(96, 165, 250, 0.92)');
         await expect(selectedEmbed).toHaveCSS('border-radius', '0px');
-        await expect(page.getByText('Keyboard touch target', { exact: true })).toBeVisible();
+        await expect(page.getByText('Keyboard touch target', { exact: true }).filter({ visible: true }).first()).toBeVisible();
 
         await page.keyboard.press('ArrowRight');
         await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
@@ -974,7 +1076,7 @@ test('keeps touching embeds rendered and enters their raw syntax with horizontal
 
         await page.keyboard.press('End');
         await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(1);
-        await expect(page.getByText('Keyboard touch target', { exact: true })).toBeVisible();
+        await expect(page.getByText('Keyboard touch target', { exact: true }).filter({ visible: true }).first()).toBeVisible();
 
         await page.keyboard.press('ArrowLeft');
         await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
@@ -1040,6 +1142,107 @@ test('routes nested editor boundary arrows before default cursor movement', asyn
     await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
 });
 
+test('keeps the editable parent ancestry while navigating out of a nested child', async ({ page }) => {
+    const suffix = Date.now();
+    const leafLabel = `test:navigation-hot-leaf-${suffix}`;
+    const middleLabel = `test:navigation-hot-middle-${suffix}`;
+    const rootLabel = `test:navigation-hot-root-${suffix}`;
+    const leaf = await (await page.request.post('/api/blocks', {
+        data: { title: 'Hot ancestry leaf', label: leafLabel, content: 'leaf first\nleaf final' }
+    })).json();
+    const middle = await (await page.request.post('/api/blocks', {
+        data: { title: 'Hot ancestry middle', label: middleLabel, content: `middle before\n[[${leafLabel}∨]]\nmiddle after` }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Hot ancestry root', label: rootLabel, content: `root before\n[[${middleLabel}∨]]\nroot after` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(rootLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    const middleHost = page.getByTestId(`embedded-editor-host-${middle.id}`);
+    const leafHost = page.getByTestId(`embedded-editor-host-${leaf.id}`);
+    const directContent = (host: typeof middleHost) => host
+        .locator('[data-editor-dormant]').first()
+        .locator(':scope > .cm-editor > .cm-scroller > .cm-content');
+    const middleEditor = directContent(middleHost);
+    const leafEditor = directContent(leafHost);
+
+    await rootEditor.focus();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect(middleEditor).toBeFocused();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect(leafEditor).toBeFocused();
+    await expect(middleHost).toHaveAttribute('data-editor-activated', 'true');
+    await expect(leafHost).toHaveAttribute('data-editor-activated', 'true');
+
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowUp');
+    await expect(middleEditor).toBeFocused();
+    await expect(leafEditor).not.toBeFocused();
+    await expect(middleHost).toHaveAttribute('data-editor-activated', 'true');
+    await expect(leafHost).toHaveAttribute('data-editor-activated', 'false');
+    await expect(middleHost.locator('[data-embed-keyboard-selected="true"]')).toContainText('Hot ancestry leaf');
+
+    await page.keyboard.press('ArrowDown');
+    await expect(leafEditor).toBeFocused();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press('ArrowDown');
+    await expect(middleEditor).toBeFocused();
+    await page.keyboard.insertText('RETURN-');
+    await expect(middleEditor).toContainText('RETURN-');
+});
+
+test('keeps keyboard focus on the exact repeated embedded occurrence', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:occurrence-focus-child-${suffix}`;
+    const parentLabel = `test:occurrence-focus-parent-${suffix}`;
+    const rootLabel = `test:occurrence-focus-root-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Repeated occurrence child', label: childLabel, content: 'exact child cursor' }
+    })).json();
+    const parent = await (await page.request.post('/api/blocks', {
+        data: { title: 'Repeated occurrence parent', label: parentLabel, content: `parent row\n[[${childLabel}∨]]` }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Repeated occurrence root', label: rootLabel, content: `[[${parentLabel}∨]]\nseparator\n[[${parentLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(rootLabel);
+    await search.press('Enter');
+
+    const parentHosts = page.getByTestId(`embedded-editor-host-${parent.id}`);
+    const childHosts = page.getByTestId(`embedded-editor-host-${child.id}`);
+    await expect(parentHosts).toHaveCount(2);
+    await expect(childHosts).toHaveCount(2);
+    const secondParentEditor = parentHosts.nth(1)
+        .locator('[data-editor-dormant]').first()
+        .locator(':scope > .cm-editor > .cm-scroller > .cm-content');
+    const secondChildEditor = childHosts.nth(1)
+        .locator('[data-editor-dormant]').first()
+        .locator(':scope > .cm-editor > .cm-scroller > .cm-content');
+
+    await secondChildEditor.locator('.cm-line').click({ position: { x: 55, y: 8 } });
+    await expect(secondChildEditor).toBeFocused();
+    await expect(childHosts.nth(0).locator('.cm-content:focus')).toHaveCount(0);
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowUp');
+    await expect(secondParentEditor).toBeFocused();
+    await expect(parentHosts.nth(0).locator('.cm-content:focus')).toHaveCount(0);
+    await expect(parentHosts.nth(1).locator('[data-embed-keyboard-selected="true"]')).toContainText('Repeated occurrence child');
+});
+
 test('exits through nested final embeds to the parent editor boundary', async ({ page }) => {
     const suffix = Date.now();
     const innerLabel = `test:navigation-inner-${suffix}`;
@@ -1089,9 +1292,9 @@ test('enters the deepest final open embed from below and exits through the same 
     const level1Label = `test:navigation-up-level-1-${suffix}`;
     const rootLabel = `test:navigation-up-root-${suffix}`;
 
-    await page.request.post('/api/blocks', {
+    const level3 = await (await page.request.post('/api/blocks', {
         data: { title: 'Navigation level 3', label: level3Label, content: 'deep first\ndeep final' }
-    });
+    })).json();
     await page.request.post('/api/blocks', {
         data: { title: 'Navigation level 2', label: level2Label, content: `level two\n[[${level3Label}∨]]` }
     });
@@ -1114,10 +1317,13 @@ test('enters the deepest final open embed from below and exits through the same 
     await page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="block-metadata-header-"]').click();
 
     const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
-    const deepestEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').nth(3);
-    await page.keyboard.press('ControlOrMeta+End');
+    const deepestHost = page.getByTestId(`embedded-editor-host-${level3.id}`);
+    await expect(deepestHost.locator('.cm-content').first()).toBeVisible();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await page.getByText('below', { exact: true }).click();
+    await page.keyboard.press('End');
     await page.keyboard.press('ArrowUp');
-    await expect(deepestEditor).toBeFocused();
+    await expect(deepestHost.locator('.cm-content:focus')).toHaveCount(1);
 
     // Down from that deepest final row follows the inverse route and reaches
     // the root row below all three embeds without stopping on any title.
@@ -1257,6 +1463,9 @@ test('follows rendered rows through prefix text, inline bodies, and standout tit
     // in the parent instead of jumping over that text into the open child.
     await page.keyboard.press('ArrowDown');
     await expect(parentEditor).toBeFocused();
+    // Nearby child views now remain mounted in dormant mode so the following
+    // navigation step does not replace their layout.
+    await expect(childEditor).toHaveCount(1);
     await expect(childEditor).not.toBeFocused();
 
     // The inline title shares that visual row; its body is the next row.
@@ -1294,6 +1503,1793 @@ test('follows rendered rows through prefix text, inline bodies, and standout tit
     await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(1);
     await page.keyboard.press('ArrowDown');
     await expect(childEditor).toBeFocused();
+});
+
+test('keeps the boundary caret to one text row beside an open inline embed', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:caret-inline-child-${suffix}`;
+    const sourceLabel = `test:caret-inline-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Inline caret child',
+            label: childLabel,
+            content: Array.from({ length: 18 }, (_, index) => `child row ${index}`).join('\n')
+        }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Inline caret source',
+            label: sourceLabel,
+            content: `above\nprefix [[${childLabel}∨]] suffix\nbelow`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const parentEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const content = parentEditor.locator(':scope > .cm-scroller > .cm-content');
+    await content.focus();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('End');
+
+    const caretHeight = await parentEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor').first()
+        .evaluate(element => element.getBoundingClientRect().height);
+    const lineHeight = await parentEditor.evaluate(element => Number.parseFloat(getComputedStyle(element).fontSize) * 1.6);
+    expect(caretHeight).toBeLessThanOrEqual(lineHeight + 2);
+});
+
+test('uses a normal title-edge caret without drawing a block-height caret', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:object-caret-child-${suffix}`;
+    const sourceLabel = `test:object-caret-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Object caret child',
+            label: childLabel,
+            content: Array.from({ length: 24 }, (_, index) => `child row ${index}`).join('\n')
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Object caret source', label: sourceLabel, content: `above\n[[@${childLabel}∨]]\nafter` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const parentContent = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await parentContent.focus();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+
+    const parentEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toContainText('Object caret child');
+    await expect(parentEditor).toHaveClass(/cm-embedded-object-selected/);
+    await expect(parentEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor').first()).toBeHidden();
+    const titleCaret = page.locator('[data-embed-keyboard-selected="true"] [data-testid="embedded-title-caret"]');
+    await expect(titleCaret).toBeVisible();
+    await expect(titleCaret).toHaveCSS('animation-name', 'embedded-title-caret-blink');
+    await expect(titleCaret).toHaveCSS('animation-duration', '1.2s');
+    const titleCaretHeight = await titleCaret.evaluate(element => element.getBoundingClientRect().height);
+    const titleLineHeight = await page.locator('[data-embed-keyboard-selected="true"]').evaluate(element =>
+        Number.parseFloat(getComputedStyle(element).fontSize) * 1.3
+    );
+    expect(titleCaretHeight).toBeGreaterThan(8);
+    expect(titleCaretHeight).toBeLessThanOrEqual(titleLineHeight + 2);
+});
+
+test('moves by word across a selected embedded title without moving the viewport', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:option-title-child-${suffix}`;
+    const sourceLabel = `test:option-title-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'proof',
+            label: childLabel,
+            content: Array.from({ length: 20 }, (_, index) => `proof row ${index}`).join('\n')
+        }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Option title source',
+            label: sourceLabel,
+            content: `${Array.from({ length: 30 }, (_, index) => `leading row ${index}`).join('\n')}\nrow before proof\n[[@${childLabel}∨]]\nrow after proof`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    await page.getByText('row before proof', { exact: true }).click();
+    await page.keyboard.press('End');
+    await page.keyboard.press('ArrowDown');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
+    await expect(selectedTitle).toContainText('proof');
+    await expect(selectedTitle.getByTestId('embedded-title-caret')).toHaveCSS('right', '-3px');
+    const scrollTop = await panel.evaluate(element => element.scrollTop);
+
+    await page.keyboard.press('Alt+ArrowLeft');
+    await expect(selectedTitle.getByTestId('embedded-title-caret')).toHaveCSS('left', '-3px');
+    await expect.poll(() => panel.evaluate(element => element.scrollTop)).toBe(scrollTop);
+
+    await page.keyboard.press('Alt+ArrowRight');
+    await expect(selectedTitle.getByTestId('embedded-title-caret')).toHaveCSS('right', '-3px');
+    await expect.poll(() => panel.evaluate(element => element.scrollTop)).toBe(scrollTop);
+});
+
+test('shows an embedded load error and retries without leaving a permanent skeleton', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:load-retry-child-${suffix}`;
+    const sourceLabel = `test:load-retry-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Retry child', label: childLabel, content: 'Loaded after retry.' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Retry source', label: sourceLabel, content: `[[${childLabel}∨]]` }
+    });
+    let attempts = 0;
+    await page.route(`**/api/blocks/${child.id}`, async route => {
+        attempts += 1;
+        if (attempts === 1) {
+            await route.fulfill({ status: 503, contentType: 'text/plain', body: 'Temporary test failure' });
+        } else {
+            await route.continue();
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const error = page.getByTestId(`embedded-load-error-${child.id}`);
+    await expect(error).toContainText('Could not load this embedded note.');
+    await expect(error).toContainText('503');
+    await expect(page.getByText(/Changes may not have been saved:/)).toHaveCount(0);
+    await error.getByRole('button', { name: 'Retry loading' }).click();
+    await expect(error).toHaveCount(0);
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`)).toContainText('Loaded after retry.');
+    await expect(page.getByText(/Changes may not have been saved:/)).toHaveCount(0);
+});
+
+test('shows one editable broken chip for an open missing embed', async ({ page }) => {
+    const suffix = Date.now();
+    const missingLabel = `test:missing-open-${suffix}`;
+    const sourceLabel = `test:missing-open-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Missing open source', label: sourceLabel, content: `Before [[${missingLabel}∨]] after` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const chip = page.getByText(`[[${missingLabel}∨]]`, { exact: true });
+    await expect(chip).toHaveCount(1);
+    await chip.click();
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-embedded-editing')).toBeVisible();
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content:focus').first()).toBeVisible();
+});
+
+test('shows a retryable error when a top-level note fails to load', async ({ page }) => {
+    const label = `test:root-load-retry-${Date.now()}`;
+    const block = await (await page.request.post('/api/blocks', {
+        data: { title: 'Root load retry', label, content: 'Restored root content.' }
+    })).json();
+    let allowRetry = false;
+    await page.route(`**/api/blocks/${block.id}`, route => {
+        return allowRetry
+            ? route.continue()
+            : route.fulfill({ status: 503, body: 'Temporary test failure' });
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(label);
+    await search.press('Enter');
+
+    const error = page.getByTestId(`block-load-error-${block.id}`);
+    await expect(error).toContainText('Could not load this note.');
+    allowRetry = true;
+    await error.getByRole('button', { name: 'Retry loading' }).click();
+    await expect(error).toHaveCount(0);
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"]')).toContainText('Restored root content.');
+});
+
+test('shows a retryable error when a backlink excerpt fails to load', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:backlink-retry-target-${suffix}`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: { title: 'Backlink retry target', label: targetLabel, content: 'Target content.' }
+    })).json();
+    const source = await (await page.request.post('/api/blocks', {
+        data: { title: 'Backlink retry source', label: `test:backlink-retry-source-${suffix}`, content: `See [[${targetLabel}]].` }
+    })).json();
+    let allowRetry = false;
+    await page.route(`**/api/blocks/${source.id}`, route => {
+        return allowRetry
+            ? route.continue()
+            : route.fulfill({ status: 503, body: 'Temporary test failure' });
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(target.label);
+    await search.press('Enter');
+    await page.getByTestId('backlinks-button').click();
+
+    const popover = page.getByTestId('backlinks-popover');
+    await expect(popover).toContainText('Could not load excerpt:');
+    allowRetry = true;
+    await popover.getByRole('button', { name: 'Retry excerpt' }).click();
+    await expect(popover).toContainText(`See [[${targetLabel}]].`);
+    await expect(popover.getByRole('button', { name: 'Retry excerpt' })).toHaveCount(0);
+});
+
+test('moves up from the after-title caret to the immediately preceding visual row', async ({ page }) => {
+    const suffix = Date.now();
+    const unrelatedLabel = `test:title-up-unrelated-${suffix}`;
+    const currentLabel = `test:title-up-current-${suffix}`;
+    const sourceLabel = `test:title-up-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Earlier title that must not receive focus', label: unrelatedLabel, content: 'earlier body' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Current expanded title',
+            label: currentLabel,
+            content: Array.from({ length: 12 }, (_, index) => `expanded child row ${index}`).join('\n')
+        }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Title Up source',
+            label: sourceLabel,
+            content: `[[${unrelatedLabel}]]\nordinary row immediately above\nusing [[${currentLabel}∨]]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootContent = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await rootContent.focus();
+    await page.keyboard.press('ControlOrMeta+End');
+
+    const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
+    await expect(selectedTitle).toContainText('Current expanded title');
+    const titleCaret = selectedTitle.getByTestId('embedded-title-caret');
+    await expect(titleCaret).toHaveCSS('right', '-3px');
+
+    await page.keyboard.press('ArrowUp');
+
+    await expect(rootContent).toBeFocused();
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+    const precedingRow = page.getByText('ordinary row immediately above', { exact: true });
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const nativeCaret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    await expect(nativeCaret).toBeVisible();
+    const rowRect = await precedingRow.evaluate(element => element.getBoundingClientRect().toJSON());
+    const caretRect = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    const caretCenterY = caretRect.top + caretRect.height / 2;
+    expect(caretCenterY).toBeGreaterThanOrEqual(rowRect.top - 2);
+    expect(caretCenterY).toBeLessThanOrEqual(rowRect.bottom + 2);
+    await expect(page.getByText('Earlier title that must not receive focus', { exact: true }))
+        .not.toHaveAttribute('data-embed-keyboard-selected', 'true');
+});
+
+test('does not skip an inline-math text row above an expanded inline title', async ({ page }) => {
+    const stamp = Date.now();
+    const childLabel = `test:math-rich-title-child-${stamp}`;
+    const sourceLabel = `test:math-rich-title-source-${stamp}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Riemann-Lebesgue lemma', label: childLabel, content: 'For $f\\in L^1$\nproof row' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Math-rich title source',
+            label: sourceLabel,
+            content: [
+                '\\[',
+                '\\begin{align*}',
+                'f(x)-\\tilde f(x) &= f(x)\\cdot\\left(\\lim_{m\\to\\infty}\\frac{1}{2\\pi}\\int_{-\\pi}^{\\pi}D_m(y)dy\\right)\\\\',
+                '&=\\lim_{m\\to\\infty}\\frac{1}{2\\pi}\\int_{-\\pi}^{\\pi}(f(x)-f(y))D_m(x-y)dy\\\\',
+                '&=\\lim_{m\\to\\infty}\\frac{1}{2\\pi}\\int_{-\\pi}^{\\pi}\\frac{f(x)-f(y)}{\\sin((x-y)/2)}\\sin((m+1/2)(x-y))dy.',
+                '\\end{align*}',
+                '\\]',
+                'And if $f$ is $C^1$, we get the function $g_x(y):=\\frac{f(x)-f(y)}{\\sin(\\frac{x-y}{2})}$ is $C^0$ for all $x$.',
+                `using [[${childLabel}∨]], we get `
+            ].join('\n')
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`).locator('.cm-editor')).toBeVisible();
+    await page.evaluate(async () => { await document.fonts.ready; });
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const rootContent = rootEditor.locator(':scope > .cm-scroller > .cm-content');
+    const precedingRow = rootContent.locator(':scope > .cm-line').filter({ hasText: 'And if' });
+    const nativeCaret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    await page.getByText(', we get', { exact: true }).click({ position: { x: 1, y: 8 } });
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toContainText('Riemann-Lebesgue lemma');
+
+    await page.keyboard.press('ArrowUp');
+    await expect(rootContent).toBeFocused();
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+    await expect(nativeCaret).toBeVisible();
+    const rowRect = await precedingRow.evaluate(element => element.getBoundingClientRect().toJSON());
+    const caretRect = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(caretRect.top + caretRect.height / 2).toBeGreaterThanOrEqual(rowRect.top - 2);
+    expect(caretRect.top + caretRect.height / 2).toBeLessThanOrEqual(rowRect.bottom + 2);
+    await page.keyboard.press('ArrowDown');
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toContainText('Riemann-Lebesgue lemma');
+});
+
+test('does not skip an inline-math text row below a closed inline title', async ({ page }) => {
+    const stamp = Date.now();
+    const childLabel = `test:math-rich-down-child-${stamp}`;
+    const sourceLabel = `test:math-rich-down-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Closed lemma', label: childLabel, content: 'lemma body' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Math-rich Down source',
+            label: sourceLabel,
+            content: [
+                `using [[${childLabel}]]`,
+                'And if $f$ is $C^1$, then $g_x(y):=\\frac{f(x)-f(y)}{\\sin(x-y)}$ is $C^0$ for all $x$.',
+                '\\[',
+                '\\int_{-\\pi}^{\\pi} f(y)\\sin(my)\\,dy=0',
+                '\\]'
+            ].join('\n')
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const rootContent = rootEditor.locator(':scope > .cm-scroller > .cm-content');
+    const nextRow = rootContent.locator(':scope > .cm-line').filter({ hasText: 'And if' });
+    const nativeCaret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    await rootContent.focus();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('End');
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toContainText('Closed lemma');
+
+    await page.keyboard.press('ArrowDown');
+    await expect(rootContent).toBeFocused();
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+    await expect(nativeCaret).toBeVisible();
+    const rowRect = await nextRow.evaluate(element => element.getBoundingClientRect().toJSON());
+    const caretRect = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(caretRect.top + caretRect.height / 2).toBeGreaterThanOrEqual(rowRect.top - 2);
+    expect(caretRect.top + caretRect.height / 2).toBeLessThanOrEqual(rowRect.bottom + 2);
+});
+
+test('moves down from a standalone title through a blank and short row before block math', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:title-down-short-target-${suffix}`;
+    const sourceLabel = `test:title-down-short-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'A deliberately wide embedded title for navigation', label: targetLabel, content: 'closed child' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Title Down short-row source',
+            label: sourceLabel,
+            content: `a preceding row
+[[${targetLabel}]]
+
+short next row
+\\[
+\\sum_{n=1}^{\\infty} a_n
+\\]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const rootEditor = panel.locator('.cm-editor').first();
+    const rootContent = rootEditor.locator(':scope > .cm-scroller > .cm-content');
+    await rootContent.focus();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    const selectedTitle = panel.locator('[data-embed-keyboard-selected="true"]');
+    await expect(selectedTitle).toContainText('A deliberately wide embedded title');
+
+    const scrollTopBefore = await panel.evaluate(element => element.scrollTop);
+    await page.keyboard.press('ArrowDown');
+    await expect(rootContent).toBeFocused();
+    await expect(selectedTitle).toHaveCount(0);
+    const blankLine = rootContent.locator(':scope > .cm-line').nth(2);
+    const cursor = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    const [blankRect, blankCursorRect] = await Promise.all([
+        blankLine.evaluate(element => element.getBoundingClientRect().toJSON()),
+        cursor.evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(blankCursorRect.top).toBeLessThan(blankRect.bottom);
+    expect(blankCursorRect.bottom).toBeGreaterThan(blankRect.top);
+    const scrollTopAfterBlank = await panel.evaluate(element => element.scrollTop);
+    expect(Math.abs(scrollTopAfterBlank - scrollTopBefore)).toBeLessThanOrEqual(1);
+
+    await page.keyboard.press('ArrowDown');
+    const shortRow = page.getByText('short next row', { exact: true });
+    const [shortRect, shortCursorRect] = await Promise.all([
+        shortRow.evaluate(element => element.getBoundingClientRect().toJSON()),
+        cursor.evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(shortCursorRect.top).toBeLessThan(shortRect.bottom);
+    expect(shortCursorRect.bottom).toBeGreaterThan(shortRect.top);
+    await expect(rootEditor.locator('.cm-math-editing')).toHaveCount(0);
+});
+
+test('keeps first and following short rows when crossing an open embedded editor', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:open-boundary-short-child-${suffix}`;
+    const sourceLabel = `test:open-boundary-short-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Open child with short edges',
+            label: childLabel,
+            content: `child short row
+\\[
+\\int_{-\\pi}^{\\pi} f(x)\\,dx
+\\]`
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Open boundary short-row source',
+            label: sourceLabel,
+            content: `above
+[[@${childLabel}∨]]
+parent short row
+\\[
+\\sum_{k=1}^{N} k
+\\]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const rootContent = panel.locator('.cm-content').first();
+    await rootContent.focus();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    await expect(panel.locator('[data-embed-keyboard-selected="true"]')).toContainText('Open child with short edges');
+    await page.keyboard.press('ArrowDown');
+
+    const childHost = page.getByTestId(`embedded-editor-host-${child.id}`);
+    const childContent = childHost.locator('.cm-content:focus');
+    await expect(childContent).toHaveCount(1);
+    const childShortRow = childHost.getByText('child short row', { exact: true });
+    const childCursor = childHost.locator('.cm-cursor-primary').first();
+    const [childRowRect, childCursorRect] = await Promise.all([
+        childShortRow.evaluate(element => element.getBoundingClientRect().toJSON()),
+        childCursor.evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(childCursorRect.top).toBeLessThan(childRowRect.bottom);
+    expect(childCursorRect.bottom).toBeGreaterThan(childRowRect.top);
+
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press('ArrowDown');
+    await expect(rootContent).toBeFocused();
+    const parentShortRow = page.getByText('parent short row', { exact: true });
+    const rootCursor = panel.locator('.cm-editor').first()
+        .locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    const [parentRowRect, parentCursorRect] = await Promise.all([
+        parentShortRow.evaluate(element => element.getBoundingClientRect().toJSON()),
+        rootCursor.evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(parentCursorRect.top).toBeLessThan(parentRowRect.bottom);
+    expect(parentCursorRect.bottom).toBeGreaterThan(parentRowRect.top);
+});
+
+test('moves between consecutive rendered titles without entering hidden source', async ({ page }) => {
+    const suffix = Date.now();
+    const firstLabel = `test:consecutive-title-first-${suffix}`;
+    const secondLabel = `test:consecutive-title-second-${suffix}`;
+    const sourceLabel = `test:consecutive-title-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'A much wider first rendered embedded title', label: firstLabel, content: 'first child' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'second title', label: secondLabel, content: 'second child' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Consecutive title source',
+            label: sourceLabel,
+            content: `above
+[[${firstLabel}]]
+[[${secondLabel}]]
+below`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootContent = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await rootContent.focus();
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowDown');
+    let selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
+    await expect(selectedTitle).toContainText('A much wider first rendered embedded title');
+
+    await page.keyboard.press('ArrowDown');
+    selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
+    await expect(selectedTitle).toContainText('second title');
+    await expect(rootContent).not.toContainText(`[[${secondLabel}]]`);
+
+    await page.keyboard.press('ArrowUp');
+    await expect(page.locator('[data-embed-keyboard-selected="true"]'))
+        .toContainText('A much wider first rendered embedded title');
+    await expect(rootContent).not.toContainText(`[[${firstLabel}]]`);
+});
+
+test('preserves blank rows and crosses preceding nested embed boundaries logically', async ({ page }) => {
+    const suffix = Date.now();
+    const leafLabel = `test:blank-boundary-leaf-${suffix}`;
+    const middleLabel = `test:blank-boundary-middle-${suffix}`;
+    const outerLabel = `test:blank-boundary-outer-${suffix}`;
+    const followingLabel = `test:blank-boundary-following-${suffix}`;
+    const sourceLabel = `test:blank-boundary-source-${suffix}`;
+    const leaf = await (await page.request.post('/api/blocks', {
+        data: { title: 'Blank boundary leaf', label: leafLabel, content: 'deep final row before blank' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Blank boundary middle', label: middleLabel, content: `[[${leafLabel}∨]]` }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Blank boundary outer', label: outerLabel, content: `[[${middleLabel}∨]]` }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Following application title', label: followingLabel, content: 'following body' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Blank boundary source',
+            label: sourceLabel,
+            content: `[[${outerLabel}∨]]\n\n[[@${followingLabel}∨]]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const rootEditor = panel.locator('.cm-editor').first();
+    const rootContent = rootEditor.locator(':scope > .cm-scroller > .cm-content');
+    const deepestRow = page.getByText('deep final row before blank', { exact: true });
+    const followingTitle = page.getByText('Following application title', { exact: true });
+    await expect(deepestRow).toBeVisible();
+    await expect(followingTitle).toBeVisible();
+    await page.evaluate(() => new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    ));
+
+    const [deepestRect, followingRect] = await Promise.all([
+        deepestRow.evaluate(element => element.getBoundingClientRect().toJSON()),
+        followingTitle.evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    // One real empty source row remains visible, but terminal padding from
+    // every nested body must not accumulate into a large artificial void.
+    expect(followingRect.top - deepestRect.bottom).toBeLessThan(130);
+
+    await rootContent.focus();
+    await page.keyboard.press('ControlOrMeta+End');
+    await expect(panel.locator('[data-embed-keyboard-selected="true"]')).toContainText('Following application title');
+
+    await page.keyboard.press('ArrowUp');
+    await expect(rootContent).toBeFocused();
+    await expect(panel.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+    const [blankRect, cursorRect] = await Promise.all([
+        followingTitle.evaluate(element => {
+            const titleLine = element.closest('.cm-line');
+            const previousLine = titleLine?.previousElementSibling;
+            if (!(previousLine instanceof HTMLElement) || !previousLine.classList.contains('cm-line')) {
+                throw new Error('Could not find the blank source row before the following title');
+            }
+            return previousLine.getBoundingClientRect().toJSON();
+        }),
+        rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+            .evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(cursorRect.top).toBeLessThan(blankRect.bottom);
+    expect(cursorRect.bottom).toBeGreaterThan(blankRect.top);
+
+    // The next Up resolves source structure, enters the preceding open block,
+    // and keeps forwarding the end-focus request until the deepest child owns
+    // the final rendered row. No fixed nesting-depth or pixel limit is used.
+    await page.keyboard.press('ArrowUp');
+    await expect(page.getByTestId(`embedded-editor-host-${leaf.id}`).locator('.cm-content:focus')).toHaveCount(1);
+});
+
+test('selects an expanded title below the caret without scrolling its hidden source endpoint', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:title-down-stable-child-${suffix}`;
+    const sourceLabel = `test:title-down-stable-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'proof',
+            label: childLabel,
+            content: Array.from({ length: 30 }, (_, index) => `proof child row ${index}`).join('\n')
+        }
+    })).json();
+    const leadingRows = Array.from({ length: 28 }, (_, index) => `leading row ${index}`).join('\n');
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Stable Down source',
+            label: sourceLabel,
+            content: `${leadingRows}\nindependent of m.\n[[@${childLabel}∨]]\nafter proof`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const precedingRow = page.getByText('independent of m.', { exact: true });
+    await precedingRow.click();
+    await page.keyboard.press('End');
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const scrollTopBefore = await panel.evaluate(element => element.scrollTop);
+    expect(scrollTopBefore).toBeGreaterThan(0);
+
+    await page.keyboard.press('ArrowDown');
+
+    const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
+    await expect(selectedTitle).toContainText('proof');
+    await panel.evaluate(() => new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    ));
+    const scrollTopAfterTitle = await panel.evaluate(element => element.scrollTop);
+    expect(Math.abs(scrollTopAfterTitle - scrollTopBefore)).toBeLessThanOrEqual(1);
+
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`).locator('.cm-content:focus')).toHaveCount(1);
+});
+
+test('keeps an expanded title boundary tied to its Markdown position for navigation and typing', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:title-source-boundary-child-${suffix}`;
+    const sourceLabel = `test:title-source-boundary-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Fourier series on unit disk (in polar coordinates)',
+            label: childLabel,
+            content: Array.from({ length: 20 }, (_, index) => `embedded Fourier row ${index}`).join('\n')
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Title source boundary',
+            label: sourceLabel,
+            content: `uniqueness is established at the end of this row.\n[[@${childLabel}∨]]\nnext parent row`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const parentEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const parentContent = parentEditor.locator(':scope > .cm-scroller > .cm-content');
+    await page.getByText('uniqueness is established at the end of this row.', { exact: true }).click();
+    await page.keyboard.press('End');
+    await page.keyboard.press('ArrowDown');
+
+    const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
+    await expect(selectedTitle).toContainText('Fourier series on unit disk');
+    await expect(selectedTitle.getByTestId('embedded-title-caret')).toBeVisible();
+    await expect(parentEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')).toBeHidden();
+
+    // Word navigation chooses the true source edge after [[label]]. Typing
+    // there must edit the parent Markdown at that boundary and must not remain
+    // trapped in object selection. Since an open embed visually interrupts
+    // its source line, the inserted suffix is rendered after the child body.
+    await page.keyboard.insertText(' SOURCE-WORD');
+    await expect(selectedTitle).toHaveCount(0);
+    await expect(parentContent).toContainText('SOURCE-WORD');
+
+    const childRect = await page.getByTestId(`embedded-editor-host-${child.id}`)
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    const insertedRect = await parentContent.locator('.cm-line').filter({ hasText: 'SOURCE-WORD' })
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(insertedRect.top).toBeGreaterThanOrEqual(childRect.bottom - 2);
+});
+
+test('renders an open inline embed between its prefix and suffix', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:inline-order-child-${suffix}`;
+    const sourceLabel = `test:inline-order-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Inline order child',
+            label: childLabel,
+            content: 'embedded first row\nembedded final row'
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Inline order source',
+            label: sourceLabel,
+            content: `before-inline [[${childLabel}∨]] after-inline`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const title = page.getByText('Inline order child', { exact: true });
+    const body = page.getByTestId(`embedded-editor-host-${child.id}`);
+    await expect(body.locator('.cm-editor')).toBeVisible();
+
+    const sourceLine = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first()
+        .locator(':scope > .cm-scroller > .cm-content > .cm-line')
+        .filter({ hasText: 'before-inline' });
+    const prefixRect = await sourceLine.evaluate(element => {
+        const findRect = (needle: string) => {
+            const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            let node: Node | null;
+            while ((node = walker.nextNode())) {
+                const value = node.nodeValue || '';
+                const index = value.indexOf(needle);
+                if (index < 0) continue;
+                const range = document.createRange();
+                range.setStart(node, index);
+                range.setEnd(node, index + needle.length);
+                return range.getBoundingClientRect().toJSON();
+            }
+            throw new Error(`Could not find ${needle}`);
+        };
+        return findRect('before-inline');
+    });
+    const [titleRect, bodyRect, continuationRect] = await Promise.all([
+        title.evaluate(element => element.getBoundingClientRect().toJSON()),
+        body.evaluate(element => element.getBoundingClientRect().toJSON()),
+        page.getByText('after-inline', { exact: true })
+            .evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(Math.abs(prefixRect.top - titleRect.top)).toBeLessThan(8);
+    expect(bodyRect.top).toBeGreaterThanOrEqual(titleRect.bottom - 2);
+    expect(continuationRect.top).toBeGreaterThanOrEqual(bodyRect.bottom - 2);
+});
+
+test('keeps a closed inline embed between surrounding words after toggling', async ({ page }) => {
+    const stamp = Date.now();
+    const childLabel = `test:closed-inline-child-${stamp}`;
+    const sourceLabel = `test:closed-inline-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Inline equation title', label: childLabel, content: '\\[\nx^2=1\n\\]' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Closed inline source', label: sourceLabel, content: `Therefore solve the [[${childLabel}∨]], then continue.` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const title = page.locator('[role="tabpanel"][aria-hidden="false"] [data-embed-nav-title]')
+        .filter({ hasText: 'Inline equation title' });
+    await expect(title).toBeVisible();
+    await title.click();
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] [data-embed-nav-body]')).toHaveCount(0);
+
+    const geometry = await page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first().evaluate(editor => {
+        const line = editor.querySelector('.cm-line')!;
+        const title = line.querySelector<HTMLElement>('[data-embed-nav-title]')!;
+        const rangeOf = (text: string) => {
+            const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+            let node: Node | null;
+            while ((node = walker.nextNode())) {
+                const index = (node.nodeValue || '').indexOf(text);
+                if (index < 0) continue;
+                const range = document.createRange();
+                range.setStart(node, index);
+                range.setEnd(node, index + text.length);
+                return range.getBoundingClientRect().toJSON();
+            }
+            throw new Error(`Missing ${text}`);
+        };
+        return { prefix: rangeOf('Therefore solve the'), title: title.getBoundingClientRect().toJSON(), suffix: rangeOf('then continue.') };
+    });
+    expect(Math.abs(geometry.prefix.top - geometry.title.top)).toBeLessThan(8);
+    expect(Math.abs(geometry.title.top - geometry.suffix.top)).toBeLessThan(8);
+});
+
+test('keeps adjacent open inline titles with their surrounding text', async ({ page }) => {
+    const stamp = Date.now();
+    const firstLabel = `test:adjacent-first-${stamp}`;
+    const secondLabel = `test:adjacent-second-${stamp}`;
+    const sourceLabel = `test:adjacent-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Laplace equation', label: firstLabel, content: '\\[\nx^2=1\n\\]' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Poisson equation', label: secondLabel, content: '\\[\ny^2=1\n\\]' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Adjacent source', label: sourceLabel, content: `[[${firstLabel}∨]] and [[${secondLabel}∨]]\nTherefore to solve the [[${firstLabel}]], it is equivalent to solve for each m, the ODE.` }
+    });
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    await expect(page.getByText('Poisson equation', { exact: true })).toBeVisible();
+    const geometry = await page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first().evaluate(editor => {
+        const content = editor.querySelector(':scope > .cm-scroller > .cm-content')!;
+        const rectOf = (needle: string) => {
+            const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+            let node: Node | null;
+            while ((node = walker.nextNode())) {
+                const index = (node.nodeValue || '').indexOf(needle);
+                if (index < 0) continue;
+                const range = document.createRange();
+                range.setStart(node, index);
+                range.setEnd(node, index + needle.length);
+                return range.getBoundingClientRect().toJSON();
+            }
+            throw new Error(`Missing ${needle}`);
+        };
+        return {
+            and: rectOf('and'), poisson: rectOf('Poisson equation'),
+            prefix: rectOf('Therefore to solve the'), closed: (() => {
+                const title = Array.from(content.querySelectorAll<HTMLElement>('[data-embed-nav-title]'))
+                    .filter(element => element.textContent?.includes('Laplace equation')).at(-1)!;
+                return title.getBoundingClientRect().toJSON();
+            })(),
+            suffix: rectOf('it is equivalent')
+        };
+    });
+    expect(Math.abs(geometry.and.top - geometry.poisson.top)).toBeLessThan(8);
+    expect(Math.abs(geometry.prefix.top - geometry.closed.top)).toBeLessThan(8);
+    expect(Math.abs(geometry.closed.top - geometry.suffix.top)).toBeLessThan(8);
+
+    await page.getByText('Poisson equation', { exact: true }).click();
+    const collapsedGap = await page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first().evaluate(editor => {
+        const title = Array.from(editor.querySelectorAll<HTMLElement>('[data-embed-nav-title]'))
+            .find(element => element.textContent?.trim() === 'Poisson equation')!;
+        const line = title.closest('.cm-line')!;
+        return line.nextElementSibling!.getBoundingClientRect().top - line.getBoundingClientRect().bottom;
+    });
+    expect(Math.abs(collapsedGap)).toBeLessThan(2);
+});
+
+test('does not reuse block widget DOM for inline titles through repeated toggles and edits', async ({ page }) => {
+    const stamp = Date.now();
+    const firstLabel = `test:reuse-first-${stamp}`;
+    const secondLabel = `test:reuse-second-${stamp}`;
+    const sourceLabel = `test:reuse-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'First inline title', label: firstLabel, content: 'first body line\nsecond body line' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Second inline title', label: secondLabel, content: 'another body line' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Reuse source', label: sourceLabel, content: `before [[${firstLabel}]] and [[${secondLabel}]] after` }
+    });
+
+    const editor = await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const root = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const first = root.locator('[data-embed-nav-title]').filter({ hasText: 'First inline title' });
+    const second = root.locator('[data-embed-nav-title]').filter({ hasText: 'Second inline title' });
+    await expect(first).toBeVisible();
+    await expect(second).toBeVisible();
+
+    const assertWidgetStructure = async () => {
+        const structure = await root.evaluate(element => {
+            const wrappers = Array.from(element.querySelectorAll<HTMLElement>('.cm-embedded-block-wrapper'));
+            const firstLine = element.querySelector('.cm-line')!;
+            const rectOf = (needle: string) => {
+                const walker = document.createTreeWalker(firstLine, NodeFilter.SHOW_TEXT);
+                let node: Node | null;
+                while ((node = walker.nextNode())) {
+                    const index = (node.nodeValue || '').indexOf(needle);
+                    if (index < 0) continue;
+                    const range = document.createRange();
+                    range.setStart(node, index);
+                    range.setEnd(node, index + needle.length);
+                    return range.getBoundingClientRect().top;
+                }
+                return null;
+            };
+            return {
+                wrongTags: wrappers.filter(wrapper =>
+                    wrapper.tagName !== (wrapper.dataset.embedPart === 'body' ? 'DIV' : 'SPAN')
+                ).length,
+                prefixTop: rectOf('before'),
+                firstTop: firstLine.querySelector<HTMLElement>('[data-embed-nav-title]')?.getBoundingClientRect().top ?? null,
+                suffixTop: rectOf('after')
+            };
+        });
+        expect(structure.wrongTags).toBe(0);
+        if (structure.prefixTop !== null && structure.firstTop !== null) {
+            expect(Math.abs(structure.prefixTop - structure.firstTop)).toBeLessThan(8);
+        }
+        if (structure.suffixTop !== null && structure.firstTop !== null) {
+            expect(Math.abs(structure.suffixTop - structure.firstTop)).toBeLessThan(8);
+        }
+    };
+
+    for (let index = 0; index < 3; index++) {
+        await first.click();
+        await expect(root.locator('[data-embed-nav-body]')).toHaveCount(1);
+        await assertWidgetStructure();
+        await second.click();
+        await expect(root.locator('[data-embed-nav-body]')).toHaveCount(2);
+        await assertWidgetStructure();
+        await first.click();
+        await expect(root.locator('[data-embed-nav-body]')).toHaveCount(1);
+        await assertWidgetStructure();
+        await second.click();
+        await expect(root.locator('[data-embed-nav-body]')).toHaveCount(0);
+        await assertWidgetStructure();
+    }
+
+    await editor.click({ position: { x: 3, y: 8 } });
+    await page.keyboard.press('Home');
+    await page.keyboard.type('added ');
+    await expect(root.getByText('added before', { exact: false })).toBeVisible();
+    await assertWidgetStructure();
+});
+
+test('moves horizontally through both caret locations at an open inline suffix', async ({ page }) => {
+    const stamp = Date.now();
+    const childLabel = `test:virtual-break-child-${stamp}`;
+    const sourceLabel = `test:virtual-break-source-${stamp}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Virtual break child', label: childLabel, content: 'first child row\nlast child row' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Virtual break source', label: sourceLabel, content: `prefix [[${childLabel}∨]]suffix` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const suffix = page.getByText('suffix', { exact: true });
+    const title = rootEditor.locator('[data-embed-nav-title]').filter({ hasText: 'Virtual break child' });
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`)).toBeVisible();
+    await suffix.click({ position: { x: 1, y: 8 } });
+    await page.keyboard.press('ArrowLeft');
+    await expect(title.locator('[data-testid="embedded-title-caret"]')).toBeVisible();
+    await expect(rootEditor.locator('.cm-embedded-editing')).toHaveCount(0);
+
+    await page.keyboard.press('ArrowRight');
+    await expect(title.locator('[data-testid="embedded-title-caret"]')).toHaveCount(0);
+    const cursor = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    const [suffixRect, cursorRect] = await Promise.all([
+        suffix.evaluate(element => element.getBoundingClientRect().toJSON()),
+        cursor.evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(cursorRect.top).toBeLessThan(suffixRect.bottom);
+    expect(cursorRect.bottom).toBeGreaterThan(suffixRect.top);
+
+    await page.keyboard.press('ArrowLeft');
+    await expect(title.locator('[data-testid="embedded-title-caret"]')).toBeVisible();
+    await page.keyboard.press('ArrowLeft');
+    await expect(rootEditor.locator('.cm-embedded-editing')).toHaveCount(1);
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await expect(title.locator('[data-testid="embedded-title-caret"]')).toBeVisible();
+
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Backspace');
+    await expect(title.locator('[data-testid="embedded-title-caret"]')).toBeVisible();
+    await expect(rootEditor.locator('.cm-embedded-editing')).toHaveCount(0);
+    await page.keyboard.insertText('X');
+    await expect(page.getByText('Xsuffix', { exact: true })).toBeVisible();
+});
+
+test('moves up into the visible suffix before an open embedded body', async ({ page }) => {
+    const stamp = Date.now();
+    const childLabel = `test:up-suffix-child-${stamp}`;
+    const sourceLabel = `test:up-suffix-source-${stamp}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Proof child', label: childLabel, content: 'proof first row\nproof last row' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Up suffix source', label: sourceLabel, content: `using [[${childLabel}∨]], we get\nnext parent row` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`)).toBeVisible();
+    const nextRow = rootEditor.getByText('next parent row', { exact: true });
+    await nextRow.click();
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowUp');
+
+    const suffixRect = await rootEditor.getByText(', we get', { exact: true })
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    const caretRect = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(caretRect.top).toBeLessThan(suffixRect.bottom);
+    expect(caretRect.bottom).toBeGreaterThan(suffixRect.top);
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`).locator('.cm-focused')).toHaveCount(0);
+    await page.keyboard.press('ArrowDown');
+    const nextRect = await nextRow.evaluate(element => element.getBoundingClientRect().toJSON());
+    const returnedCaret = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(returnedCaret.top).toBeLessThan(nextRect.bottom);
+    expect(returnedCaret.bottom).toBeGreaterThan(nextRect.top);
+});
+
+test('moves up from display math into the preceding open embed suffix', async ({ page }) => {
+    const stamp = Date.now();
+    const childLabel = `test:math-suffix-child-${stamp}`;
+    const sourceLabel = `test:math-suffix-source-${stamp}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Math suffix proof', label: childLabel, content: 'proof first row\nproof last row' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Math suffix source',
+            label: sourceLabel,
+            content: `using [[${childLabel}∨]], we get\n\\[\nx^2=1\n\\]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`)).toBeVisible();
+    const suffix = rootEditor.getByText(', we get', { exact: true });
+    await suffix.click();
+    await page.keyboard.press('End');
+    await page.keyboard.press('ArrowDown');
+    await expect(rootEditor.locator('.cm-math-editing').first()).toBeVisible();
+    await page.keyboard.press('ArrowUp');
+
+    const suffixRect = await suffix.evaluate(element => element.getBoundingClientRect().toJSON());
+    const caretRect = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(caretRect.top).toBeLessThan(suffixRect.bottom);
+    expect(caretRect.bottom).toBeGreaterThan(suffixRect.top);
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`).locator('.cm-focused')).toHaveCount(0);
+});
+
+test('moves up to the final wrapped row of an open embed suffix', async ({ page }) => {
+    const stamp = Date.now();
+    const childLabel = `test:wrapped-suffix-child-${stamp}`;
+    const sourceLabel = `test:wrapped-suffix-source-${stamp}`;
+    const tail = Array.from({ length: 64 }, (_, index) => `suffix-word-${index}`).join(' ');
+    await page.request.post('/api/blocks', {
+        data: { title: 'Wrapped suffix child', label: childLabel, content: 'child first\nchild last' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Wrapped suffix source', label: sourceLabel, content: `prefix [[${childLabel}∨]] ${tail}\nfollowing row` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const following = rootEditor.getByText('following row', { exact: true });
+    await following.click();
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowUp');
+
+    const lastWord = rootEditor.getByText('suffix-word-63', { exact: false });
+    const lastWordRect = await lastWord.evaluate(element => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+            const text = node.nodeValue || '';
+            const index = text.indexOf('suffix-word-63');
+            if (index < 0) continue;
+            const range = document.createRange();
+            range.setStart(node, index);
+            range.setEnd(node, index + 'suffix-word-63'.length);
+            return range.getBoundingClientRect().toJSON();
+        }
+        throw new Error('Could not find the last suffix word');
+    });
+    const caretRect = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(caretRect.top).toBeLessThan(lastWordRect.bottom);
+    expect(caretRect.bottom).toBeGreaterThan(lastWordRect.top);
+});
+
+test('moves up to text after a closed link following an open embed', async ({ page }) => {
+    const stamp = Date.now();
+    const openLabel = `test:mixed-suffix-open-${stamp}`;
+    const closedLabel = `test:mixed-suffix-closed-${stamp}`;
+    const sourceLabel = `test:mixed-suffix-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Mixed open child', label: openLabel, content: 'open body' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Mixed closed child', label: closedLabel, content: 'closed body' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Mixed suffix source', label: sourceLabel,
+            content: `prefix [[${openLabel}∨]] middle [[${closedLabel}]] final-tail\nfollowing row`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    await rootEditor.getByText('following row', { exact: true }).click();
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowUp');
+    const tailRect = await rootEditor.locator('.cm-line').filter({ hasText: 'final-tail' }).first()
+        .evaluate(element => {
+            const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            let node: Node | null;
+            while ((node = walker.nextNode())) {
+                const index = (node.nodeValue || '').indexOf('final-tail');
+                if (index < 0) continue;
+                const range = document.createRange();
+                range.setStart(node, index);
+                range.setEnd(node, index + 'final-tail'.length);
+                return range.getBoundingClientRect().toJSON();
+            }
+            throw new Error('Could not find final-tail');
+        });
+    const caretRect = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(caretRect.top).toBeLessThan(tailRect.bottom);
+    expect(caretRect.bottom).toBeGreaterThan(tailRect.top);
+});
+
+test('moves from an open title directly to the following embedded title', async ({ page }) => {
+    const stamp = Date.now();
+    const firstLabel = `test:adjacent-first-${stamp}`;
+    const secondLabel = `test:adjacent-second-${stamp}`;
+    const sourceLabel = `test:adjacent-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'First neighboring title', label: firstLabel, content: 'first body' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Second neighboring title', label: secondLabel, content: 'second body' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Adjacent source', label: sourceLabel, content: `intro\n[[${firstLabel}∨]][[${secondLabel}]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    await page.getByText('intro', { exact: true }).click();
+    await page.keyboard.press('End');
+    await page.keyboard.press('ArrowDown');
+    const first = page.locator('[data-embed-nav-title]').filter({ hasText: 'First neighboring title' });
+    const second = page.locator('[data-embed-nav-title]').filter({ hasText: 'Second neighboring title' });
+    await expect(first.getByTestId('embedded-title-caret')).toBeVisible();
+    await page.keyboard.press('Alt+ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await expect(second.getByTestId('embedded-title-caret')).toBeVisible();
+    await page.keyboard.press('ArrowLeft');
+    await expect(first.getByTestId('embedded-title-caret')).toBeVisible();
+});
+
+test('enters display math before the following embedded title in a nested editor', async ({ page }) => {
+    const stamp = Date.now();
+    const proofLabel = `test:math-order-proof-${stamp}`;
+    const lemmaLabel = `test:math-order-lemma-${stamp}`;
+    const sourceLabel = `test:math-order-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'proof', label: proofLabel, content: 'proof detail' }
+    });
+    const lemma = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Riemann-Lebesgue lemma',
+            label: lemmaLabel,
+            content: `For $f\\in L^1$\n\\[\n\\int_{-\\pi}^{\\pi} f(y)\\sin(my)\\,dy=0\n\\]\n[[${proofLabel}∨]]`
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Math order source', label: sourceLabel, content: `[[${lemmaLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const lemmaEditor = page.getByTestId(`embedded-editor-host-${lemma.id}`).locator('.cm-editor').first();
+    await expect(lemmaEditor.locator('.cm-math-block')).toBeVisible();
+    await lemmaEditor.locator('.cm-line').filter({ hasText: 'For ' }).first().click({ position: { x: 30, y: 12 } });
+    await page.keyboard.press('End');
+    await page.keyboard.press('ArrowDown');
+    await expect(lemmaEditor.locator('.cm-math-editing').first()).toBeVisible();
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+});
+
+test('reveals only the final caret when moving between a title and a distant inline suffix', async ({ page }) => {
+    const stamp = Date.now();
+    const childLabel = `test:distant-suffix-child-${stamp}`;
+    const sourceLabel = `test:distant-suffix-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Distant suffix child',
+            label: childLabel,
+            content: Array.from({ length: 55 }, (_, index) => `long child row ${index}`).join('\n')
+        }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Distant suffix source', label: sourceLabel, content: `[[${childLabel}∨]]distant-tail` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const title = panel.locator('[data-embed-nav-title]').filter({ hasText: 'Distant suffix child' });
+    const suffix = page.getByText('distant-tail', { exact: true });
+    await suffix.click({ position: { x: 1, y: 8 } });
+    await page.keyboard.press('ArrowLeft');
+    await expect(title.getByTestId('embedded-title-caret')).toBeVisible();
+    await expect(title).toBeInViewport();
+    const titleScroll = await panel.evaluate(element => element.scrollTop);
+
+    await page.keyboard.press('ArrowRight');
+    await expect(suffix).toBeInViewport();
+    const suffixScroll = await panel.evaluate(element => element.scrollTop);
+    expect(suffixScroll).toBeGreaterThan(titleScroll + 200);
+
+    await page.keyboard.press('ArrowLeft');
+    await expect(title.getByTestId('embedded-title-caret')).toBeVisible();
+    await expect(title).toBeInViewport();
+});
+
+test('visits wrapped text before adjacent display math and then enters the equation', async ({ page }) => {
+    const stamp = Date.now();
+    const proofLabel = `test:wrapped-math-proof-${stamp}`;
+    const sourceLabel = `test:wrapped-math-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Following proof', label: proofLabel, content: 'proof body' }
+    });
+    const longLine = Array.from({ length: 48 }, (_, index) => `wrapped-word-${index}`).join(' ');
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Wrapped math source',
+            label: sourceLabel,
+            content: `${longLine}\n\\[\nx^2+y^2=1\n\\]\n[[${proofLabel}]]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const wrappedLine = editor.locator(':scope > .cm-scroller > .cm-content > .cm-line').filter({ hasText: 'wrapped-word-0' });
+    const rect = await wrappedLine.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(rect.height).toBeGreaterThan(50);
+    await wrappedLine.click({ position: { x: 12, y: 10 } });
+    await page.keyboard.press('ArrowDown');
+    await expect(editor.locator('.cm-math-editing')).toHaveCount(0);
+
+    await wrappedLine.click({ position: { x: 12, y: rect.height - 8 } });
+    await page.keyboard.press('ArrowDown');
+    await expect(editor.locator('.cm-math-editing').first()).toBeVisible();
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+});
+
+test('enters display math from below without any embedded links', async ({ page }) => {
+    const sourceLabel = `test:math-up-source-${Date.now()}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Math up source', label: sourceLabel, content: 'before\n\\[\nx^2=1\n\\]\nafter' }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    await page.getByText('after', { exact: true }).click();
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowUp');
+    await expect(editor.locator('.cm-math-editing').first()).toBeVisible();
+});
+
+test('does not leave an empty continuation row after an end-of-line open inline embed', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:inline-no-suffix-child-${suffix}`;
+    const sourceLabel = `test:inline-no-suffix-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Inline no suffix child', label: childLabel, content: 'embedded final row' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Inline no suffix source',
+            label: sourceLabel,
+            content: `before-label [[${childLabel}∨]]\nparent row after embed`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const body = page.getByTestId(`embedded-editor-host-${child.id}`);
+    const finalRow = page.getByText('embedded final row', { exact: true });
+    const followingRow = page.getByText('parent row after embed', { exact: true });
+    await expect(body).toBeVisible();
+    await expect(followingRow).toBeVisible();
+    await page.evaluate(() => new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    ));
+
+    const [bodyRect, finalRect, followingRect] = await Promise.all([
+        body.evaluate(element => element.getBoundingClientRect().toJSON()),
+        finalRow.evaluate(element => element.getBoundingClientRect().toJSON()),
+        followingRow.evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(followingRect.top).toBeGreaterThanOrEqual(bodyRect.bottom - 2);
+    expect(followingRect.top - finalRect.bottom).toBeLessThan(45);
+
+    // Boundary navigation must keep the same visual order after removing the
+    // empty continuation: child final row -> following parent row -> child.
+    await finalRow.click();
+    await page.keyboard.press('End');
+    await page.keyboard.press('ArrowDown');
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    await expect(rootEditor.locator(':scope > .cm-scroller > .cm-content:focus')).toHaveCount(1);
+    await page.keyboard.press('ArrowUp');
+    await expect(body.locator('.cm-content:focus')).toHaveCount(1);
+});
+
+test('keeps a small measured bottom inset on terminal normal and standout embeds', async ({ page }) => {
+    const stamp = Date.now();
+    const normalLabel = `test:terminal-normal-${stamp}`;
+    const standoutLabel = `test:terminal-standout-${stamp}`;
+    const sourceLabel = `test:terminal-padding-source-${stamp}`;
+    const normal = await (await page.request.post('/api/blocks', {
+        data: { title: 'Terminal normal', label: normalLabel, content: 'normal final row' }
+    })).json();
+    const standout = await (await page.request.post('/api/blocks', {
+        data: { title: 'Terminal standout', label: standoutLabel, content: 'standout final row' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Terminal padding source', label: sourceLabel,
+            content: `[[${normalLabel}∨]]\n[[@${standoutLabel}∨]]\nfollowing parent row` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    for (const id of [normal.id, standout.id]) {
+        const host = page.getByTestId(`embedded-editor-host-${id}`);
+        await expect(host).toBeVisible();
+        expect(await host.evaluate(element => {
+            const body = element.closest<HTMLElement>('[data-embed-nav-body]');
+            return body ? getComputedStyle(body).paddingBottom : null;
+        })).toBe('4px');
+    }
+    const following = page.getByText('following parent row', { exact: true });
+    const lastChildRow = page.getByText('standout final row', { exact: true });
+    const gap = await following.evaluate((element, selector) => {
+        const last = document.querySelector(selector)!.getBoundingClientRect();
+        return element.getBoundingClientRect().top - last.bottom;
+    }, '[data-testid="embedded-editor-host-' + standout.id + '"] .cm-line');
+    expect(gap).toBeGreaterThanOrEqual(0);
+    expect(gap).toBeLessThan(45);
+    await expect(lastChildRow).toBeVisible();
+});
+
+test('crosses arbitrarily nested bottom boundaries to the inline suffix in one Down press', async ({ page }) => {
+    const suffix = Date.now();
+    const leafLabel = `test:bottom-walk-leaf-${suffix}`;
+    const middleLabel = `test:bottom-walk-middle-${suffix}`;
+    const outerLabel = `test:bottom-walk-outer-${suffix}`;
+    const sourceLabel = `test:bottom-walk-source-${suffix}`;
+    const leaf = await (await page.request.post('/api/blocks', {
+        data: { title: 'Bottom walk leaf', label: leafLabel, content: 'deepest final row' }
+    })).json();
+    const middle = await (await page.request.post('/api/blocks', {
+        data: { title: 'Bottom walk middle', label: middleLabel, content: `[[${leafLabel}∨]]` }
+    })).json();
+    const outer = await (await page.request.post('/api/blocks', {
+        data: { title: 'Bottom walk outer', label: outerLabel, content: `[[${middleLabel}∨]]` }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Bottom walk source',
+            label: sourceLabel,
+            content: `before-boundary [[${outerLabel}∨]] after-boundary`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const ownFocusedContent = (id: string) => page.getByTestId(`embedded-editor-host-${id}`)
+        .locator('.cm-content:focus');
+    await expect(page.getByText('Bottom walk outer', { exact: true })).toBeVisible();
+    await expect(page.getByText('Bottom walk middle', { exact: true })).toBeVisible();
+    await expect(page.getByText('Bottom walk leaf', { exact: true })).toBeVisible();
+    await expect(page.getByText('deepest final row', { exact: true })).toBeVisible();
+
+    // Down from the deepest final visible row climbs every exhausted parent
+    // and reaches the outer inline suffix in one keypress.
+    await page.getByText('deepest final row', { exact: true }).click();
+    await page.keyboard.press('End');
+    await expect(ownFocusedContent(leaf.id)).toHaveCount(1);
+    await page.keyboard.press('ArrowDown');
+    await expect(rootEditor.locator(':scope > .cm-scroller > .cm-content:focus')).toHaveCount(1);
+    await expect(ownFocusedContent(leaf.id)).toHaveCount(0);
+
+    const [cursorRect, suffixRect] = await Promise.all([
+        rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+            .evaluate(element => element.getBoundingClientRect().toJSON()),
+        page.getByText('after-boundary', { exact: true })
+            .evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(cursorRect.top).toBeLessThan(suffixRect.bottom);
+    expect(cursorRect.bottom).toBeGreaterThan(suffixRect.top);
+
+    // Up is the inverse transition and descends through the final open child
+    // of every ancestor without stopping on hidden source boundaries.
+    await page.keyboard.press('ArrowUp');
+    await expect(ownFocusedContent(leaf.id)).toHaveCount(1);
+
+    // The round trip remains reversible.
+    await page.keyboard.press('ArrowDown');
+    await expect(rootEditor.locator(':scope > .cm-scroller > .cm-content:focus')).toHaveCount(1);
+    await expect(ownFocusedContent(leaf.id)).toHaveCount(0);
+});
+
+test('moves through wrapped rows beside an expanded title without jumping to a later embed', async ({ page }) => {
+    const suffix = Date.now();
+    const proofLabel = `test:wrapped-proof-${suffix}`;
+    const laterLabel = `test:wrapped-later-${suffix}`;
+    const sourceLabel = `test:wrapped-navigation-source-${suffix}`;
+    const proof = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'proof',
+            label: proofLabel,
+            content: Array.from({ length: 24 }, (_, index) => `proof row ${index}`).join('\n')
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Application to Laplace and Poisson equations on unit disk',
+            label: laterLabel,
+            content: 'later embedded content'
+        }
+    });
+    const wrappedRow = `3. ${Array.from({ length: 34 }, (_, index) => `estimate-${index}`).join(' ')} independent of m.`;
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Wrapped navigation source',
+            label: sourceLabel,
+            content: `${wrappedRow}\n[[@${proofLabel}∨]]\n[[@${laterLabel}∨]]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    // The expanded child changes the panel's scrollbar geometry when it first
+    // mounts. Wait for that real layout before measuring wrapped-row movement;
+    // otherwise this test can confuse initial editor layout with a keypress.
+    await expect(page.getByTestId(`embedded-editor-host-${proof.id}`).locator('.cm-editor')).toBeVisible();
+    await page.evaluate(async () => {
+        await document.fonts.ready;
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const nativeCaret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    const wrappedLine = page.getByText(wrappedRow, { exact: true });
+    const wrappedLineBox = await wrappedLine.boundingBox();
+    expect(wrappedLineBox).not.toBeNull();
+    await wrappedLine.click({
+        position: {
+            x: Math.max(2, wrappedLineBox!.width - 4),
+            y: Math.max(2, wrappedLineBox!.height - 4)
+        }
+    });
+    await page.keyboard.press('End');
+    await page.keyboard.press('ArrowDown');
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toContainText('proof');
+
+    // Up from the proof title reaches the immediately preceding rendered wrap.
+    await page.keyboard.press('ArrowUp');
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+    await expect(nativeCaret).toBeVisible();
+    const proofTitleRect = await page.getByText('proof', { exact: true }).evaluate(element => element.getBoundingClientRect().toJSON());
+    const lowerWrapRect = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    const editorLineHeight = await rootEditor.evaluate(element => Number.parseFloat(getComputedStyle(element).fontSize) * 1.6);
+    expect(proofTitleRect.top - lowerWrapRect.bottom).toBeLessThan(editorLineHeight * 3);
+    expect(lowerWrapRect.height).toBeLessThanOrEqual(editorLineHeight + 2);
+
+    // One more Up and Down traverse adjacent wraps, rather than selecting the
+    // much later Application embed or exposing a replacement-height caret.
+    await page.keyboard.press('ArrowUp');
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    const upperWrapRect = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(upperWrapRect.top).toBeLessThan(lowerWrapRect.top - 2);
+    await page.keyboard.press('ArrowDown');
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    const returnedWrapRect = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(Math.abs(returnedWrapRect.top - lowerWrapRect.top)).toBeLessThanOrEqual(2);
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+
+    await page.keyboard.press('ArrowDown');
+    const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
+    await expect(selectedTitle).toContainText('proof');
+    await expect(selectedTitle).not.toContainText('Application to Laplace and Poisson equations on unit disk');
+    await expect(selectedTitle.getByTestId('embedded-title-caret')).toBeVisible();
+    await expect(nativeCaret).toBeHidden();
+});
+
+test('keeps fresh vertical movement inside wrapped text before and after an inline embed', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:fresh-wrap-target-${suffix}`;
+    const sourceLabel = `test:fresh-wrap-source-${suffix}`;
+    const prefix = Array.from({ length: 28 }, (_, index) => `prefix-${index}`).join(' ');
+    const trailing = Array.from({ length: 28 }, (_, index) => `suffix-${index}`).join(' ');
+    await page.request.post('/api/blocks', {
+        data: { title: 'Fresh wrapped portal', label: targetLabel, content: 'embedded body row' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Fresh wrapped source',
+            label: sourceLabel,
+            content: `${prefix} [[@${targetLabel}∨]] ${trailing}`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const rootEditor = panel.locator('.cm-editor').first();
+    const rootContent = rootEditor.locator(':scope > .cm-scroller > .cm-content');
+    const nativeCaret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    const prefixLine = rootContent.locator(':scope > .cm-line').filter({ hasText: 'prefix-0' });
+    const prefixRect = await prefixLine.evaluate(element => element.getBoundingClientRect().toJSON());
+    const lineHeight = await rootEditor.evaluate(element => Number.parseFloat(getComputedStyle(element).fontSize) * 1.6);
+    expect(prefixRect.height).toBeGreaterThan(lineHeight * 1.5);
+
+    // This begins with a pointer gesture, so no cached reverse move can hide a
+    // fresh Down failure. The next destination is the second visible wrap,
+    // even though CodeMirror's native candidate can be the embed boundary.
+    await prefixLine.click({ position: { x: 120, y: Math.min(8, prefixRect.height / 4) } });
+    const firstWrapCaret = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    await page.keyboard.press('ArrowDown');
+    await expect(rootContent).toBeFocused();
+    await expect(panel.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+    const secondWrapCaret = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(secondWrapCaret.top).toBeGreaterThan(firstWrapCaret.top + 2);
+    const titleRect = await page.getByText('Fresh wrapped portal', { exact: true })
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(secondWrapCaret.bottom).toBeLessThan(titleRect.top + 2);
+
+    // The inverse case starts freshly on the final wrapped suffix row. Up must
+    // visit the preceding suffix wrap before the open child body/title portal.
+    const suffixLine = rootContent.locator(':scope > .cm-line').filter({ hasText: 'suffix-0' });
+    const suffixRect = await suffixLine.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(suffixRect.height).toBeGreaterThan(lineHeight * 1.5);
+    await suffixLine.click({
+        position: {
+            x: 120,
+            y: Math.max(4, suffixRect.height - 8)
+        }
+    });
+    const finalSuffixCaret = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    await page.keyboard.press('ArrowUp');
+    await expect(rootContent).toBeFocused();
+    await expect(panel.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+    const priorSuffixCaret = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(priorSuffixCaret.top).toBeLessThan(finalSuffixCaret.top - 2);
+    expect(priorSuffixCaret.top).toBeGreaterThan(titleRect.bottom - 2);
+});
+
+test('keeps fresh wrapped-row navigation inside a nested editor with inline math', async ({ page }) => {
+    const suffix = Date.now();
+    const leafLabel = `test:nested-wrap-leaf-${suffix}`;
+    const childLabel = `test:nested-wrap-child-${suffix}`;
+    const sourceLabel = `test:nested-wrap-source-${suffix}`;
+    const wrappedPrefix = `Start with $x^2$ and ${Array.from({ length: 30 }, (_, index) => `estimate-${index}`).join(' ')}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Nested wrapped leaf', label: leafLabel, content: 'leaf body' }
+    });
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Nested wrapped child',
+            label: childLabel,
+            content: `${wrappedPrefix} [[@${leafLabel}∨]]`
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Nested wrapped source', label: sourceLabel, content: `[[${childLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const childHost = page.getByTestId(`embedded-editor-host-${child.id}`);
+    const childEditor = childHost.locator('.cm-editor').first();
+    const childContent = childEditor.locator(':scope > .cm-scroller > .cm-content');
+    const prefixLine = childContent.locator(':scope > .cm-line').filter({ hasText: 'estimate-0' });
+    const nativeCaret = childEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary').first();
+    const prefixRect = await prefixLine.evaluate(element => element.getBoundingClientRect().toJSON());
+    const lineHeight = await childEditor.evaluate(element => Number.parseFloat(getComputedStyle(element).fontSize) * 1.6);
+    expect(prefixRect.height).toBeGreaterThan(lineHeight * 1.5);
+
+    await prefixLine.click({ position: { x: 180, y: 8 } });
+    const firstWrapCaret = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    await page.keyboard.press('ArrowDown');
+    await expect(childContent).toBeFocused();
+    await expect(childHost.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
+    const secondWrapCaret = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(secondWrapCaret.top).toBeGreaterThan(firstWrapCaret.top + 2);
+    const leafTitleRect = await page.getByText('Nested wrapped leaf', { exact: true })
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(secondWrapCaret.bottom).toBeLessThan(leafTitleRect.top + 2);
+});
+
+test('visits the nearest visible suffix before its nested embed, not an earlier link', async ({ page }) => {
+    const suffix = Date.now();
+    const unrelatedLabel = `test:visual-up-unrelated-${suffix}`;
+    const proofLabel = `test:visual-up-proof-${suffix}`;
+    const visibleLabel = `test:visual-up-visible-${suffix}`;
+    const sourceLabel = `test:visual-up-source-${suffix}`;
+    const unrelated = await (await page.request.post('/api/blocks', {
+        data: { title: 'Earlier unrelated inline link', label: unrelatedLabel, content: 'unrelated body' }
+    })).json();
+    const proof = await (await page.request.post('/api/blocks', {
+        data: { title: 'Visible proof', label: proofLabel, content: 'proof final row' }
+    })).json();
+    const visible = await (await page.request.post('/api/blocks', {
+        data: { title: 'Nearest visible embed', label: visibleLabel, content: `visible opening\n[[${proofLabel}∨]]` }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Visual Up source',
+            label: sourceLabel,
+            content: `intro\n[[${unrelatedLabel}]]\nusing [[${visibleLabel}∨]], we get\nafter the visible embed`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    // The parent row following the projected body first reaches the visible
+    // continuation of the preceding source line. One more Up enters the
+    // nearest child's final row, never the unrelated earlier link.
+    const suffixText = page.getByText('after the visible embed', { exact: true });
+    await suffixText.click({ position: { x: 3, y: 8 } });
+    await page.keyboard.press('ArrowUp');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const continuationRect = await rootEditor.getByText(', we get', { exact: true })
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    const caretRect = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(caretRect.top).toBeLessThan(continuationRect.bottom);
+    expect(caretRect.bottom).toBeGreaterThan(continuationRect.top);
+
+    await page.keyboard.press('ArrowUp');
+
+    const visibleHost = page.getByTestId(`embedded-editor-host-${visible.id}`);
+    await expect(visibleHost.locator('.cm-content:focus')).toHaveCount(1);
+    await expect(page.getByTestId(`embedded-editor-host-${proof.id}`).locator('.cm-content:focus')).toHaveCount(1);
+    await expect(page.getByText('Earlier unrelated inline link', { exact: true })).not.toHaveAttribute('data-embed-keyboard-selected', 'true');
+    await expect(page.getByTestId(`embedded-editor-host-${unrelated.id}`)).toHaveCount(0);
 });
 
 test('renders inline math and continues Markdown markers with Enter', async ({ page }) => {
@@ -1417,16 +3413,351 @@ test('renders and edits display math without crashing the editor', async ({ page
     expect(editorErrors).toEqual([]);
 });
 
+test('removes display-math editing space after the cursor leaves the formula', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, 'Before display math\n\\[\\frac{1}{1+x^2}\\]\nAfter display math\nFinal line');
+    await page.getByLabel('Open settings').click();
+    await page.keyboard.press('Escape');
+
+    const rendered = page.locator('.cm-math-rendered').first();
+    await expect(rendered).toBeVisible();
+    const initial = await editor.evaluate(element => ({
+        height: element.getBoundingClientRect().height,
+        scrollHeight: element.scrollHeight,
+        blockCount: element.querySelectorAll('.cm-math-block').length
+    }));
+
+    await rendered.click();
+    await expect(editor).toContainText('\\frac{1}{1+x^2}');
+    await editor.locator('.cm-line').last().click();
+    await expect(page.locator('.cm-math-rendered')).toBeVisible();
+    await page.waitForTimeout(100);
+
+    const after = await editor.evaluate(element => ({
+        height: element.getBoundingClientRect().height,
+        scrollHeight: element.scrollHeight,
+        blockCount: element.querySelectorAll('.cm-math-block').length,
+        editingCount: element.querySelectorAll('.cm-math-editing').length
+    }));
+    expect(after.blockCount).toBe(initial.blockCount);
+    expect(after.editingCount).toBe(0);
+    expect(Math.abs(after.height - initial.height)).toBeLessThanOrEqual(2);
+    expect(Math.abs(after.scrollHeight - initial.scrollHeight)).toBeLessThanOrEqual(2);
+});
+
+test('does not retain transient display-math editing height in an embedded block', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:math-height-child-${suffix}`;
+    const sourceLabel = `test:math-height-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Math height child',
+            label: childLabel,
+            content: 'Before display math\n\\[\n\\frac{\\displaystyle\\sum_{i=1}^n i^2}{1+x^2}\n\\]\nAfter display math'
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Math height source', label: sourceLabel, content: `[[${childLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const host = page.getByTestId(`embedded-editor-host-${child.id}`);
+    const wrapper = host.locator('xpath=ancestor::*[contains(@class,"cm-embedded-block-wrapper")][1]');
+    const rendered = host.locator('.cm-math-rendered');
+    await expect(rendered).toBeVisible();
+    await expect.poll(() => wrapper.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(40);
+    const initialHeight = await wrapper.evaluate(element => element.getBoundingClientRect().height);
+
+    await rendered.click();
+    await expect(host.locator('.cm-math-editing')).toHaveCount(3);
+    await host.locator('.cm-line').last().click();
+    await expect(host.locator('.cm-math-editing')).toHaveCount(0);
+    await page.waitForTimeout(150);
+
+    const after = await wrapper.evaluate(element => ({
+        height: element.getBoundingClientRect().height,
+        minHeight: getComputedStyle(element).minHeight
+    }));
+    expect(Number.parseFloat(after.minHeight)).toBeLessThanOrEqual(initialHeight + 2);
+    expect(Math.abs(after.height - initialHeight)).toBeLessThanOrEqual(2);
+});
+
+test('repairs a stale embedded height after scrolling and editing become idle', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:height-repair-child-${suffix}`;
+    const sourceLabel = `test:height-repair-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Height repair child',
+            label: childLabel,
+            content: 'Before\n\\[x^2+y^2\\]\nAfter'
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Height repair source', label: sourceLabel, content: `[[${childLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const host = page.getByTestId(`embedded-editor-host-${child.id}`);
+    const wrapper = host.locator('xpath=ancestor::*[contains(@class,"cm-embedded-block-wrapper")][1]');
+    const rendered = host.locator('.cm-math-rendered');
+    await expect(rendered).toBeVisible();
+    const naturalHeight = await wrapper.evaluate(element => element.getBoundingClientRect().height);
+
+    await rendered.click();
+    await expect(host.locator('.cm-math-editing')).toHaveCount(1);
+    await wrapper.evaluate((element, height) => {
+        (element as HTMLElement).style.minHeight = `${height + 700}px`;
+    }, naturalHeight);
+    await host.locator('.cm-line').last().click();
+    await expect(host.locator('.cm-math-editing')).toHaveCount(0);
+
+    await expect.poll(
+        () => wrapper.evaluate(element => element.getBoundingClientRect().height),
+        { timeout: 2500 }
+    ).toBeLessThanOrEqual(naturalHeight + 2);
+});
+
+test('reopened nested math content does not hold a large visible bottom reservation', async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    const stamp = Date.now();
+    const proofLabel = `test:reopen-gap-proof-${stamp}`;
+    const conditionLabel = `test:reopen-gap-condition-${stamp}`;
+    const sourceLabel = `test:reopen-gap-source-${stamp}`;
+    const proofContent = Array.from({ length: 9 }, (_, index) => [
+        `Step ${index}: $F_m(r)=\\frac{1}{2\\pi}\\int_{-\\pi}^{\\pi}u(re^{i\\theta})e^{-im\\theta}d\\theta$.`,
+        `The coefficient is smooth for $r>0$ and depends on the ${index}-th radial derivative.`,
+        '',
+        '\\[',
+        '\\begin{align*}',
+        `\\partial_r^{${index}} F_m(r) &= \\frac{1}{2\\pi}\\int_{-\\pi}^{\\pi}\\partial_r^{${index}}u(re^{i\\theta})e^{-im\\theta}d\\theta\\\\`,
+        `&= \\frac{1}{(im)^k}\\int_{-\\pi}^{\\pi}\\partial_\\theta^k\\partial_r^{${index}}u(r,\\theta)e^{-im\\theta}d\\theta\\\\`,
+        `&\\le C_{k,${index}}\\sup_{\\theta\\in[-\\pi,\\pi]}|\\partial_r^{${index}}u(r,\\theta)|.`,
+        '\\end{align*}',
+        '\\]',
+        `Consequently $|F_m(r)|\\le C_{${index}}|m|^{-k}$, provided the corresponding derivatives remain bounded.`,
+        ''
+    ].join('\n')).join('\n');
+    const proof = await (await page.request.post('/api/blocks', {
+        data: { title: 'Height gap proof', label: proofLabel, content: proofContent }
+    })).json();
+    const condition = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Height gap condition', label: conditionLabel,
+            content: [
+                '$u(x,y)$ is smooth on the disk if each Fourier coefficient has a regular extension.',
+                '1. $u=\\sum_{m\\in\\mathbb Z} F_m(r)e^{im\\theta}$.',
+                '2. $F_m(r)=r^{|m|}\\phi_m(r^2)$ for a smooth function $\\phi_m$.',
+                '3. $|\\partial_r^jF_m(r)|\\le C_{k,j}(r_0)|m|^{-k}$ uniformly on compact disks.',
+                `[[@${proofLabel}∨]]`
+            ].join('\n')
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Height gap source', label: sourceLabel,
+            content: [
+                'We study the unit disk with polar coordinates $z=re^{i\\theta}$.',
+                'For each integer $m$, the coefficient is an angular integral with several derivatives.',
+                '',
+                'The next block gives a smoothness criterion for the resulting expansion.',
+                `[[@${conditionLabel}∨]]`
+            ].join('\n')
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const title = panel.locator('[data-embed-nav-title]').filter({ hasText: 'Height gap condition' });
+    const conditionHost = page.getByTestId(`embedded-editor-host-${condition.id}`);
+    const proofHost = page.getByTestId(`embedded-editor-host-${proof.id}`);
+    await expect(proofHost.locator('.cm-editor')).toBeVisible();
+    await page.evaluate(async () => { await document.fonts.ready; });
+
+    await title.click();
+    await expect(conditionHost).toHaveCount(0);
+    await title.click();
+    await expect(proofHost.locator('.cm-editor')).toBeVisible();
+    const settling = await panel.evaluate(async (element, ids) => {
+        const gap = (id: string) => {
+            const host = document.querySelector(`[data-testid="embedded-editor-host-${id}"]`);
+            const wrapper = host?.closest('.cm-embedded-block-wrapper');
+            const mount = wrapper?.querySelector(':scope > .cm-embedded-react-mount');
+            return wrapper && mount
+                ? wrapper.getBoundingClientRect().height - mount.getBoundingClientRect().height
+                : 0;
+        };
+        element.scrollTop = element.scrollHeight;
+        const start = performance.now();
+        let firstLarge: number | null = null;
+        let lastLarge: number | null = null;
+        let maxGap = 0;
+        await new Promise<void>(resolve => {
+            const sample = () => {
+                const now = performance.now();
+                const current = Math.max(gap(ids.condition), gap(ids.proof));
+                maxGap = Math.max(maxGap, current);
+                if (current > 20) {
+                    firstLarge ??= now;
+                    lastLarge = now;
+                }
+                if (now - start >= 650 || (lastLarge !== null && now - lastLarge >= 60)) {
+                    resolve();
+                } else {
+                    requestAnimationFrame(sample);
+                }
+            };
+            requestAnimationFrame(sample);
+        });
+        return { maxGap, largeGapDuration: firstLarge !== null && lastLarge !== null
+            ? lastLarge - firstLarge : 0, finalGap: Math.max(gap(ids.condition), gap(ids.proof)) };
+    }, { condition: condition.id, proof: proof.id });
+    expect(settling.largeGapDuration).toBeLessThanOrEqual(180);
+    expect(settling.finalGap).toBeLessThanOrEqual(20);
+});
+
+test('releases retained parent height when a nested block is collapsed', async ({ page }) => {
+    const suffix = Date.now();
+    const grandchildLabel = `test:toggle-shrink-grandchild-${suffix}`;
+    const childLabel = `test:toggle-shrink-child-${suffix}`;
+    const sourceLabel = `test:toggle-shrink-source-${suffix}`;
+    const grandchild = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Toggle shrink grandchild',
+            label: grandchildLabel,
+            content: Array.from({ length: 28 }, (_, index) => `grandchild row ${index}`).join('\n')
+        }
+    })).json();
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Toggle shrink child',
+            label: childLabel,
+            content: `before\n[[${grandchildLabel}∨]]\nafter`
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Toggle shrink source',
+            label: sourceLabel,
+            content: `prefix [[${childLabel}∨]] suffix\nparent after`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const childHost = page.getByTestId(`embedded-editor-host-${child.id}`).filter({ visible: true }).last();
+    const childWrapper = childHost.locator('xpath=ancestor::*[contains(@class,"cm-embedded-block-wrapper")][1]');
+    await expect(page.getByTestId(`embedded-editor-host-${grandchild.id}`)).toBeVisible();
+    const expandedHeight = await childWrapper.evaluate(element => element.getBoundingClientRect().height);
+
+    await page.getByText('Toggle shrink grandchild', { exact: true }).click();
+    await expect(page.getByTestId(`embedded-editor-host-${grandchild.id}`)).toHaveCount(0);
+    await expect.poll(async () => childWrapper.evaluate(element => {
+        const mount = element.querySelector<HTMLElement>(':scope > .cm-embedded-react-mount');
+        return element.getBoundingClientRect().height - (mount?.getBoundingClientRect().height || 0);
+    }), { timeout: 2500 }).toBeLessThanOrEqual(10);
+    const collapsed = await childWrapper.evaluate(element => {
+        const mount = element.querySelector<HTMLElement>(':scope > .cm-embedded-react-mount');
+        return {
+            wrapper: element.getBoundingClientRect().height,
+            mount: mount?.getBoundingClientRect().height || 0,
+            minHeight: Number.parseFloat(getComputedStyle(element).minHeight) || 0
+        };
+    });
+    expect(collapsed.wrapper).toBeLessThan(expandedHeight - 200);
+    // The inline body intentionally contributes 4px top and bottom margins.
+    expect(Math.abs(collapsed.wrapper - collapsed.mount)).toBeLessThanOrEqual(10);
+    expect(collapsed.minHeight).toBeLessThanOrEqual(collapsed.mount + 2);
+});
+
+test('does not restore an expanded height when collapse is followed by viewport removal', async ({ page }) => {
+    const suffix = Date.now();
+    const grandchildLabel = `test:offscreen-collapse-grandchild-${suffix}`;
+    const childLabel = `test:offscreen-collapse-child-${suffix}`;
+    const sourceLabel = `test:offscreen-collapse-source-${suffix}`;
+    const grandchild = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Offscreen collapse grandchild',
+            label: grandchildLabel,
+            content: Array.from({ length: 45 }, (_, index) => `expanded row ${index}`).join('\n')
+        }
+    })).json();
+    const child = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Offscreen collapse child',
+            label: childLabel,
+            content: `child before\n[[${grandchildLabel}∨]]\nchild after`
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Offscreen collapse source',
+            label: sourceLabel,
+            content: `${Array.from({ length: 45 }, (_, index) => `before ${index}`).join('\n')}\n[[${childLabel}∨]]\n${Array.from({ length: 90 }, (_, index) => `after ${index}`).join('\n')}`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const childHost = page.getByTestId(`embedded-editor-host-${child.id}`).filter({ visible: true }).last();
+    const childWrapper = childHost.locator('xpath=ancestor::*[contains(@class,"cm-embedded-block-wrapper")][1]');
+    const grandchildTitle = page.getByText('Offscreen collapse grandchild', { exact: true });
+    await grandchildTitle.scrollIntoViewIfNeeded();
+    const childScrollTop = await panel.evaluate(element => element.scrollTop);
+    const expandedHeight = await childWrapper.evaluate(element => element.getBoundingClientRect().height);
+
+    await grandchildTitle.click();
+    await expect(page.getByTestId(`embedded-editor-host-${grandchild.id}`)).toHaveCount(0);
+    await panel.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await page.waitForTimeout(100);
+    await panel.evaluate((element, scrollTop) => { element.scrollTop = scrollTop; }, childScrollTop);
+    await expect(childHost).toBeVisible();
+
+    await expect.poll(() => childWrapper.evaluate(element => element.getBoundingClientRect().height), { timeout: 3000 })
+        .toBeLessThan(expandedHeight - 300);
+    const collapsed = await childWrapper.evaluate(element => {
+        const mount = element.querySelector<HTMLElement>(':scope > .cm-embedded-react-mount');
+        return {
+            wrapper: element.getBoundingClientRect().height,
+            mount: mount?.getBoundingClientRect().height || 0
+        };
+    });
+    expect(Math.abs(collapsed.wrapper - collapsed.mount)).toBeLessThanOrEqual(10);
+});
+
 test('scrolls only wide rendered display math', async ({ page }) => {
     const editor = await openEditor(page);
     await page.setViewportSize({ width: 800, height: 700 });
     const wideFormula = Array(45).fill('x^2').join('+');
-    await replaceEditorText(page, editor, `\\[x^2\\]\n\\[${wideFormula}\\]`);
+    const tallFormula = String.raw`\frac{\displaystyle\sum_{i=1}^{n}\frac{a_i}{1+b_i^2}}{\displaystyle\int_0^1 x^2\,dx}`;
+    await replaceEditorText(page, editor, `\\[x^2\\]\n\\[${wideFormula}\\]\n\\[${tallFormula}\\]`);
     await page.getByLabel('Open settings').click();
     await page.keyboard.press('Escape');
 
     const rendered = page.locator('.cm-math-rendered');
-    await expect(rendered).toHaveCount(2);
+    await expect(rendered).toHaveCount(3);
     const short = await rendered.nth(0).evaluate(element => ({
         client: element.clientWidth,
         scroll: element.scrollWidth
@@ -1439,6 +3770,15 @@ test('scrolls only wide rendered display math', async ({ page }) => {
     expect(short.scroll).toBeLessThanOrEqual(short.client + 1);
     expect(wide.scroll).toBeGreaterThan(wide.client + 20);
     expect(wide.position).toBeGreaterThan(0);
+    const verticalOverflow = await rendered.evaluateAll(elements => elements.map(element => ({
+        client: element.clientHeight,
+        scroll: element.scrollHeight,
+        overflowY: getComputedStyle(element).overflowY
+    })));
+    // KaTeX ink can round 1–2 CSS pixels beyond the fractional layout box;
+    // that is not a vertical scrollbar when the axis remains hidden.
+    expect(verticalOverflow.every(item => item.scroll <= item.client + 4)).toBe(true);
+    expect(verticalOverflow.every(item => item.overflowY === 'hidden')).toBe(true);
     await rendered.nth(1).evaluate(element => { element.scrollLeft = 0; });
     await rendered.nth(1).hover();
     await page.mouse.wheel(250, 0);
@@ -1523,12 +3863,14 @@ test('renders image previews as their lines enter the viewport', async ({ page }
     await replaceEditorText(page, editor, content);
 
     await page.keyboard.press('ControlOrMeta+Home');
-    await expect(page.locator('.cm-image-widget')).toBeVisible();
+    const images = page.locator('.cm-image-widget');
+    await expect(images).toHaveCount(2);
+    await expect(images.first()).toBeVisible();
     await page.locator('.cm-scroller').evaluate(element => {
         element.scrollTop = element.scrollHeight;
         element.dispatchEvent(new Event('scroll'));
     });
-    await expect(page.locator('.cm-image-widget')).toBeVisible();
+    await expect(images.last()).toBeVisible();
 });
 
 test('stores portable image paths and renders portable and legacy asset references', async ({ page }) => {
@@ -1584,13 +3926,94 @@ test('renders workspace assets in the web read-only viewer', async ({ page }) =>
         .toEqual([2, 2]);
 });
 
-test('creates an open embedded editor only when it approaches the viewport', async ({ page }) => {
+test('prepares the real embedded renderer more than two screens before it becomes visible', async ({ page }) => {
     const suffix = Date.now();
+    const targetLabel = `test:three-screen-target-${suffix}`;
+    const sourceLabel = `test:three-screen-source-${suffix}`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Three screen render target',
+            label: targetLabel,
+            content: 'Prepared with the real editor.\n$e^{i\\theta}$\nFinal prepared row.'
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Three screen render source',
+            label: sourceLabel,
+            content: `${Array.from({ length: 68 }, (_, index) => `render-ahead row ${index}`).join('\n')}\n[[${targetLabel}∨]]\n${Array.from({ length: 30 }, (_, index) => `following row ${index}`).join('\n')}`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const targetHost = page.getByTestId(`embedded-editor-host-${target.id}`);
+    await expect(targetHost).toHaveAttribute('data-editor-phase', 'warm');
+    await expect(targetHost.locator('[data-editor-dormant="true"]')).toBeVisible();
+    await expect(targetHost).toContainText('Final prepared row.');
+    await expect(targetHost.locator('.katex')).toBeVisible();
+
+    const initialGeometry = await targetHost.evaluate(element => {
+        const panel = element.closest<HTMLElement>('[role="tabpanel"]')!;
+        const panelRect = panel.getBoundingClientRect();
+        return {
+            distance: element.getBoundingClientRect().top - panelRect.bottom,
+            viewportHeight: panel.clientHeight,
+            scrollTop: panel.scrollTop
+        };
+    });
+    expect(initialGeometry.scrollTop).toBe(0);
+    expect(initialGeometry.distance).toBeGreaterThan(initialGeometry.viewportHeight * 1.25);
+    expect(initialGeometry.distance).toBeLessThan(initialGeometry.viewportHeight * 3.1);
+
+    await panel.evaluate(async (element, destination) => {
+        const trace = { loadingVisibleFrames: 0, active: true };
+        (window as any).__threeScreenRenderTrace = trace;
+        const sample = () => {
+            if (!trace.active) return;
+            const viewport = element.getBoundingClientRect();
+            const visibleLoading = Array.from(element.querySelectorAll<HTMLElement>('[aria-label^="Loading embedded note"]'))
+                .some(node => {
+                    const rect = node.getBoundingClientRect();
+                    return rect.bottom > viewport.top && rect.top < viewport.bottom;
+                });
+            if (visibleLoading) trace.loadingVisibleFrames += 1;
+            requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+        const start = element.scrollTop;
+        for (let step = 1; step <= 24; step += 1) {
+            element.scrollTop = start + (destination - start) * (step / 24);
+            element.dispatchEvent(new Event('scroll'));
+            await new Promise(resolve => setTimeout(resolve, 18));
+        }
+        trace.active = false;
+    }, initialGeometry.viewportHeight * 2.4);
+    const loadingVisibleFrames = await page.evaluate(() => (window as any).__threeScreenRenderTrace.loadingVisibleFrames);
+    expect(loadingVisibleFrames).toBe(0);
+    await expect(targetHost).toContainText('Final prepared row.');
+});
+
+test('keeps rapid-scroll destinations warm with the real renderer and promotes only the clicked body', async ({ page }) => {
+    const suffix = Date.now();
+    const leafLabel = `test:lazy-editor-leaf-${suffix}`;
+    const childLabel = `test:lazy-editor-child-${suffix}`;
     const targetLabel = `test:lazy-editor-target-${suffix}`;
     const sourceLabel = `test:lazy-editor-source-${suffix}`;
     await page.request.post('/api/blocks', {
-        data: { title: 'Lazy embedded target', label: targetLabel, content: 'Nested content with $x^2$.' }
+        data: { title: 'Prefetched leaf', label: leafLabel, content: 'Recursively prefetched leaf content.' }
     });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Prefetched child', label: childLabel, content: `Child content.\n[[${leafLabel}∨]]` }
+    });
+    const target = await (await page.request.post('/api/blocks', {
+        data: { title: 'Lazy embedded target', label: targetLabel, content: `Nested content with $x^2$.\n\\[\n\\int_{-\\pi}^{\\pi} f(y)\\,dy = 0\n\\]\n[[${childLabel}∨]]` }
+    })).json();
     await page.request.post('/api/blocks', {
         data: {
             title: 'Lazy embedded source',
@@ -1609,13 +4032,827 @@ test('creates an open embedded editor only when it approaches the viewport', asy
     await expect(editor).toContainText('line 0');
     await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content')).toHaveCount(1);
 
-    await page.locator('[role="tabpanel"][aria-hidden="false"]').evaluate(element => {
+    await page.locator('[role="tabpanel"][aria-hidden="false"]').evaluate(async element => {
+        const target = element.scrollHeight - element.clientHeight;
+        for (let step = 1; step <= 8; step += 1) {
+            element.scrollTop = target * (step / 8);
+            element.dispatchEvent(new Event('scroll'));
+            await new Promise(resolve => setTimeout(resolve, 35));
+        }
+        (window as any).__embeddedScrollTestTimer = window.setInterval(() => element.dispatchEvent(new Event('scroll')), 50);
+    });
+    // The destination is warmed with the real renderer while scrolling. There
+    // is no lightweight surface that can flash into a different layout later.
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="embedded-editor-host-"]').first()).toBeVisible();
+    const targetHost = page.getByTestId(`embedded-editor-host-${target.id}`);
+    await expect(targetHost).toHaveAttribute('data-editor-phase', 'warm');
+    await expect(targetHost.locator('[data-editor-dormant="true"]').first()).toBeVisible();
+    await expect(targetHost).toContainText('Nested content with');
+    await expect(targetHost).toContainText('Recursively prefetched leaf content.');
+    await expect(targetHost.locator('.katex').first()).toBeVisible();
+    await expect(targetHost.locator('[data-testid^="embedded-static-preview-"]')).toHaveCount(0);
+    await page.evaluate(() => {
+        window.clearInterval((window as any).__embeddedScrollTestTimer);
+        delete (window as any).__embeddedScrollTestTimer;
+    });
+    // Idling does not trigger a renderer swap or add a second representation.
+    await page.waitForTimeout(350);
+    await expect(targetHost).toHaveAttribute('data-editor-mounted', 'true');
+    await expect(targetHost.locator('[data-editor-dormant="true"]').first()).toBeVisible();
+    const dormantEditorCount = await page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').count();
+    expect(dormantEditorCount).toBeGreaterThan(1);
+
+    // Titles remain toggle controls inside a dormant editor.
+    const childTitle = targetHost.locator('[data-embed-nav-title="true"]').filter({ hasText: 'Prefetched child' }).first();
+    const expandedHeight = await targetHost.evaluate(element => element.getBoundingClientRect().height);
+    await childTitle.click();
+    await expect(targetHost).not.toContainText('Recursively prefetched leaf content.');
+    await expect(targetHost).toHaveAttribute('data-editor-activated', 'false');
+    await expect.poll(() => targetHost.evaluate(element => element.getBoundingClientRect().height)).toBeLessThan(expandedHeight - 10);
+    await expect.poll(() => targetHost.locator('[data-embed-nav-title="true"]').filter({ hasText: 'Prefetched child' }).count()).toBeGreaterThan(0);
+    await targetHost.locator('[data-embed-nav-title="true"]').filter({ hasText: 'Prefetched child' }).first().click();
+    await expect(targetHost).toContainText('Recursively prefetched leaf content.');
+
+    // A content click promotes the same view without adding another editor.
+    const activationGeometryBefore = await targetHost.evaluate(element => {
+        const panel = element.closest<HTMLElement>('[role="tabpanel"]')!;
+        const rect = element.getBoundingClientRect();
+        return { top: rect.top, height: rect.height, scrollTop: panel.scrollTop };
+    });
+    await targetHost.locator('.cm-line').first().click({ position: { x: 45, y: 8 } });
+    await expect(targetHost).toHaveAttribute('data-editor-activated', 'true');
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content')).toHaveCount(dormantEditorCount);
+    await expect(page.locator('.cm-math-inline .katex').last()).toBeVisible();
+    const activationGeometryAfter = await targetHost.evaluate(element => {
+        const panel = element.closest<HTMLElement>('[role="tabpanel"]')!;
+        const rect = element.getBoundingClientRect();
+        return {
+            top: rect.top,
+            height: rect.height,
+            scrollTop: panel.scrollTop
+        };
+    });
+    const activationGeometry = JSON.stringify({ activationGeometryBefore, activationGeometryAfter });
+    expect(Math.abs(activationGeometryAfter.top - activationGeometryBefore.top), activationGeometry).toBeLessThanOrEqual(1);
+    expect(Math.abs(activationGeometryAfter.height - activationGeometryBefore.height), activationGeometry).toBeLessThanOrEqual(1);
+    expect(Math.abs(activationGeometryAfter.scrollTop - activationGeometryBefore.scrollTop), activationGeometry).toBeLessThanOrEqual(1);
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const mountedScrollHeight = await panel.evaluate(element => element.scrollHeight);
+    await panel.evaluate(element => {
+        element.scrollTop = 0;
+        element.dispatchEvent(new Event('scroll'));
+    });
+    // The parent CodeMirror virtualizes off-screen lines, but the embed keeps
+    // its activation mode and returns directly as an editor when revisited.
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content')).toHaveCount(1);
+    await expect(page.getByText('Loading embedded note…')).toHaveCount(0);
+
+    await panel.evaluate(element => {
+        const artifacts: string[] = [];
+        const inspect = (snapshot: Element) => {
+            if (snapshot.querySelector('.cm-cursorLayer')) artifacts.push('cursor');
+            if (snapshot.querySelector('.cm-selectionLayer')) artifacts.push('selection');
+            if (snapshot.querySelector('.cm-tooltip')) artifacts.push('tooltip');
+            if (snapshot.querySelector('.embedded-title-caret')) artifacts.push('title-caret');
+            if (snapshot.querySelector('[data-embed-keyboard-selected]')) artifacts.push('object-selection');
+            if (snapshot.querySelector('[contenteditable]')) artifacts.push('editable');
+        };
+        const observer = new MutationObserver(records => {
+            for (const record of records) {
+                for (const node of Array.from(record.addedNodes)) {
+                    if (!(node instanceof Element)) continue;
+                    if (node.matches('.cm-embedded-snapshot')) inspect(node);
+                    node.querySelectorAll('.cm-embedded-snapshot').forEach(inspect);
+                }
+            }
+        });
+        observer.observe(element, { childList: true, subtree: true });
+        (window as any).__embeddedSnapshotArtifacts = artifacts;
+        (window as any).__embeddedSnapshotObserver = observer;
+    });
+    await panel.evaluate(element => {
         element.scrollTop = element.scrollHeight;
         element.dispatchEvent(new Event('scroll'));
     });
-    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="embedded-editor-host-"]')).toBeVisible();
-    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content')).toHaveCount(2);
-    await expect(page.locator('.cm-math-inline .katex')).toBeVisible();
+    await expect.poll(() => page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').count()).toBeGreaterThan(1);
+    await expect.poll(() => panel.evaluate(element => element.scrollHeight)).toBeGreaterThanOrEqual(mountedScrollHeight - 1);
+    const snapshotArtifacts = await page.evaluate(() => {
+        (window as any).__embeddedSnapshotObserver?.disconnect();
+        return (window as any).__embeddedSnapshotArtifacts as string[];
+    });
+    expect(snapshotArtifacts).toEqual([]);
+});
+
+test('keeps slow upward scrolling stable while an embedded editor remounts above the viewport', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:slow-up-target-${suffix}`;
+    const sourceLabel = `test:slow-up-source-${suffix}`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Slow upward target',
+            label: targetLabel,
+            content: `${Array.from({ length: 18 }, (_, index) => `embedded line ${index}`).join('\n')}\n\\[\\sum_{i=1}^{n} i^2\\]`
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Slow upward source',
+            label: sourceLabel,
+            content: `${Array.from({ length: 70 }, (_, index) => `before ${index}`).join('\n')}\n[[${targetLabel}∨]]\n${Array.from({ length: 70 }, (_, index) => `after ${index}`).join('\n')}`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+
+    await panel.evaluate(element => {
+        element.scrollTop = element.scrollHeight / 2;
+        element.dispatchEvent(new Event('scroll'));
+    });
+    const targetHost = page.getByTestId(`embedded-editor-host-${target.id}`);
+    await targetHost.evaluate(element => element.scrollIntoView({ block: 'center' }));
+    await expect(targetHost).toHaveAttribute('data-editor-phase', 'warm');
+    await expect(targetHost).toContainText('embedded line 17');
+    const measuredHeight = await targetHost.evaluate(element => element.getBoundingClientRect().height);
+    expect(measuredHeight).toBeGreaterThan(200);
+
+    await panel.evaluate(element => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event('scroll'));
+    });
+    await expect(targetHost).toHaveCount(0);
+    // The jump to the bottom intentionally bypasses wheel/trackpad pacing.
+    // Let CodeMirror finish measuring that new viewport before this test starts
+    // judging the subsequent slow, steady upward movement.
+    await page.waitForTimeout(250);
+
+    const movement = await panel.evaluate(async element => {
+        let maximumVisualDeviation = 0;
+        let maximumReverseMovement = 0;
+        let firstUnexpected: Record<string, number> | null = null;
+        let anchoredSamples = 0;
+        for (let step = 0; step < 180 && element.scrollTop > 0; step += 1) {
+            const before = element.scrollTop;
+            const panelRect = element.getBoundingClientRect();
+            const targetY = panelRect.top + Math.min(120, panelRect.height / 4);
+            const anchor = Array.from(element.querySelectorAll<HTMLElement>('[data-embed-nav-title="true"], .cm-line'))
+                .map(candidate => ({ candidate, rect: candidate.getBoundingClientRect() }))
+                .filter(({ rect }) => rect.bottom > panelRect.top && rect.top < panelRect.bottom && rect.height > 0)
+                .sort((left, right) => Math.abs(left.rect.top - targetY) - Math.abs(right.rect.top - targetY))[0]?.candidate ?? null;
+            const anchorTop = anchor?.getBoundingClientRect().top ?? null;
+            const intended = Math.max(0, element.scrollTop - 28);
+            element.dispatchEvent(new WheelEvent('wheel', { deltaY: -28, deltaMode: WheelEvent.DOM_DELTA_PIXEL }));
+            element.scrollTop = intended;
+            element.dispatchEvent(new Event('scroll'));
+            await new Promise(resolve => setTimeout(resolve, 18));
+            maximumReverseMovement = Math.max(maximumReverseMovement, element.scrollTop - before);
+            if (anchor?.isConnected && anchorTop !== null) {
+                anchoredSamples += 1;
+                const expectedVisualMovement = before - intended;
+                const actualVisualMovement = anchor.getBoundingClientRect().top - anchorTop;
+                const deviation = Math.abs(actualVisualMovement - expectedVisualMovement);
+                maximumVisualDeviation = Math.max(maximumVisualDeviation, deviation);
+                if (deviation > 3 && !firstUnexpected) {
+                    firstUnexpected = {
+                        step,
+                        before,
+                        intended,
+                        actual: element.scrollTop,
+                        expectedVisualMovement,
+                        actualVisualMovement,
+                        deviation
+                    };
+                }
+            }
+        }
+        return { maximumVisualDeviation, maximumReverseMovement, firstUnexpected, anchoredSamples };
+    });
+    // ScrollTop may move by the same amount as a corrected height above the
+    // viewport. Judge the text under the user's eye instead: a remount may
+    // defer one wheel step for one frame, but it must not flash or displace the
+    // visible text by hundreds of pixels.
+    expect(movement.anchoredSamples).toBeGreaterThan(10);
+    expect(movement.maximumVisualDeviation, JSON.stringify(movement.firstUnexpected)).toBeLessThanOrEqual(28);
+    expect(movement.maximumReverseMovement).toBeLessThanOrEqual(3);
+});
+
+test('does not expose cold shells or reverse direction during upward wheel scrolling', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabels = Array.from({ length: 7 }, (_, index) => `test:wheel-up-target-${index}-${suffix}`);
+    for (const [index, label] of targetLabels.entries()) {
+        await page.request.post('/api/blocks', {
+            data: {
+                title: `Wheel target ${index + 1}`,
+                label,
+                content: `${Array.from({ length: 24 }, (_, line) => `target ${index + 1} line ${line}`).join('\n')}\n\\[\\sum_{k=1}^{n} k^2\\]`
+            }
+        });
+    }
+    const sourceLabel = `test:wheel-up-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Wheel upward source',
+            label: sourceLabel,
+            content: targetLabels.map((label, index) => (
+                `${Array.from({ length: 28 }, (_, line) => `separator ${index}-${line}`).join('\n')}\n[[${label}∨]]`
+            )).join('\n')
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const bounds = await panel.boundingBox();
+    expect(bounds).not.toBeNull();
+    await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+
+    // Visit the document once so every returning occurrence has retained
+    // geometry, then let distant editors leave the outer CodeMirror viewport.
+    for (let index = 0; index < 40; index += 1) {
+        await page.mouse.wheel(0, 420);
+        await page.waitForTimeout(12);
+    }
+    await expect.poll(() => panel.evaluate(element => element.scrollTop)).toBeGreaterThan(1000);
+    await page.waitForTimeout(1000);
+
+    await panel.evaluate(element => {
+        const trace = {
+            active: true,
+            coldVisibleFrames: 0,
+            samples: [] as Array<{ scrollTop: number, scrollHeight: number, retained: string[] }>
+        };
+        (window as any).__upwardWheelTrace = trace;
+        const sample = () => {
+            if (!trace.active) return;
+            const viewport = element.getBoundingClientRect();
+            const coldVisible = Array.from(element.querySelectorAll<HTMLElement>('[data-editor-phase="cold"]'))
+                .some(host => {
+                    const rect = host.getBoundingClientRect();
+                    return rect.bottom > viewport.top && rect.top < viewport.bottom;
+                });
+            if (coldVisible) trace.coldVisibleFrames += 1;
+            trace.samples.push({
+                scrollTop: element.scrollTop,
+                scrollHeight: element.scrollHeight,
+                retained: Array.from(element.querySelectorAll<HTMLElement>('[data-retained-widget-height]'))
+                    .map(widget => widget.dataset.retainedWidgetHeight || '')
+            });
+            requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+    });
+
+    for (let index = 0; index < 90; index += 1) {
+        await page.mouse.wheel(0, -54);
+        await page.waitForTimeout(12);
+    }
+    const trace = await panel.evaluate(element => {
+        const value = (window as any).__upwardWheelTrace as {
+            active: boolean;
+            coldVisibleFrames: number;
+            samples: Array<{ scrollTop: number, scrollHeight: number, retained: string[] }>;
+        };
+        value.active = false;
+        let maximumReverseJump = 0;
+        let maximumEvent: unknown = null;
+        for (let index = 1; index < value.samples.length; index += 1) {
+            const jump = value.samples[index].scrollTop - value.samples[index - 1].scrollTop;
+            if (jump > maximumReverseJump) {
+                maximumReverseJump = jump;
+                maximumEvent = { previous: value.samples[index - 1], current: value.samples[index] };
+            }
+        }
+        return {
+            coldVisibleFrames: value.coldVisibleFrames,
+            maximumReverseJump,
+            maximumEvent,
+            finalScrollTop: element.scrollTop
+        };
+    });
+    expect(trace.coldVisibleFrames).toBe(0);
+    expect(trace.maximumReverseJump, JSON.stringify(trace)).toBeLessThanOrEqual(2);
+});
+
+test('keeps the end of a deeply nested embed stable while scrolling upward', async ({ page }) => {
+    const suffix = Date.now();
+    const grandchildLabel = `test:boundary-grandchild-${suffix}`;
+    const childLabel = `test:boundary-child-${suffix}`;
+    const middleLabel = `test:boundary-middle-${suffix}`;
+    const firstLabel = `test:boundary-first-${suffix}`;
+    const applicationLabel = `test:boundary-application-${suffix}`;
+    const sourceLabel = `test:boundary-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Boundary grandchild',
+            label: grandchildLabel,
+            content: Array.from({ length: 95 }, (_, index) => `grandchild line ${index} with $x_${index}^2$`).join('\n')
+        }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Boundary child',
+            label: childLabel,
+            content: `${Array.from({ length: 28 }, (_, index) => `child line ${index}`).join('\n')}\n[[${grandchildLabel}∨]]`
+        }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Boundary nested middle',
+            label: middleLabel,
+            content: `${Array.from({ length: 35 }, (_, index) => `middle line ${index}`).join('\n')}\n[[${childLabel}∨]]`
+        }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Boundary first target',
+            label: firstLabel,
+            content: Array.from({ length: 90 }, (_, index) => `first line ${index}`).join('\n')
+        }
+    });
+    const application = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Boundary application target',
+            label: applicationLabel,
+            content: Array.from({ length: 80 }, (_, index) => `application line ${index}`).join('\n')
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Boundary source',
+            label: sourceLabel,
+            content: `[[${firstLabel}∨]]\n[[${middleLabel}∨]]\n[[${applicationLabel}∨]]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const bounds = await panel.boundingBox();
+    expect(bounds).not.toBeNull();
+    await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+    for (let index = 0; index < 70; index += 1) {
+        await page.mouse.wheel(0, 480);
+        await page.waitForTimeout(12);
+    }
+    const applicationTitle = panel.locator('[data-embed-nav-title="true"]')
+        .filter({ hasText: 'Boundary application target' })
+        .first();
+    await expect(applicationTitle).toBeVisible();
+    await panel.evaluate(element => {
+        element.scrollTop = Math.min(element.scrollHeight - element.clientHeight, element.scrollTop + 760);
+        element.dispatchEvent(new Event('scroll'));
+    });
+    await page.waitForTimeout(900);
+
+    await panel.evaluate((element, applicationId) => {
+        const trace = {
+            active: true,
+            retainedVisibleFrames: 0,
+            samples: [] as Array<{ scrollTop: number, scrollHeight: number, anchorTop: number | null, retained: string[] }>
+        };
+        (window as any).__nestedBoundaryTrace = trace;
+        const sample = () => {
+            if (!trace.active) return;
+            const viewport = element.getBoundingClientRect();
+            const retainedVisible = Array.from(element.querySelectorAll<HTMLElement>('[data-retained-widget-height]'))
+                .some(widget => {
+                    const rect = widget.getBoundingClientRect();
+                    return rect.bottom > viewport.top && rect.top < viewport.bottom;
+                });
+            if (retainedVisible) trace.retainedVisibleFrames += 1;
+            const anchor = element.querySelector<HTMLElement>(`[data-testid="embedded-editor-host-${applicationId}"]`)
+                ?.closest<HTMLElement>('.cm-embedded-block-wrapper');
+            trace.samples.push({
+                scrollTop: element.scrollTop,
+                scrollHeight: element.scrollHeight,
+                anchorTop: anchor?.getBoundingClientRect().top ?? null,
+                retained: Array.from(element.querySelectorAll<HTMLElement>('[data-retained-widget-height]'))
+                    .map(widget => widget.dataset.retainedWidgetHeight || '')
+            });
+            requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+    }, application.id);
+
+    for (let index = 0; index < 75; index += 1) {
+        await page.mouse.wheel(0, -42);
+        await page.waitForTimeout(12);
+    }
+    const result = await panel.evaluate(() => {
+        const trace = (window as any).__nestedBoundaryTrace as {
+            active: boolean;
+            retainedVisibleFrames: number;
+            samples: Array<{ scrollTop: number, scrollHeight: number, anchorTop: number | null, retained: string[] }>;
+        };
+        trace.active = false;
+        let maximumLayoutShift = 0;
+        let maximumReverseJump = 0;
+        let maximumEvent: unknown = null;
+        for (let index = 1; index < trace.samples.length; index += 1) {
+            const previous = trace.samples[index - 1];
+            const current = trace.samples[index];
+            maximumReverseJump = Math.max(maximumReverseJump, current.scrollTop - previous.scrollTop);
+            if (previous.anchorTop !== null && current.anchorTop !== null) {
+                const shift = Math.abs((current.anchorTop - previous.anchorTop) + (current.scrollTop - previous.scrollTop));
+                if (shift > maximumLayoutShift) {
+                    maximumLayoutShift = shift;
+                    maximumEvent = { previous, current };
+                }
+            }
+        }
+        return { maximumLayoutShift, maximumReverseJump, retainedVisibleFrames: trace.retainedVisibleFrames, maximumEvent };
+    });
+    expect(result.retainedVisibleFrames, JSON.stringify(result)).toBe(0);
+    expect(result.maximumReverseJump, JSON.stringify(result)).toBeLessThanOrEqual(2);
+    expect(result.maximumLayoutShift, JSON.stringify(result)).toBeLessThanOrEqual(2);
+});
+
+test('promotes the clicked dormant nested editor while keeping its ancestry editable', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:static-click-child-${suffix}`;
+    const parentLabel = `test:static-click-parent-${suffix}`;
+    const sourceLabel = `test:static-click-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Nested click child', label: childLabel, content: 'alpha beta gamma' }
+    })).json();
+    const parent = await (await page.request.post('/api/blocks', {
+        data: { title: 'Nested click parent', label: parentLabel, content: `parent text\n[[${childLabel}∨]]` }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Nested click source', label: sourceLabel, content: `before\n[[${parentLabel}∨]]\nafter` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const parentHost = page.getByTestId(`embedded-editor-host-${parent.id}`);
+    const childHost = page.getByTestId(`embedded-editor-host-${child.id}`);
+    await expect(parentHost).toHaveAttribute('data-editor-mounted', 'true');
+    await expect(childHost).toHaveAttribute('data-editor-mounted', 'true');
+    await expect(childHost.locator('[data-editor-dormant="true"]').first()).toBeVisible();
+    const mountedBefore = await page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').count();
+    await childHost.locator('.cm-line').filter({ hasText: 'alpha beta gamma' }).click({ position: { x: 48, y: 8 } });
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    // Promotion reuses the existing view rather than adding another editor.
+    await expect(panel.locator('.cm-content')).toHaveCount(mountedBefore);
+    await expect(childHost).toHaveAttribute('data-editor-activated', 'true');
+    await expect(parentHost).toHaveAttribute('data-editor-activated', 'true');
+    await expect(childHost.locator('[data-editor-wants-focus="true"]')).toBeVisible();
+    const focusedEditor = childHost.locator('.cm-content:focus');
+    await expect(focusedEditor).toContainText('alpha beta gamma');
+    await page.keyboard.insertText('X');
+    await expect(focusedEditor).toContainText('alpha Xbeta gamma');
+});
+
+test('maps a warm formatted click through the existing CodeMirror view', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:static-native-point-target-${suffix}`;
+    const sourceLabel = `test:static-native-point-source-${suffix}`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: { title: 'Static native point target', label: targetLabel, content: 'prefix **bold** suffix' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Static native point source',
+            label: sourceLabel,
+            content: `${Array.from({ length: 220 }, (_, index) => `line ${index}`).join('\n')}\n[[${targetLabel}∨]]`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await expect(rootEditor).toContainText('line 0');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    await panel.evaluate(async element => {
+        const bottom = element.scrollHeight - element.clientHeight;
+        for (let step = 1; step <= 8; step += 1) {
+            element.scrollTop = bottom * (step / 8);
+            element.dispatchEvent(new Event('scroll'));
+            await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        (window as any).__staticNativePointScrollTimer = window.setInterval(() => element.dispatchEvent(new Event('scroll')), 40);
+    });
+    const host = page.getByTestId(`embedded-editor-host-${target.id}`);
+    await expect(host).toBeVisible();
+    await expect(host).toHaveAttribute('data-editor-phase', 'warm');
+    const bold = host.locator('.cm-format-bold').filter({ hasText: 'bold' });
+    await expect(bold).toBeVisible();
+    const geometryBefore = await host.evaluate(element => {
+        const panel = element.closest<HTMLElement>('[role="tabpanel"]')!;
+        return { top: element.getBoundingClientRect().top, scrollTop: panel.scrollTop };
+    });
+    await bold.click({ position: { x: 1, y: 8 } });
+    await page.evaluate(() => {
+        window.clearInterval((window as any).__staticNativePointScrollTimer);
+        delete (window as any).__staticNativePointScrollTimer;
+    });
+
+    await expect(host).toHaveAttribute('data-editor-mounted', 'true');
+    await expect(host).toHaveAttribute('data-editor-activated', 'true');
+    const geometryAfter = await host.evaluate(element => {
+        const panel = element.closest<HTMLElement>('[role="tabpanel"]')!;
+        return { top: element.getBoundingClientRect().top, scrollTop: panel.scrollTop };
+    });
+    expect(Math.abs(geometryAfter.top - geometryBefore.top)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometryAfter.scrollTop - geometryBefore.scrollTop)).toBeLessThanOrEqual(1);
+    const focusedEditor = host.locator('.cm-content:focus');
+    await expect(focusedEditor).toBeVisible();
+    await page.keyboard.insertText('X');
+    await page.keyboard.press('Tab');
+    await expect.poll(async () => (await (await page.request.get(`/api/blocks/${target.id}`)).json()).content)
+        .toBe('prefix **Xbold** suffix');
+});
+
+test('preserves a drag selection that begins in a dormant embedded editor', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:dormant-drag-child-${suffix}`;
+    const sourceLabel = `test:dormant-drag-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Dormant drag child', label: childLabel, content: 'alpha beta gamma delta epsilon' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Dormant drag source', label: sourceLabel, content: `[[${childLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const host = page.getByTestId(`embedded-editor-host-${child.id}`);
+    await expect(host).toHaveAttribute('data-editor-phase', 'warm');
+    const line = host.locator('.cm-line').first();
+    const box = await line.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + 8, box!.y + box!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + Math.min(190, box!.width - 8), box!.y + box!.height / 2, { steps: 8 });
+    await page.mouse.up();
+
+    await expect(host).toHaveAttribute('data-editor-phase', 'hot');
+    await expect(host.locator('.cm-selectionBackground')).not.toHaveCount(0);
+    await expect(host.locator('.cm-content:focus')).toHaveCount(1);
+});
+
+test('uses the final CodeMirror formatting model in dormant embedded editors', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:static-format-target-${suffix}`;
+    const sourceLabel = `test:static-format-source-${suffix}`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Static formatting target',
+            label: targetLabel,
+            content: '**bold** *italic* _underlined_ [linked](https://example.com)\n* item\n> quoted $x^2$'
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Static formatting source', label: sourceLabel, content: `[[${targetLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const host = page.getByTestId(`embedded-editor-host-${target.id}`);
+    await expect(host).toHaveAttribute('data-editor-mounted', 'true');
+    await expect(host.locator('[data-editor-dormant="true"]').first()).toBeVisible();
+    await expect(host.locator('.cm-format-bold')).toHaveCSS('font-weight', /700|bold/);
+    await expect(host.locator('.cm-format-italic')).toHaveCSS('font-style', 'italic');
+    await expect(host.locator('.cm-underline-run')).toHaveCSS('border-bottom-width', '1px');
+    await expect(host.locator('.cm-markdown-link')).toHaveAttribute('href', 'https://example.com');
+    await expect(host).toContainText('quoted');
+    await expect(host.locator('.cm-math-inline .katex')).toBeVisible();
+    await expect(host).not.toContainText('**bold**');
+});
+
+test('expands the live editor grid without overlapping content after display math', async ({ page }) => {
+    const suffix = Date.now();
+    const proofLabel = `test:grid-proof-${suffix}`;
+    const targetLabel = `test:grid-target-${suffix}`;
+    const sourceLabel = `test:grid-source-${suffix}`;
+    const proof = await (await page.request.post('/api/blocks', {
+        data: { title: 'proof', label: proofLabel, content: 'proof content' }
+    })).json();
+    const target = await (await page.request.post('/api/blocks', {
+        data: {
+            title: 'Grid target',
+            label: targetLabel,
+            content: `\\[\n\\Delta u = f,\\qquad u|_{\\partial D}=g\n\\]\nWe would now take $D$ to be the unit disk.\n[[@${proofLabel}∨]]`
+        }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Grid source', label: sourceLabel, content: `[[${targetLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const host = page.getByTestId(`embedded-editor-host-${target.id}`);
+    await expect(host).toHaveAttribute('data-editor-mounted', 'true');
+    await expect(host.locator('.embedded-editor-live > [data-editor-dormant="true"]').first()).toBeVisible();
+    await host.locator('.cm-math-block').first().click();
+    await expect(host).toHaveAttribute('data-editor-activated', 'true');
+    const live = host.locator('.embedded-editor-live').first();
+    await expect(live.locator('.cm-math-editing').first()).toBeVisible();
+    await expect(live.getByTestId(`standout-label-${proof.id}`)).toBeAttached();
+    const layout = await live.evaluate((element, proofId) => {
+        const title = element.querySelector<HTMLElement>(`[data-testid="standout-label-${proofId}"]`)?.closest<HTMLElement>('[data-embed-nav-title="true"]')
+            || element.querySelector<HTMLElement>('[data-embed-nav-title="true"]');
+        const editing = Array.from(element.querySelectorAll<HTMLElement>('.cm-math-editing'));
+        if (!title || editing.length === 0) return null;
+        const titleRect = title.getBoundingClientRect();
+        const mathBottom = Math.max(...editing.map(item => item.getBoundingClientRect().bottom));
+        const editorHost = element.closest<HTMLElement>('[data-editor-mounted="true"]')!;
+        return {
+            mathBottom,
+            titleTop: titleRect.top,
+            stackHeight: editorHost.getBoundingClientRect().height,
+            liveHeight: element.getBoundingClientRect().height
+        };
+    }, proof.id);
+    expect(layout).not.toBeNull();
+    expect(layout!.mathBottom).toBeLessThanOrEqual(layout!.titleTop + 1);
+    expect(layout!.stackHeight).toBeGreaterThanOrEqual(layout!.liveHeight - 1);
+});
+
+test('demotes inactive sibling editors while preserving their undo history', async ({ page }) => {
+    const suffix = Date.now();
+    const firstLabel = `test:pooled-first-${suffix}`;
+    const secondLabel = `test:pooled-second-${suffix}`;
+    const sourceLabel = `test:pooled-source-${suffix}`;
+    const first = await (await page.request.post('/api/blocks', {
+        data: { title: 'First pooled target', label: firstLabel, content: 'first content' }
+    })).json();
+    const second = await (await page.request.post('/api/blocks', {
+        data: { title: 'Second pooled target', label: secondLabel, content: 'second content' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Pooled source', label: sourceLabel, content: `[[${firstLabel}∨]]\n[[${secondLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const firstHost = page.getByTestId(`embedded-editor-host-${first.id}`);
+    const secondHost = page.getByTestId(`embedded-editor-host-${second.id}`);
+    await expect(firstHost).toHaveAttribute('data-editor-mounted', 'true');
+    await expect(secondHost).toHaveAttribute('data-editor-mounted', 'true');
+    await firstHost.locator('.cm-line').click({ position: { x: 45, y: 8 } });
+    let focused = page.locator('.cm-content:focus');
+    await expect(focused).toContainText('first content');
+    await page.keyboard.insertText('X');
+    await expect(focused).toHaveText('first coXntent');
+
+    await secondHost.locator('.cm-line').click({ position: { x: 45, y: 8 } });
+    await expect(page.locator('[data-editor-activated="true"] .cm-editor')).toHaveCount(1);
+    await expect(firstHost.locator('[data-editor-dormant="true"]')).toBeVisible();
+
+    await firstHost.locator('.cm-line').click({ position: { x: 45, y: 8 } });
+    focused = page.locator('.cm-content:focus');
+    await expect(focused).toHaveText('first coXntent');
+    await page.keyboard.press('ControlOrMeta+z');
+    await expect(focused).toHaveText('first content');
+    await expect(page.locator('[data-editor-activated="true"] .cm-editor')).toHaveCount(1);
+});
+
+test('keeps repeated occurrences distinct while sharing edits and toggle geometry', async ({ page }) => {
+    const suffix = Date.now();
+    const childLabel = `test:repeated-child-${suffix}`;
+    const sharedLabel = `test:repeated-shared-${suffix}`;
+    const sourceLabel = `test:repeated-source-${suffix}`;
+    const child = await (await page.request.post('/api/blocks', {
+        data: { title: 'Repeated child', label: childLabel, content: 'child body line one\nchild body line two' }
+    })).json();
+    const shared = await (await page.request.post('/api/blocks', {
+        data: { title: 'Repeated shared block', label: sharedLabel, content: `shared text\n[[${childLabel}∨]]\nshared tail` }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: 'Repeated source', label: sourceLabel, content: `[[${sharedLabel}∨]]\nbetween\n[[${sharedLabel}∨]]` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const occurrences = page.getByTestId(`embedded-editor-host-${shared.id}`);
+    await expect(occurrences).toHaveCount(2);
+    const occurrenceKeys = await occurrences.evaluateAll(elements => elements.map(element => element.getAttribute('data-occurrence-key')));
+    expect(new Set(occurrenceKeys).size).toBe(2);
+
+    const first = occurrences.nth(0);
+    const second = occurrences.nth(1);
+    await expect(first).toHaveAttribute('data-editor-phase', 'warm');
+    await expect(second).toHaveAttribute('data-editor-phase', 'warm');
+    await first.locator('.cm-line').filter({ hasText: 'shared text' }).click({ position: { x: 80, y: 8 } });
+    await expect(first).toHaveAttribute('data-editor-phase', 'hot');
+    await expect(second).toHaveAttribute('data-editor-phase', 'warm');
+
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.insertText('X');
+    await expect(second).toContainText('Xshared text');
+
+    const heightsBefore = await occurrences.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
+    await first.locator('[data-embed-nav-title="true"]').filter({ hasText: 'Repeated child' }).first().click();
+    await expect(first).not.toContainText('child body line one');
+    await expect(second).not.toContainText('child body line one');
+    await expect.poll(async () => {
+        const heights = await occurrences.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
+        return heights.length === 2 && heights.every((height, index) => height < heightsBefore[index] - 10);
+    }).toBe(true);
+    const heightsAfter = await occurrences.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
+    expect(heightsAfter[0]).toBeLessThan(heightsBefore[0] - 10);
+    expect(heightsAfter[1]).toBeLessThan(heightsBefore[1] - 10);
+
+    await second.locator('.cm-line').filter({ hasText: 'Xshared text' }).click({ position: { x: 60, y: 8 } });
+    await expect(second).toHaveAttribute('data-editor-phase', 'hot');
+    await expect(first).toHaveAttribute('data-editor-phase', 'warm');
+    await expect(page.locator('[data-editor-phase="hot"]')).toHaveCount(1);
+});
+
+test('preserves an intentional upward scroll while several open embeds finish loading', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabels = [1, 2, 3].map(index => `test:upward-scroll-target-${index}-${suffix}`);
+    for (const [index, label] of targetLabels.entries()) {
+        await page.request.post('/api/blocks', {
+            data: {
+                title: `Upward scroll target ${index + 1}`,
+                label,
+                content: Array.from({ length: 4 }, (_, line) => `target ${index + 1} line ${line}`).join('\n')
+            }
+        });
+    }
+    const sourceLabel = `test:upward-scroll-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Three open embeds',
+            label: sourceLabel,
+            content: `${Array.from({ length: 120 }, (_, index) => `source line ${index}`).join('\n')}\n${targetLabels.map(label => `[[${label}∨]]`).join('\n')}\n${Array.from({ length: 8 }, (_, index) => `tail line ${index}`).join('\n')}`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    await panel.evaluate(element => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event('scroll'));
+    });
+    const hosts = panel.locator('[data-testid^="embedded-editor-host-"]');
+    await expect(hosts).toHaveCount(3);
+    await expect(hosts.first()).toContainText('target 1 line 0');
+
+    const requestedScrollTop = await panel.evaluate(element => {
+        const next = Math.max(0, element.scrollTop - 180);
+        element.scrollTop = next;
+        element.dispatchEvent(new Event('scroll'));
+        return next;
+    });
+    await expect.poll(() => panel.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeGreaterThan(100);
+    await hosts.first().evaluate(element => {
+        const host = element as HTMLElement;
+        host.style.minHeight = `${host.getBoundingClientRect().height + 300}px`;
+    });
+    await page.waitForTimeout(500);
+    const finalDistanceFromBottom = await panel.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop);
+    expect(finalDistanceFromBottom).toBeGreaterThan(80);
+    expect(await panel.evaluate(element => element.scrollTop)).toBeGreaterThanOrEqual(requestedScrollTop - 2);
 });
 
 test('loads the graph feature only when it is opened', async ({ page }) => {

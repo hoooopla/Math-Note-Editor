@@ -23,14 +23,25 @@ export const BlockContainer: React.FC<{ id: string }> = ({ id }) => {
     const flushBlock = useStore(state => state.flushBlock);
     const deleteBlock = useStore(state => state.deleteBlock);
     const loadBlockContent = useStore(state => state.loadBlockContent);
+    const blockLoadError = useStore(state => state.blockLoadErrors[id]);
     const setImageUploadParams = useStore(state => state.setImageUploadParams);
 
     useEffect(() => {
-        if (block && block.content === undefined) {
-            loadBlockContent(id);
+        if (block && block.content === undefined && !useStore.getState().blockLoadErrors[id]) {
+            void loadBlockContent(id).catch(() => undefined);
         }
-    }, [block, id, loadBlockContent]);
+    }, [block?.id, block?.content, id, loadBlockContent]);
 
+    if (block?.content === undefined && blockLoadError) return (
+        <div className="mb-6 rounded-lg border border-red-400/35 bg-red-400/10 p-4 text-sm text-red-200" role="alert" data-testid={`block-load-error-${id}`}>
+            <div>Could not load this note.</div>
+            <div className="mt-1 break-words text-xs opacity-80">{blockLoadError}</div>
+            <button type="button" className="mt-3 rounded border border-red-300/50 px-2 py-1 font-semibold hover:bg-red-300/10"
+                onClick={() => { void loadBlockContent(id).catch(() => undefined); }}>
+                Retry loading
+            </button>
+        </div>
+    );
     if (!block || block.content === undefined) return <div className="h-24 animate-pulse bg-surface/50 rounded-lg mb-6 border border-outline"></div>;
 
     return <Block 

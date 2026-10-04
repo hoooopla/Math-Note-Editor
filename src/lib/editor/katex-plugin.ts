@@ -15,6 +15,7 @@ interface AutoClosingDollarChange {
 }
 
 export const updateAutoClosingDollar = StateEffect.define<AutoClosingDollarChange>();
+const refreshBlockMathHeights = StateEffect.define<void>();
 
 export const autoClosingDollarField = StateField.define<Set<number>>({
     create() {
@@ -68,7 +69,7 @@ export function isDollarEscaped(doc: string, pos: number) {
     return backslashes % 2 === 1;
 }
 
-function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new Set()): ParsedRange[] {
+export function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new Set()): ParsedRange[] {
     const ranges: ParsedRange[] = [];
 
     // Display math may span lines, so identify it before scanning individual
@@ -393,7 +394,37 @@ export const parsedRangesField = StateField.define<ParsedRange[]>({
     }
 });
 
+const blockMathHeights = new Map<string, number>();
+const MAX_BLOCK_MATH_HEIGHTS = 2048;
+
+function blockMathHeightKey(text: string, macros: Record<string, string>) {
+    return `${text}\u0000${JSON.stringify(macros)}`;
+}
+
+function estimatedBlockMathHeight(text: string) {
+    // Most display formulas occupy one KaTeX row. Aligned/cases/matrix source
+    // exposes its extra rows through LaTeX line breaks, which gives CodeMirror
+    // a substantially better first-pass estimate than its normal text line.
+    const latexRows = (text.match(/\\\\(?:\[[^\]]*\])?/g) || []).length + 1;
+    const sourceRows = Math.max(1, text.split("\n").length);
+    const rows = Math.max(latexRows, sourceRows);
+    return Math.min(320, 64 + (rows - 1) * 32);
+}
+
+function rememberBlockMathHeight(key: string, height: number) {
+    if (!Number.isFinite(height) || height < 8) return;
+    blockMathHeights.delete(key);
+    blockMathHeights.set(key, Math.ceil(height));
+    while (blockMathHeights.size > MAX_BLOCK_MATH_HEIGHTS) {
+        const oldest = blockMathHeights.keys().next().value;
+        if (oldest === undefined) break;
+        blockMathHeights.delete(oldest);
+    }
+}
+
 class MathWidget extends WidgetType {
+    readonly heightEstimate: number;
+
     constructor(
         public text: string,
         public isBlock: boolean,
@@ -402,6 +433,9 @@ class MathWidget extends WidgetType {
         public isQuoted = false
     ) {
         super();
+        this.heightEstimate = isBlock
+            ? blockMathHeights.get(blockMathHeightKey(text, macros)) ?? estimatedBlockMathHeight(text)
+            : -1;
     }
 
     eq(other: MathWidget) {
@@ -409,7 +443,12 @@ class MathWidget extends WidgetType {
                this.isBlock === other.isBlock && 
                this.isLinked === other.isLinked &&
                this.isQuoted === other.isQuoted &&
+               this.heightEstimate === other.heightEstimate &&
                JSON.stringify(this.macros) === JSON.stringify(other.macros);
+    }
+
+    get estimatedHeight() {
+        return this.heightEstimate;
     }
 
     toDOM(view: EditorView) {
@@ -447,7 +486,42 @@ class MathWidget extends WidgetType {
             span.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
             span.title = e.message;
         }
+        if (this.isBlock) {
+            const key = blockMathHeightKey(this.text, this.macros);
+            span.dataset.mathRenderKey = key;
+            requestAnimationFrame(() => {
+                if (!span.isConnected) return;
+                const measure = () => {
+                    const height = span.getBoundingClientRect().height;
+                    const previousHeight = blockMathHeights.get(key);
+                    rememberBlockMathHeight(key, height);
+                    const measuredHeight = Math.ceil(height);
+                    if ((previousHeight ?? this.heightEstimate) === measuredHeight) return;
+                    if ((span as any).__mathRefreshQueued) return;
+                    (span as any).__mathRefreshQueued = true;
+                    requestAnimationFrame(() => {
+                        (span as any).__mathRefreshQueued = false;
+                        if (span.isConnected && !(view as any).destroyed) {
+                            view.dispatch({ effects: refreshBlockMathHeights.of(undefined) });
+                        }
+                    });
+                };
+                measure();
+                if (typeof ResizeObserver === "undefined") return;
+                const observer = new ResizeObserver(measure);
+                observer.observe(span);
+                (span as any).__mathHeightObserver = observer;
+            });
+        }
         return span;
+    }
+
+    updateDOM(dom: HTMLElement) {
+        return this.isBlock && dom.dataset.mathRenderKey === blockMathHeightKey(this.text, this.macros);
+    }
+
+    destroy(dom: HTMLElement) {
+        ((dom as any).__mathHeightObserver as ResizeObserver | undefined)?.disconnect();
     }
 
     ignoreEvent() {
@@ -641,7 +715,8 @@ export const blockMathDecorationField = StateField.define<DecorationSet>({
     update(value, transaction) {
         const before = transaction.startState;
         const after = transaction.state;
-        if (before.field(parsedRangesField) === after.field(parsedRangesField) &&
+        if (!transaction.effects.some(effect => effect.is(refreshBlockMathHeights)) &&
+            before.field(parsedRangesField) === after.field(parsedRangesField) &&
             before.selection.eq(after.selection) &&
             before.field(editorFocusField) === after.field(editorFocusField) &&
             before.facet(livePreviewMacros) === after.facet(livePreviewMacros)) return value;

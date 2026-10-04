@@ -17,10 +17,12 @@ export function BacklinksPopover({ targetLabel, sourceIds, onClose }: BacklinksP
         return sourceIds.map(id => blocksById[id]).filter(Boolean);
     }, [sourceIds, blocksById]);
     const loadBlockContent = useStore(state => state.loadBlockContent);
+    const blockLoadErrors = useStore(state => state.blockLoadErrors);
 
     useEffect(() => {
-        const missing = sourceIds.filter(id => useStore.getState().blocksById[id]?.content === undefined);
-        void Promise.all(missing.map(id => loadBlockContent(id)));
+        const state = useStore.getState();
+        const missing = sourceIds.filter(id => state.blocksById[id]?.content === undefined && !state.blockLoadErrors[id]);
+        void Promise.all(missing.map(id => loadBlockContent(id))).catch(() => undefined);
     }, [sourceIds, loadBlockContent]);
 
     useEffect(() => {
@@ -69,12 +71,13 @@ export function BacklinksPopover({ targetLabel, sourceIds, onClose }: BacklinksP
                 )}
                 {rows.map(({ source, occurrences }) => {
                     const count = occurrences?.length || 0;
+                    const loadError = blockLoadErrors[source.id];
                     return (
+                        <div key={source.id} className="rounded-md hover:bg-accent/10">
                         <button
-                            key={source.id}
                             type="button"
                             data-testid={`backlink-source-${source.id}`}
-                            className="group/backlink block w-full rounded-md px-2.5 py-2 text-left hover:bg-accent/10 focus:bg-accent/10 focus:outline-none"
+                            className="group/backlink block w-full rounded-md px-2.5 py-2 text-left focus:bg-accent/10 focus:outline-none"
                             onClick={() => {
                                 useStore.getState().openBlockNextToActive(source.id);
                                 onClose();
@@ -86,7 +89,9 @@ export function BacklinksPopover({ targetLabel, sourceIds, onClose }: BacklinksP
                                 <ExternalLink size={12} className="shrink-0 text-secondary opacity-0 group-hover/backlink:opacity-100" aria-hidden="true" />
                             </div>
                             <div className="truncate font-mono text-[10px] text-secondary" title={source.label}>{source.label}</div>
-                            {occurrences === null ? (
+                            {occurrences === null && loadError ? (
+                                <div className="mt-1 break-words text-xs text-red-300">Could not load excerpt: {loadError}</div>
+                            ) : occurrences === null ? (
                                 <div className="mt-1 animate-pulse text-xs text-secondary/70">Loading excerpt…</div>
                             ) : occurrences[0] ? (
                                 <div className="mt-1 line-clamp-2 break-words text-xs leading-4 text-secondary" title={occurrences[0].line}>
@@ -96,6 +101,16 @@ export function BacklinksPopover({ targetLabel, sourceIds, onClose }: BacklinksP
                                 <div className="mt-1 text-xs italic text-secondary/70">Reference changed</div>
                             )}
                         </button>
+                        {occurrences === null && loadError && (
+                            <button
+                                type="button"
+                                className="mx-2.5 mb-2 rounded border border-red-300/50 px-2 py-1 text-xs font-semibold text-red-200 hover:bg-red-300/10"
+                                onClick={() => { void loadBlockContent(source.id).catch(() => undefined); }}
+                            >
+                                Retry excerpt
+                            </button>
+                        )}
+                        </div>
                     );
                 })}
             </div>

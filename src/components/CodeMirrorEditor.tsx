@@ -1,28 +1,54 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { EditorState, StateEffect, Compartment, Transaction, Prec, EditorSelection } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, dropCursor } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { mathMarkdownExtension } from "../lib/editor/math-markdown-extension";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { history, defaultKeymap, historyKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
+import { history, historyField, defaultKeymap, historyKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, blockMathDecorationField, mathTooltipField, autoClosingDollarField, updateAutoClosingDollar, isDollarEscaped } from "../lib/editor/katex-plugin";
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, completionStatus, closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { textCompletion } from "../lib/editor/text-autocomplete";
-import { embeddedAtomicRanges, embeddedBlockPlugin, embeddedObjectSelectionField, parentLabelFacet, visitedLabelsFacet, parsedLinksField, embedTooltipField, enterOpenEmbeddedAtEnd, runEmbeddedKey, openEmbeddedTargetInTab } from "../lib/editor/embedded-block-plugin";
+import { clearEmbeddedVisualMove, embeddedAtomicRanges, embeddedBlockPlugin, embeddedObjectInputHandler, embeddedObjectSelectionField, parentLabelFacet, visitedLabelsFacet, occurrencePathFacet, parsedLinksField, embedTooltipField, enterOpenEmbeddedAtEnd, runEmbeddedKey, runEmbeddedGroupNavigation, openEmbeddedTargetInTab } from "../lib/editor/embedded-block-plugin";
+import { runLogicalVerticalNavigation, scheduleFinalNavigationReveal } from "../lib/editor/logical-navigation";
 import { ligaturePlugin } from "../lib/editor/ligature-plugin";
 import { imagePlugin } from "../lib/editor/image-plugin";
 import { urlPlugin } from "../lib/editor/url-plugin";
 import { autoReplaceFilter } from "../lib/editor/auto-replace";
 import { registerEditorBoundaryHandlers, unregisterEditorBoundaryHandlers } from "../lib/editor/editor-boundary-registry";
 import { findActiveEmbeddedTarget } from "../lib/embedded-link-syntax";
+import { scheduleEmbeddedDescendantPrefetch } from "../lib/embedded-prefetch";
+import { useStore } from "../store";
 
 let isGlobalMousePressed = false;
+const editorStateCache = new Map<string, { doc: string; json: unknown; group?: string }>();
+const MAX_CACHED_EDITOR_STATES = 256;
+
+function trimEditorStateCache() {
+    const protectedGroups = new Set(useStore.getState().openTabs);
+    while (editorStateCache.size > MAX_CACHED_EDITOR_STATES) {
+        const evictable = Array.from(editorStateCache.entries()).find(([, record]) =>
+            !record.group || !protectedGroups.has(record.group)
+        );
+        if (!evictable) break;
+        editorStateCache.delete(evictable[0]);
+    }
+}
+
+function rememberEditorState(key: string, state: EditorState, group?: string) {
+    editorStateCache.delete(key);
+    editorStateCache.set(key, { doc: state.doc.toString(), json: state.toJSON({ history: historyField }), group });
+    trimEditorStateCache();
+}
 if (typeof window !== "undefined") {
     window.addEventListener("mousedown", () => { isGlobalMousePressed = true; }, true);
     window.addEventListener("mouseup", () => { isGlobalMousePressed = false; }, true);
+    window.addEventListener("math-note-workspace-reset", () => editorStateCache.clear());
 }
+useStore.subscribe((state, previousState) => {
+    if (state.openTabs !== previousState.openTabs) trimEditorStateCache();
+});
 
 export interface CodeMirrorEditorProps {
     isReadOnly?: boolean;
@@ -36,14 +62,19 @@ export interface CodeMirrorEditorProps {
     focusDirection: "start" | "end" | null;
     focusX?: number | null;
     focusRequestKey?: number;
+    stateCacheKey?: string;
+    stateCacheGroup?: string;
+    isDormant?: boolean;
     onFocus?: () => void;
     parentLabel?: string;
     visitedLabels?: string[];
+    occurrencePath?: string[];
     onEsc?: () => void;
     onImagePaste?: (file: File, insertContent: (text: string) => void) => void;
+    onReady?: (view: EditorView) => void;
 }
 
-export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, focusX, focusRequestKey, onFocus, parentLabel, visitedLabels, onEsc, onImagePaste }: CodeMirrorEditorProps) {
+export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, focusX, focusRequestKey, stateCacheKey, stateCacheGroup, isDormant = false, onFocus, parentLabel, visitedLabels, occurrencePath, onEsc, onImagePaste, onReady }: CodeMirrorEditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const isProgrammaticFocusRef = useRef(false);
@@ -54,8 +85,16 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
     const onDownRef = useRef(onDown);
     const parentLabelRef = useRef(parentLabel);
     const visitedLabelsRef = useRef(visitedLabels);
+    const occurrencePathRef = useRef(occurrencePath);
     const onEscRef = useRef(onEsc);
     const onImagePasteRef = useRef(onImagePaste);
+    const onReadyRef = useRef(onReady);
+    const stateCacheGroupRef = useRef(stateCacheGroup);
+    stateCacheGroupRef.current = stateCacheGroup;
+
+    useEffect(() => {
+        onReadyRef.current = onReady;
+    }, [onReady]);
 
     useEffect(() => {
         onImagePasteRef.current = onImagePaste;
@@ -87,10 +126,19 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
 
     const parentLabelCompartmentRef = useRef(new Compartment());
     const visitedLabelsCompartmentRef = useRef(new Compartment());
+    const occurrencePathCompartmentRef = useRef(new Compartment());
     const macrosCompartmentRef = useRef(new Compartment());
     const readOnlyCompartmentRef = useRef(new Compartment());
 
     useEffect(() => {
+        if (!parentLabel) return;
+        const visitedIds = (visitedLabels || [])
+            .map(label => useStore.getState().blockIdByLabel[label])
+            .filter((id): id is string => Boolean(id));
+        scheduleEmbeddedDescendantPrefetch(content, parentLabel, visitedIds);
+    }, [content, parentLabel, (visitedLabels || []).join("\u0000")]);
+
+    useLayoutEffect(() => {
         if (!containerRef.current) return;
         
         const customKeymap = keymap.of([
@@ -219,43 +267,6 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     }
                 };
 
-        const navigatePastBlockMath = (view: EditorView, direction: "up" | "down") => {
-            const selection = view.state.selection.main;
-            if (!selection.empty) return false;
-
-            const ranges = view.state.field(parsedRangesField, false);
-            if (!ranges) return false;
-
-            const currentLine = view.state.doc.lineAt(selection.from);
-            if (direction === "up") {
-                if (currentLine.number <= 1) return false;
-                const previousLine = view.state.doc.line(currentLine.number - 1);
-                const blockMathAbove = ranges.find(range =>
-                    range.type === "blockMath" && range.from <= previousLine.to && range.to >= previousLine.from
-                );
-                if (!blockMathAbove || selection.from <= blockMathAbove.to) return false;
-                view.dispatch({
-                    selection: { anchor: blockMathAbove.to },
-                    effects: setEditorFocus.of(true),
-                    scrollIntoView: true
-                });
-                return true;
-            }
-
-            if (currentLine.number >= view.state.doc.lines) return false;
-            const nextLine = view.state.doc.line(currentLine.number + 1);
-            const blockMathBelow = ranges.find(range =>
-                range.type === "blockMath" && range.from <= nextLine.to && range.to >= nextLine.from
-            );
-            if (!blockMathBelow || selection.from >= blockMathBelow.from) return false;
-            view.dispatch({
-                selection: { anchor: blockMathBelow.from },
-                effects: setEditorFocus.of(true),
-                scrollIntoView: true
-            });
-            return true;
-        };
-
         const moveWithinLinkCompletion = (view: EditorView, forward: boolean) => {
             if (completionStatus(view.state) === null) return false;
             const selection = view.state.selection.main;
@@ -282,6 +293,22 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         };
 
         const navigationKeymap = Prec.highest(keymap.of([
+            {
+                key: "Alt-ArrowLeft",
+                run: view => runEmbeddedGroupNavigation(view, false)
+            },
+            {
+                key: "Alt-ArrowRight",
+                run: view => runEmbeddedGroupNavigation(view, true)
+            },
+            {
+                key: "Backspace",
+                run: view => runEmbeddedKey(view, "Backspace")
+            },
+            {
+                key: "Delete",
+                run: view => runEmbeddedKey(view, "Delete")
+            },
             {
                 key: "Mod-Enter",
                 run: openEmbeddedTargetInTab
@@ -317,11 +344,23 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 key: "ArrowUp",
                 run: (view) => {
                     if (completionStatus(view.state) === "active") return false;
-                    if (runEmbeddedKey(view, "ArrowUp") || navigatePastBlockMath(view, "up")) return true;
+                    if (runLogicalVerticalNavigation(view, "up")) return true;
                     const selection = view.state.selection.main;
                     if (!onEscRef.current || !selection.empty) return false;
                     const moved = view.moveVertically(selection, false);
-                    if (moved.head !== selection.head) return false;
+                    if (moved.head !== selection.head) {
+                        const currentLine = view.state.doc.lineAt(selection.head).number;
+                        const movedLine = view.state.doc.lineAt(moved.head).number;
+                        // Preserve CodeMirror's same-line normalization (for
+                        // example column one to column zero) and genuine moves
+                        // to a visually higher wrapped/source row. Replacement
+                        // widgets can otherwise return a different source
+                        // position that is actually beside or below the caret.
+                        if (currentLine === movedLine) return false;
+                        const currentCoords = view.coordsAtPos(selection.head, -1);
+                        const movedCoords = view.coordsAtPos(moved.head, -1);
+                        if (movedCoords && currentCoords && movedCoords.top < currentCoords.top - 2) return false;
+                    }
                     onUpRef.current?.(view.coordsAtPos(selection.head)?.left);
                     return true;
                 }
@@ -330,26 +369,26 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 key: "ArrowDown",
                 run: (view) => {
                     if (completionStatus(view.state) === "active") return false;
-                    if (runEmbeddedKey(view, "ArrowDown") || navigatePastBlockMath(view, "down")) return true;
+                    if (runLogicalVerticalNavigation(view, "down")) return true;
                     const selection = view.state.selection.main;
                     if (!onEscRef.current || !selection.empty) return false;
                     const moved = view.moveVertically(selection, true);
-                    const currentCoords = view.coordsAtPos(selection.head, 1);
-                    const movedCoords = moved.head === selection.head ? null : view.coordsAtPos(moved.head, 1);
-                    // At the final visual row CodeMirror falls back to moving to
-                    // the line end. Treat that same-row fallback as the editor
-                    // boundary so one Down exits immediately. A genuinely lower
-                    // wrapped row still uses CodeMirror's native movement.
-                    if (movedCoords && currentCoords && movedCoords.top > currentCoords.top + 2) return false;
+                    if (moved.head !== selection.head) {
+                        const currentCoords = view.coordsAtPos(selection.head, 1);
+                        const movedCoords = view.coordsAtPos(moved.head, 1);
+                        // Only accept native movement when it is genuinely
+                        // lower on screen. This mirrors the Up guard and keeps
+                        // a replacement widget from redirecting Down into a
+                        // different embedded occurrence.
+                        if (movedCoords && currentCoords && movedCoords.top > currentCoords.top + 2) return false;
+                    }
                     onDownRef.current?.(view.coordsAtPos(selection.head)?.left);
                     return true;
                 }
             }
         ]));
         
-        const state = EditorState.create({
-            doc: content,
-            extensions: [
+        const extensions = [
                 oneDark,
                 drawSelection(),
                 dropCursor(),
@@ -448,8 +487,17 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
                 parentLabelCompartmentRef.current.of(parentLabelFacet.of(parentLabelRef.current || "")),
                 visitedLabelsCompartmentRef.current.of(visitedLabelsFacet.of(visitedLabelsRef.current || [])),
+                occurrencePathCompartmentRef.current.of(occurrencePathFacet.of(occurrencePathRef.current || [])),
                 readOnlyCompartmentRef.current.of([
+                    // Dormant editors are not user-editable, but their embedded
+                    // title widgets still dispatch programmatic open/close
+                    // transactions. Reserve state-level readOnly for genuinely
+                    // read-only workspaces and use editable=false for dormancy.
                     EditorState.readOnly.of(!!isReadOnly),
+                    // A dormant editor is still a normal CodeMirror surface.
+                    // Dormancy controls focus ownership, not browser editing
+                    // semantics, so the first drag/Shift-click/IME gesture is
+                    // handled natively instead of being replayed synthetically.
                     EditorView.editable.of(!isReadOnly)
                 ]),
                 editorFocusField,
@@ -460,7 +508,13 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 mathPlugin,
                 parsedLinksField,
                 embeddedObjectSelectionField,
+                EditorView.editorAttributes.of(view => ({
+                    class: view.state.field(embeddedObjectSelectionField, false)
+                        ? "cm-embedded-object-selected"
+                        : ""
+                })),
                 embeddedAtomicRanges,
+                embeddedObjectInputHandler,
                 embeddedBlockPlugin,
                 embedTooltipField,
                 ligaturePlugin,
@@ -502,6 +556,15 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 }]),
                 autocompletion({ override: [latexCompletion, linkCompletion, textCompletion] }),
                 EditorView.domEventHandlers({
+                    keydown: (e, view) => {
+                        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Backspace", "Delete"].includes(e.key)) {
+                            scheduleFinalNavigationReveal(view);
+                        }
+                        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") {
+                            clearEmbeddedVisualMove(view);
+                        }
+                        return false;
+                    },
                     paste: (e, view) => {
                         const textData = e.clipboardData?.getData("text/plain");
                         if (textData) {
@@ -543,6 +606,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                         return false;
                     },
                     mousedown: (e, view) => {
+                        clearEmbeddedVisualMove(view);
                         const a = (e.target as Element)?.closest('a');
                         if (a && a.href) {
                             window.open(a.href, '_blank', 'noopener,noreferrer');
@@ -611,6 +675,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     "&.cm-focused": { outline: "none" },
                     ".cm-content": { caretColor: "var(--color-accent)", padding: "0", color: "var(--color-primary) !important", fontFamily: "var(--font-sans) !important", fontVariantLigatures: "contextual !important", fontFeatureSettings: '"calt" 1 !important' },
                     ".cm-cursor, .cm-dropCursor": { borderLeftWidth: "2px !important", borderLeftColor: "var(--color-accent) !important" },
+                    "&.cm-embedded-object-selected .cm-cursor": { display: "none !important" },
                     ".cm-line": { padding: "0", lineHeight: "1.6" },
                     ".cm-gutters": { backgroundColor: "transparent !important", color: "var(--color-secondary)", border: "none" },
                     ".cm-selectionBackground, .cm-content ::selection": {
@@ -621,15 +686,27 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     },
                     ".cm-tooltip": {
                         border: "none",
-                        backgroundColor: "transparent",
                         zIndex: "9999"
                     },
                     ".cm-scroller": {
                         overflow: "visible !important"
                     }
                 })
-            ]
-        });
+            ];
+        const cachedState = stateCacheKey ? editorStateCache.get(stateCacheKey) : undefined;
+        let state: EditorState;
+        if (cachedState?.doc === content) {
+            try {
+                state = EditorState.fromJSON(cachedState.json, { extensions }, { history: historyField });
+                editorStateCache.delete(stateCacheKey!);
+                editorStateCache.set(stateCacheKey!, { ...cachedState, group: stateCacheGroupRef.current });
+            } catch {
+                editorStateCache.delete(stateCacheKey!);
+                state = EditorState.create({ doc: content, extensions });
+            }
+        } else {
+            state = EditorState.create({ doc: content, extensions });
+        }
 
         const view = new EditorView({
             state,
@@ -637,6 +714,10 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         });
 
         viewRef.current = view;
+        view.requestMeasure();
+        requestAnimationFrame(() => {
+            if (view.dom.isConnected) onReadyRef.current?.(view);
+        });
         registerEditorBoundaryHandlers(view, {
             isEmbedded: Boolean(onEscRef.current),
             onUp: x => { onUpRef.current?.(x); },
@@ -645,12 +726,24 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
 
         return () => {
             unregisterEditorBoundaryHandlers(view);
+            if (stateCacheKey) rememberEditorState(stateCacheKey, view.state, stateCacheGroupRef.current);
             view.destroy();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); 
 
+    useLayoutEffect(() => {
+        if (!viewRef.current) return;
+        viewRef.current.dispatch({
+            effects: readOnlyCompartmentRef.current.reconfigure([
+                EditorState.readOnly.of(!!isReadOnly),
+                EditorView.editable.of(!isReadOnly)
+            ])
+        });
+    }, [isReadOnly, isDormant]);
+
     useEffect(() => {
+        let focusRetryFrame: number | null = null;
         if (viewRef.current) {
             viewRef.current.dispatch({ effects: setEditorFocus.of(isFocused) });
         }
@@ -660,30 +753,66 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
             (containerRef.current ? containerRef.current.contains(document.activeElement) : false)
         ) : false;
 
-        if (isFocused && viewRef.current && !isDOMFocused) {
-            isProgrammaticFocusRef.current = true;
-            viewRef.current.focus();
-
-            if (focusDirection === "end" || focusDirection === "start") {
-                const editorView = viewRef.current;
+        if (isFocused && !isDormant && viewRef.current) {
+            const editorView = viewRef.current;
+            let forwardedToFinalEmbed = false;
+            if (!isDOMFocused && (focusDirection === "end" || focusDirection === "start")) {
                 const edge = focusDirection === "end" ? editorView.state.doc.length : 0;
                 let anchor = edge;
                 if (typeof focusX === "number") {
                     const edgeCoords = editorView.coordsAtPos(edge, focusDirection === "end" ? -1 : 1);
                     if (edgeCoords) {
-                        anchor = editorView.posAtCoords({
+                        const mapped = editorView.posAtCoords({
                             x: focusX,
                             y: (edgeCoords.top + edgeCoords.bottom) / 2
                         }, false);
+                        // Choose the requested edge row first, then preserve the
+                        // horizontal goal inside that row. Without the clamp, a
+                        // short first/last text row followed by a wide block-math
+                        // widget can make posAtCoords jump into the formula.
+                        const edgeLine = focusDirection === "start"
+                            ? editorView.state.doc.line(1)
+                            : editorView.state.doc.line(editorView.state.doc.lines);
+                        anchor = Math.max(edgeLine.from, Math.min(edgeLine.to, mapped));
                     }
                 }
                 editorView.dispatch({ selection: { anchor } });
                 if (focusDirection === "end") {
-                    enterOpenEmbeddedAtEnd(editorView, focusX ?? undefined);
+                    forwardedToFinalEmbed = enterOpenEmbeddedAtEnd(editorView, focusX ?? undefined);
                 }
             }
+
+            if (!isDOMFocused && !forwardedToFinalEmbed) {
+                isProgrammaticFocusRef.current = true;
+                // Preserve the panel position while the static surface hydrates.
+                // CodeMirror receives the already-computed selection without
+                // asking the browser to scroll the new contenteditable node.
+                editorView.contentDOM.focus({ preventScroll: true });
+                // Moving through several embedded boundaries can reconcile a
+                // parent widget in the same frame after the deepest editor has
+                // focused. Retry once after that DOM settles. The effect
+                // cleanup cancels this when the requested destination changes,
+                // so a stale editor cannot steal focus back.
+                focusRetryFrame = requestAnimationFrame(() => {
+                    focusRetryFrame = null;
+                    if (viewRef.current === editorView && editorView.dom.isConnected && !editorView.hasFocus) {
+                        editorView.contentDOM.focus({ preventScroll: true });
+                        if (!editorView.hasFocus) {
+                            focusRetryFrame = requestAnimationFrame(() => {
+                                focusRetryFrame = null;
+                                if (viewRef.current === editorView && editorView.dom.isConnected && !editorView.hasFocus) {
+                                    editorView.contentDOM.focus({ preventScroll: true });
+                                }
+                            });
+                        }
+                    }
+                });
+            }
         }
-    }, [isFocused, focusDirection, focusX, focusRequestKey]);
+        return () => {
+            if (focusRetryFrame !== null) cancelAnimationFrame(focusRetryFrame);
+        };
+    }, [isFocused, isDormant, focusDirection, focusX, focusRequestKey]);
 
     // Sync external content changes
     useEffect(() => {
@@ -727,19 +856,24 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 visitedLabelsRef.current = visitedLabels;
                 effects.push(visitedLabelsCompartmentRef.current.reconfigure(visitedLabelsFacet.of(visitedLabels || [])));
             }
+            if (JSON.stringify(occurrencePath) !== JSON.stringify(occurrencePathRef.current)) {
+                occurrencePathRef.current = occurrencePath;
+                effects.push(occurrencePathCompartmentRef.current.reconfigure(occurrencePathFacet.of(occurrencePath || [])));
+            }
             if (JSON.stringify(macros) !== JSON.stringify(macrosRef.current)) {
                 macrosRef.current = macros;
                 effects.push(macrosCompartmentRef.current.reconfigure(livePreviewMacros.of(macros)));
             }
-            effects.push(readOnlyCompartmentRef.current.reconfigure([
-                EditorState.readOnly.of(!!isReadOnly),
-                EditorView.editable.of(!isReadOnly)
-            ]));
             if (effects.length > 0) {
                 viewRef.current.dispatch({ effects });
             }
         }
-    }, [parentLabel, visitedLabels, macros, isReadOnly]);
+    }, [parentLabel, visitedLabels, occurrencePath, macros]);
 
-    return <div ref={containerRef} className="w-full" />;
+    return <div
+        ref={containerRef}
+        className="w-full"
+        data-editor-dormant={isDormant ? "true" : "false"}
+        data-editor-wants-focus={isFocused ? "true" : "false"}
+    />;
 }

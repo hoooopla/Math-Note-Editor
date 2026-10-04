@@ -5,7 +5,12 @@ const note = `---\nid: drive-note\ntitle: Drive Note\nlabel: cloud/note\n---\nOr
 const imageSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>';
 const imageGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
 
-async function installGoogleDriveMock(page: Page, nestedSettings?: string, withAssets = false) {
+async function installGoogleDriveMock(
+    page: Page,
+    nestedSettings?: string,
+    withAssets = false,
+    options: { keepServerWorkspace?: boolean; failRootListing?: boolean } = {}
+) {
     let patched = 0;
     let remoteVersion = '1';
     let settingsText: string | null = nestedSettings ?? null;
@@ -17,7 +22,9 @@ async function installGoogleDriveMock(page: Page, nestedSettings?: string, withA
         const last = match?.at(-1)?.match(/\r\n\r\n([\s\S]*?)\r\n--math-note-/);
         return last?.[1] || '{}';
     };
-    await page.route('**/api/blocks?metaOnly=true', route => route.abort());
+    if (!options.keepServerWorkspace) {
+        await page.route('**/api/blocks?metaOnly=true', route => route.abort());
+    }
     await page.route('https://accounts.google.com/gsi/client', route => route.fulfill({
         contentType: 'application/javascript',
         body: `window.google={accounts:{oauth2:{initTokenClient:(options)=>({callback:options.callback,requestAccessToken(){window.__driveRequestHadUserActivation=navigator.userActivation.isActive;this.callback({access_token:'test-token',expires_in:3600})}}),revoke:(_,done)=>done()}},picker:{ViewId:{FOLDERS:'folders'},DocsViewMode:{LIST:'list'},Action:{PICKED:'picked',CANCEL:'cancel'},DocsView:class{setIncludeFolders(){return this}setSelectFolderEnabled(){return this}setMode(){return this}},PickerBuilder:class{setAppId(){return this}setDeveloperKey(){return this}setOAuthToken(){return this}addView(){return this}setCallback(callback){this.callback=callback;return this}build(){return{setVisible:()=>this.callback({action:'picked',docs:[{id:'folder-1',name:'Shared Math Notes'}]})}}}}};`
@@ -32,6 +39,9 @@ async function installGoogleDriveMock(page: Page, nestedSettings?: string, withA
         if (url.pathname === '/drive/v3/files' && request.method() === 'GET') {
             const query = url.searchParams.get('q') || '';
             const rootQuery = query.includes("'folder-1' in parents");
+            if (options.failRootListing && rootQuery) {
+                return route.fulfill({ status: 503, body: 'Temporary Drive listing failure' });
+            }
             const settingFolderQuery = query.includes("'setting-folder' in parents");
             const assetsQuery = query.includes("'assets-folder' in parents");
             const figuresQuery = query.includes("'figures-folder' in parents");
@@ -88,6 +98,21 @@ async function installGoogleDriveMock(page: Page, nestedSettings?: string, withA
     });
     return { patched: () => patched, settings: () => settingsText, uploadedImage: () => uploadedImage, setRemoteVersion: (value: string) => { remoteVersion = value; } };
 }
+
+test('clears the previous workspace before a newly selected Drive folder loads', async ({ page }) => {
+    await installGoogleDriveMock(page, undefined, false, { keepServerWorkspace: true, failRootListing: true });
+    await page.goto('/');
+    await expect(page.getByRole('tab').first()).toBeVisible();
+    const previousTabCount = await page.getByRole('tab').count();
+    expect(previousTabCount).toBeGreaterThan(0);
+
+    await page.getByRole('button', { name: 'Google Drive', exact: true }).click();
+
+    await expect(page.getByText('Shared Math Notes')).toBeVisible();
+    await expect(page.getByRole('tab')).toHaveCount(0);
+    await expect(page.locator('[role="tabpanel"]')).toHaveCount(0);
+    await expect(page.getByRole('alert')).toContainText(/failed|failure/i);
+});
 
 test('signs in, picks a folder, loads a note, and saves edits to Drive', async ({ page }) => {
     const drive = await installGoogleDriveMock(page);
