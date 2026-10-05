@@ -1,64 +1,11 @@
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { getEmbeddedPanelScrollVersion, setEmbeddedPanelScrollTop } from "../embedded-scroll-coordinator";
-import { embeddedObjectSelectionField, parsedLinksField, runEmbeddedKey } from "./embedded-block-plugin";
+import { embeddedObjectSelectionField, parsedLinksField, runEmbeddedKey, scheduleEmbeddedNavigationReveal } from "./embedded-block-plugin";
 import { parsedRangesField, setEditorFocus } from "./katex-plugin";
 
 export type VerticalDirection = "up" | "down";
 
-const pendingRevealByPanel = new WeakMap<HTMLElement, number>();
-let nextRevealId = 0;
-
-/** One reveal for the final caret, after native movement or an editor handoff. */
-export function scheduleFinalNavigationReveal(origin: EditorView) {
-    const panel = origin.dom.closest<HTMLElement>('[role="tabpanel"]');
-    if (!panel) return;
-    const requestId = ++nextRevealId;
-    const scrollVersion = getEmbeddedPanelScrollVersion(panel);
-    pendingRevealByPanel.set(panel, requestId);
-
-    const reveal = (attempt: number) => {
-        if (pendingRevealByPanel.get(panel) !== requestId ||
-            getEmbeddedPanelScrollVersion(panel) !== scrollVersion) return;
-        const focusedElement = document.activeElement;
-        const editorElement = focusedElement instanceof HTMLElement
-            ? focusedElement.closest<HTMLElement>(".cm-editor")
-            : null;
-        const view = editorElement && panel.contains(editorElement)
-            ? EditorView.findFromDOM(editorElement)
-            : null;
-        if (!view?.hasFocus) {
-            if (attempt < 3) requestAnimationFrame(() => reveal(attempt + 1));
-            return;
-        }
-
-        const projectedCaret = Array.from(view.dom.querySelectorAll<HTMLElement>(
-            '[data-embed-keyboard-selected="true"] [data-testid="embedded-title-caret"]'
-        )).find(element => element.closest(".cm-editor") === view.dom);
-        const selection = view.state.selection.main;
-        const titleSelection = view.state.field(embeddedObjectSelectionField, false);
-        const selectedTitle = titleSelection && Array.from(view.dom.querySelectorAll<HTMLElement>(
-            '[data-embed-keyboard-selected="true"]'
-        )).find(element => element.closest(".cm-editor") === view.dom);
-        // The source endpoint of an expanded title can sit below its entire
-        // body. Never reveal that hidden endpoint while React is mounting the
-        // projected title caret.
-        if (titleSelection && !projectedCaret && !selectedTitle) {
-            if (attempt < 3) requestAnimationFrame(() => reveal(attempt + 1));
-            return;
-        }
-        const caret = projectedCaret?.getBoundingClientRect() ??
-            selectedTitle?.getBoundingClientRect() ??
-            view.coordsAtPos(selection.head, selection.assoc < 0 ? -1 : 1);
-        const viewport = panel.getBoundingClientRect();
-        if (!caret) return;
-        const top = viewport.top + 8;
-        const bottom = viewport.bottom - 8;
-        const delta = caret.top < top ? caret.top - top : caret.bottom > bottom ? caret.bottom - bottom : 0;
-        if (delta) setEmbeddedPanelScrollTop(panel, panel.scrollTop + delta);
-    };
-    requestAnimationFrame(() => reveal(0));
-}
+export const scheduleFinalNavigationReveal = scheduleEmbeddedNavigationReveal;
 
 function ownedMathWidget(view: EditorView, from: number, to: number) {
     return Array.from(view.contentDOM.querySelectorAll<HTMLElement>(".cm-math-block"))

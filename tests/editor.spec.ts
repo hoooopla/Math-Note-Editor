@@ -8,6 +8,7 @@ import { findDuplicateLabelIssues } from '../src/lib/workspace-validation';
 import { rankSearchResults } from '../src/lib/search-ranking';
 import { buildBacklinkIndex, findBacklinkOccurrences } from '../src/lib/backlinks';
 import { buildBlockMapModel } from '../src/lib/block-map';
+import { isEmbeddedLayoutHydration } from '../src/lib/embedded-layout-compatibility';
 import {
     getEmbeddedEditorLifecycleStateForTests,
     initialEmbeddedEditorPhase,
@@ -27,6 +28,21 @@ test('bounds retained embedded editor lifecycle records', () => {
     const state = getEmbeddedEditorLifecycleStateForTests();
     expect(state.occurrences).toBeLessThanOrEqual(state.maximumOccurrences);
     resetEmbeddedEditorLifecycle();
+});
+
+test('retains measured geometry only across lazy hydration, not edits or toggles', () => {
+    const before = {
+        root: { id: 'root', title: 'Root', content: '[[child∨]]' },
+        child: { id: 'child', title: 'Child', content: null }
+    };
+    const loaded = { ...before, child: { ...before.child, content: 'child text\n[[leaf∨]]' },
+        leaf: { id: 'leaf', title: 'Leaf', content: null } };
+    expect(isEmbeddedLayoutHydration(before, loaded)).toBe(true);
+    expect(isEmbeddedLayoutHydration(loaded, { ...loaded, child: { ...loaded.child, content: 'edited' } })).toBe(false);
+    expect(isEmbeddedLayoutHydration(before, { ...loaded, root: { ...before.root, content: '[[child]]' } })).toBe(false);
+    expect(isEmbeddedLayoutHydration(before, { ...loaded, child: { ...loaded.child, title: 'Renamed' } })).toBe(false);
+    expect(isEmbeddedLayoutHydration(before, { ...loaded, child: { ...loaded.child, id: 'replacement' } })).toBe(false);
+    expect(isEmbeddedLayoutHydration(loaded, before)).toBe(false);
 });
 
 async function openEditor(page: Page) {
@@ -763,7 +779,10 @@ test('keeps absolute autocomplete titles and derives relative titles from their 
     await page.keyboard.press('ArrowLeft');
     await page.keyboard.press('ArrowLeft');
     await page.keyboard.press('Control+Space');
-    await page.getByText(`Create new block: "${relativeTarget}"`, { exact: true }).click();
+    // CodeMirror retains the old menu while restarting completion, but its
+    // options cannot be accepted until the refreshed result is active.
+    const activeCompletions = page.locator('.cm-tooltip-autocomplete:not(.cm-tooltip-autocomplete-disabled)');
+    await activeCompletions.getByText(`Create new block: "${relativeTarget}"`, { exact: true }).click();
 
     await expect.poll(async () => {
         const metadata = await (await page.request.get('/api/blocks?metaOnly=true')).json();
@@ -775,7 +794,7 @@ test('keeps absolute autocomplete titles and derives relative titles from their 
     await page.keyboard.press('ArrowLeft');
     await page.keyboard.press('ArrowLeft');
     await page.keyboard.press('Control+Space');
-    await page.getByText(`Create new block: "${absoluteTarget}"`, { exact: true }).click();
+    await activeCompletions.getByText(`Create new block: "${absoluteTarget}"`, { exact: true }).click();
     await expect.poll(async () => {
         const metadata = await (await page.request.get('/api/blocks?metaOnly=true')).json();
         return metadata.find((block: { label: string }) => block.label === absoluteTarget);
@@ -2817,6 +2836,10 @@ test('reveals only the final caret when moving between a title and a distant inl
     const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
     const title = panel.locator('[data-embed-nav-title]').filter({ hasText: 'Distant suffix child' });
     const suffix = page.getByText('distant-tail', { exact: true });
+    await expect(panel.locator('[data-editor-mounted="true"] .cm-content').first()).toContainText('long child row 0');
+    // Establish the distant-body fixture before comparing scroll positions.
+    await expect.poll(() => panel.locator('.cm-embedded-block-wrapper[data-embed-part="body"]')
+        .evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(1000);
     await suffix.click({ position: { x: 1, y: 8 } });
     await page.keyboard.press('ArrowLeft');
     await expect(title.getByTestId('embedded-title-caret')).toBeVisible();
@@ -4910,6 +4933,9 @@ test('preserves an intentional upward scroll while several open embeds finish lo
     await search.press('Enter');
 
     const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    await expect(panel.locator('.cm-content').first()).toContainText('source line 0');
+    // Opening a search result is asynchronous. Scrolling the previous note's
+    // short panel cannot bring the new source's distant embeds into view.
     await panel.evaluate(element => {
         element.scrollTop = element.scrollHeight;
         element.dispatchEvent(new Event('scroll'));

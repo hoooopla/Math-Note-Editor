@@ -10,6 +10,8 @@ import { EmbeddedLinkSyntax, parseEmbeddedLinks, parseEmbeddedText, resolveEmbed
 import { EmbeddedObjectSelection, setEmbeddedObjectSelection } from "./embedded-object-selection";
 import { embeddedContentFingerprint, promoteEmbeddedOccurrence } from "../embedded-editor-lifecycle";
 import { getEmbeddedPanelScrollVersion, isEmbeddedPanelScrolling, setEmbeddedPanelScrollTop } from "../embedded-scroll-coordinator";
+import { EmbeddedLayoutDependency, isEmbeddedLayoutHydration } from "../embedded-layout-compatibility";
+import { scheduleFinalCaretReveal } from "./final-caret-reveal";
 
 export { setEmbeddedObjectSelection } from "./embedded-object-selection";
 
@@ -91,8 +93,11 @@ type EmbeddedWidgetLayoutRecord = {
     height?: number;
     widthBucket?: number;
     snapshotHtml?: string;
+    identity?: string;
+    dependencies?: Record<string, EmbeddedLayoutDependency>;
 };
 const embeddedWidgetLayouts = new Map<string, EmbeddedWidgetLayoutRecord>();
+const lastMeasuredLayoutByIdentity = new Map<string, string>();
 const MAX_EMBEDDED_WIDGET_LAYOUTS = 1024;
 const MAX_EMBEDDED_WIDGET_SNAPSHOTS = 128;
 const explicitReopensByView = new WeakMap<EditorView, Map<number, number>>();
@@ -129,10 +134,21 @@ function canSettleExplicitReopen(dom: HTMLElement) {
     if (Array.from(dom.querySelectorAll<HTMLImageElement>('img')).some(image =>
         image.hasAttribute('src') && (!image.complete || image.naturalWidth === 0)
     )) return false;
+    const panelRect = dom.closest<HTMLElement>('[role="tabpanel"]')?.getBoundingClientRect();
+    if (!panelRect) return false;
+    if (Array.from(dom.querySelectorAll<HTMLElement>('[data-editor-mounted="true"]')).some(host =>
+        !Array.from(host.querySelectorAll('.cm-editor')).some(editor =>
+            editor.closest('[data-editor-mounted="true"]') === host)
+    )) return false;
     return editors.every(editor => {
         const view = EditorView.findFromDOM(editor);
-        return !!view && view.viewport.from === 0 && view.viewport.to === view.state.doc.length &&
-            !Array.from(view.contentDOM.children).some(child => child.classList.contains('cm-gap'));
+        // Long notes legitimately keep off-screen line gaps. Only gaps in the
+        // visible area indicate that the geometry being refined is not ready.
+        return !!view && !Array.from(view.contentDOM.children).some(child => {
+            if (!child.classList.contains('cm-gap')) return false;
+            const rect = child.getBoundingClientRect();
+            return rect.bottom > panelRect.top + 1 && rect.top < panelRect.bottom - 1;
+        });
     });
 }
 
@@ -147,22 +163,32 @@ function canRefineEmbeddedHeight(panel: HTMLElement | null, dom: HTMLElement) {
 if (typeof window !== "undefined") {
     window.addEventListener("math-note-workspace-reset", () => {
         embeddedWidgetLayouts.clear();
+        lastMeasuredLayoutByIdentity.clear();
         if (embeddedWidgetRevisionFrame !== null) cancelAnimationFrame(embeddedWidgetRevisionFrame);
         embeddedWidgetRevisionFrame = null;
     });
 }
 
-function replaceEmbeddedWidgetHeight(key: string, height: number, widthBucket?: number) {
+function replaceEmbeddedWidgetHeight(key: string, height: number, widthBucket?: number,
+    layout?: Pick<EmbeddedWidgetLayoutRecord, 'identity' | 'dependencies'>) {
     if (!Number.isFinite(height) || height < 5) return;
     const record = embeddedWidgetLayouts.get(key) ?? {};
     record.height = Math.ceil(height);
     if (widthBucket !== undefined) record.widthBucket = widthBucket;
+    if (layout && record.identity && record.identity !== layout.identity &&
+        lastMeasuredLayoutByIdentity.get(record.identity) === key) {
+        lastMeasuredLayoutByIdentity.delete(record.identity);
+    }
+    if (layout) Object.assign(record, layout);
+    if (record.identity) lastMeasuredLayoutByIdentity.set(record.identity, key);
     embeddedWidgetLayouts.delete(key);
     embeddedWidgetLayouts.set(key, record);
     while (embeddedWidgetLayouts.size > MAX_EMBEDDED_WIDGET_LAYOUTS) {
         const oldest = embeddedWidgetLayouts.keys().next().value;
         if (oldest === undefined) break;
+        const identity = embeddedWidgetLayouts.get(oldest)?.identity;
         embeddedWidgetLayouts.delete(oldest);
+        if (identity && lastMeasuredLayoutByIdentity.get(identity) === oldest) lastMeasuredLayoutByIdentity.delete(identity);
     }
 }
 
@@ -175,7 +201,9 @@ function rememberEmbeddedWidgetSnapshot(key: string, html: string) {
     while (embeddedWidgetLayouts.size > MAX_EMBEDDED_WIDGET_LAYOUTS) {
         const oldest = embeddedWidgetLayouts.keys().next().value;
         if (oldest === undefined) break;
+        const identity = embeddedWidgetLayouts.get(oldest)?.identity;
         embeddedWidgetLayouts.delete(oldest);
+        if (identity && lastMeasuredLayoutByIdentity.get(identity) === oldest) lastMeasuredLayoutByIdentity.delete(identity);
     }
     let snapshotCount = 0;
     for (const item of embeddedWidgetLayouts.values()) {
@@ -394,6 +422,18 @@ export const embeddedObjectSelectionField = StateField.define<EmbeddedObjectSele
     }
 });
 
+export function scheduleEmbeddedNavigationReveal(origin: EditorView) {
+    scheduleFinalCaretReveal(origin, view => {
+        const titleSelected = !!view.state.field(embeddedObjectSelectionField, false);
+        const head = view.state.selection.main.head;
+        return {
+            titleSelected,
+            atInlineSuffix: !titleSelected && view.state.field(parsedLinksField).some(link =>
+                link.open && link.to === head && view.state.doc.lineAt(link.to).to > link.to)
+        };
+    });
+}
+
 function isRawEmbeddedSourceVisible(state: import("@codemirror/state").EditorState, link: ParsedLink) {
     if (!state.field(editorFocusField, false)) return false;
     const selection = state.selection.main;
@@ -442,6 +482,46 @@ class EmbeddedBlockWidget extends WidgetType {
 
     public stateRef: { pos: number, length: number };
 
+    private layoutDescriptor() {
+        const store = useStore.getState();
+        const fullLabel = resolveEmbeddedLabel(parseEmbeddedText(this.text), this.parentLabel);
+        const dependencies: Record<string, EmbeddedLayoutDependency> = Object.create(null);
+        const visit = (label: string, open: boolean, visited = new Set<string>(), depth = 0) => {
+            const id = store.blockIdByLabel[label];
+            const block = id ? store.blocksById[id] : undefined;
+            const content = open && block?.content !== undefined ? block.content : null;
+            if (!dependencies[label] || content !== null) dependencies[label] = {
+                id: id || label, title: block?.title || '', content
+            };
+            if (!open || !block || content === null || visited.has(block.id) || depth >= 24) return;
+            const next = new Set(visited).add(block.id);
+            for (const link of parseEmbeddedLinks(content)) visit(resolveEmbeddedLabel(link, label), link.open, next, depth + 1);
+        };
+        visit(fullLabel, true);
+        return {
+            identity: JSON.stringify([this.occurrencePath, store.blockIdByLabel[fullLabel] || fullLabel,
+                this.from, this.renderPart, this.text, store.settings]),
+            dependencies
+        };
+    }
+
+    private retainedLayout() {
+        const exact = embeddedWidgetLayouts.get(this.occurrenceKey());
+        if (exact?.height !== undefined) return exact;
+        const descriptor = this.layoutDescriptor();
+        const previousKey = lastMeasuredLayoutByIdentity.get(descriptor.identity);
+        const previous = previousKey ? embeddedWidgetLayouts.get(previousKey) : undefined;
+        return previous?.dependencies && isEmbeddedLayoutHydration(previous.dependencies, descriptor.dependencies)
+            ? previous : undefined;
+    }
+
+    private cacheMeasuredHeight(key: string, height: number, widthBucket: number) {
+        // A destroyed DOM may still describe the pre-toggle tree. Preserve its
+        // recorded dependency snapshot rather than assigning the newer store.
+        const descriptor = key === this.occurrenceKey() ? this.layoutDescriptor() : undefined;
+        replaceEmbeddedWidgetHeight(key, height, widthBucket, descriptor);
+    }
+
     private occurrenceKey() {
         const parsed = parseEmbeddedText(this.text);
         const fullLabel = resolveEmbeddedLabel(parsed, this.parentLabel);
@@ -469,7 +549,7 @@ class EmbeddedBlockWidget extends WidgetType {
 
     get estimatedHeight() {
         if (!this.retainsBlockHeight() && !this.retainsTitleEstimate()) return -1;
-        return embeddedWidgetLayouts.get(this.occurrenceKey())?.height ?? -1;
+        return this.retainedLayout()?.height ?? -1;
     }
 
     private applyStandaloneLayout(dom: HTMLElement) {
@@ -512,6 +592,15 @@ class EmbeddedBlockWidget extends WidgetType {
         if (!mount) return;
         const panel = dom.closest<HTMLElement>('[role="tabpanel"]');
         const hasTransientEditingGeometry = () => !!dom.querySelector(".cm-math-editing, .cm-embedded-editing");
+        const ownEditorReady = () => {
+            const editor = Array.from(mount.querySelectorAll<HTMLElement>('.cm-editor'))
+                .find(element => element.closest('.cm-embedded-block-wrapper') === dom);
+            const editorView = editor && EditorView.findFromDOM(editor);
+            const label = resolveEmbeddedLabel(parseEmbeddedText(this.text), this.parentLabel);
+            const state = useStore.getState();
+            const content = state.blocksById[state.blockIdByLabel[label]]?.content;
+            return !!editorView && content !== undefined && editorView.state.doc.toString() === content;
+        };
         let layoutGeneration = 0;
         const beginLayoutChange = () => {
             if ((dom as any).__embeddedWidgetOwner !== this) return;
@@ -521,12 +610,13 @@ class EmbeddedBlockWidget extends WidgetType {
             const settledKey = dom.dataset.settledOccurrenceKey;
             const settledWidthBucket = Number(dom.dataset.settledWidthBucket || 0);
             const hasRetainedHeight = Number.parseFloat(dom.style.minHeight || "0") >= 5;
+            const retained = this.retainedLayout();
             // Release an old reservation immediately when the content tree or
             // available width genuinely changed. For the same tree and width,
             // keep the last exact height: an off-screen CodeMirror may replace
             // its DOM lines with estimated gaps, which must not shrink every
             // ancestor and move the document while the user scrolls.
-            if ((settledKey && (pendingKey !== settledKey || pendingWidthBucket !== settledWidthBucket))
+            if ((settledKey && ((pendingKey !== settledKey && !retained) || pendingWidthBucket !== settledWidthBucket))
                 || (!settledKey && !hasRetainedHeight)) {
                 dom.style.removeProperty("min-height");
             }
@@ -539,7 +629,7 @@ class EmbeddedBlockWidget extends WidgetType {
             const sample = () => {
                 if (generation !== layoutGeneration || (dom as any).__embeddedWidgetOwner !== this || !dom.isConnected || !mount.isConnected) return;
                 if (((panel && isEmbeddedPanelScrolling(panel)) && !canSettleExplicitReopen(dom)) ||
-                    hasTransientEditingGeometry()) {
+                    hasTransientEditingGeometry() || !ownEditorReady()) {
                     // A just-reopened tree can become completely measured on
                     // the next frame. A 100 ms poll adds an avoidable visible
                     // reservation after its renderer is already ready.
@@ -566,7 +656,7 @@ class EmbeddedBlockWidget extends WidgetType {
                 }
                 const key = this.occurrenceKey();
                 const widthBucket = Math.max(1, Math.round(mount.clientWidth / 8) * 8);
-                const cachedLayout = embeddedWidgetLayouts.get(key);
+                const cachedLayout = this.retainedLayout();
                 const cachedHeight = cachedLayout?.height;
                 const cachedWidthBucket = cachedLayout?.widthBucket;
                 // Keep the larger value only for the exact same content tree
@@ -585,7 +675,7 @@ class EmbeddedBlockWidget extends WidgetType {
                 dom.dataset.widgetOccurrenceKey = key;
                 dom.dataset.settledOccurrenceKey = key;
                 dom.dataset.settledWidthBucket = String(widthBucket);
-                replaceEmbeddedWidgetHeight(key, settledHeight, widthBucket);
+                this.cacheMeasuredHeight(key, settledHeight, widthBucket);
                 commitEmbeddedHeight(panel, dom, settledHeight);
                 view.requestMeasure();
             };
@@ -602,10 +692,13 @@ class EmbeddedBlockWidget extends WidgetType {
         // the viewport by the entire embedded body. The observer below still
         // refines this value after math, images, and nested editors settle.
         const initialHeight = mount.getBoundingClientRect().height;
-        if (initialHeight >= 5) {
+        // A loading skeleton is not measured editor geometry. Retaining its
+        // height across hydration can leave a small reservation until the next
+        // edit, at which point a bottom-aligned tab unexpectedly scrolls.
+        if (initialHeight >= 5 && ownEditorReady()) {
             const key = this.occurrenceKey();
             const widthBucket = Math.max(1, Math.round(mount.clientWidth / 8) * 8);
-            const cachedLayout = embeddedWidgetLayouts.get(key);
+            const cachedLayout = this.retainedLayout();
             const measuredHeight = cachedLayout?.height !== undefined && cachedLayout.widthBucket === widthBucket &&
                 ((panel && isEmbeddedPanelScrolling(panel)) || !canRefineEmbeddedHeight(panel, dom))
                 ? Math.max(cachedLayout.height, Math.ceil(initialHeight))
@@ -613,7 +706,7 @@ class EmbeddedBlockWidget extends WidgetType {
             dom.dataset.widgetOccurrenceKey = key;
             dom.dataset.settledOccurrenceKey = key;
             dom.dataset.settledWidthBucket = String(widthBucket);
-            replaceEmbeddedWidgetHeight(key, measuredHeight, widthBucket);
+            this.cacheMeasuredHeight(key, measuredHeight, widthBucket);
             commitEmbeddedHeight(panel, dom, measuredHeight);
         }
         view.requestMeasure();
@@ -644,7 +737,7 @@ class EmbeddedBlockWidget extends WidgetType {
             if (height >= 5) {
                 const key = this.occurrenceKey();
                 const widthBucket = Math.max(1, Math.round(mount.clientWidth / 8) * 8);
-                replaceEmbeddedWidgetHeight(key, Math.ceil(height), widthBucket);
+                this.cacheMeasuredHeight(key, Math.ceil(height), widthBucket);
                 dom.dataset.widgetOccurrenceKey = key;
                 view.requestMeasure();
             }
@@ -878,13 +971,17 @@ class EmbeddedBlockWidget extends WidgetType {
                 if (height >= 5) {
                     const key = dom.dataset.widgetOccurrenceKey || this.occurrenceKey();
                     const widthBucket = Math.max(1, Math.round(mount.clientWidth / 8) * 8);
-                    replaceEmbeddedWidgetHeight(key, Math.ceil(height), widthBucket);
+                    this.cacheMeasuredHeight(key, Math.ceil(height), widthBucket);
                 }
             }
         }
         if (this.retainsBlockHeight()) {
             const mount = dom.querySelector<HTMLElement>(":scope > .cm-embedded-react-mount");
-            if (mount && mount.style.visibility !== "hidden") {
+            const hasBodyEditor = mount && Array.from(mount.querySelectorAll<HTMLElement>('.cm-editor'))
+                .some(editor => editor.closest('.cm-embedded-block-wrapper') === dom && EditorView.findFromDOM(editor));
+            // Viewport removal must not turn a still-loading placeholder into
+            // a retained measurement either.
+            if (mount && mount.style.visibility !== "hidden" && hasBodyEditor) {
                 // Capture the exact outer height synchronously while every
                 // descendant still exists. ResizeObserver delivery can lag
                 // behind a scroll-driven viewport removal, especially in a
@@ -920,7 +1017,7 @@ class EmbeddedBlockWidget extends WidgetType {
                     && cachedLayout.widthBucket === widthBucket
                     ? Math.max(cachedLayout.height, currentHeight)
                     : currentHeight;
-                replaceEmbeddedWidgetHeight(key, heightToCache, widthBucket);
+                this.cacheMeasuredHeight(key, heightToCache, widthBucket);
                 const snapshotHtml = captureEmbeddedWidgetSnapshot(mount);
                 if (snapshotHtml) rememberEmbeddedWidgetSnapshot(key, snapshotHtml);
                 else forgetEmbeddedWidgetSnapshot(key);
@@ -1184,18 +1281,9 @@ function selectInlineSuffixStart(view: EditorView, link: ParsedLink) {
                 : null)
         ]
     });
-    requestAnimationFrame(() => {
-        if (!view.dom.isConnected || view.state.selection.main.head !== link.to ||
-            view.state.field(embeddedObjectSelectionField, false)) return;
-        const caret = view.coordsAtPos(link.to, 1);
-        const panel = view.dom.closest<HTMLElement>('[role="tabpanel"]');
-        const viewport = panel?.getBoundingClientRect();
-        if (!caret || !panel || !viewport) return;
-        const top = viewport.top + 8;
-        const bottom = viewport.bottom - 8;
-        const delta = caret.top < top ? caret.top - top : caret.bottom > bottom ? caret.bottom - bottom : 0;
-        if (delta) setEmbeddedPanelScrollTop(panel, panel.scrollTop + delta);
-    });
+    // The shared final-caret reveal waits for the body above this suffix to
+    // finish loading. A separate one-frame reveal races that same geometry.
+    scheduleEmbeddedNavigationReveal(view);
 }
 
 function movePastClosedStandoutTitle(

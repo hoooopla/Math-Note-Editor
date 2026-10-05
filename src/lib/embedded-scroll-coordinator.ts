@@ -1,6 +1,7 @@
 interface PanelScrollState {
     lastScrollTop: number;
     userScrollVersion: number;
+    userIntentVersion: number;
     scrolling: boolean;
     idleTimer: ReturnType<typeof setTimeout> | null;
     subscribers: Set<(scrolling: boolean) => void>;
@@ -44,6 +45,7 @@ function ensurePanelState(panel: HTMLElement): PanelScrollState {
     const state: PanelScrollState = {
         lastScrollTop: panel.scrollTop,
         userScrollVersion: 0,
+        userIntentVersion: 0,
         scrolling: false,
         idleTimer: null,
         subscribers: new Set(),
@@ -116,6 +118,7 @@ function ensurePanelState(panel: HTMLElement): PanelScrollState {
     state.handleUserIntent = () => {
         cancelStabilization();
         state.userScrollVersion += 1;
+        state.userIntentVersion += 1;
         state.expectedProgrammaticScrollTop = null;
         state.wheelDirection = 0;
         state.lastWheelDelta = 0;
@@ -124,6 +127,7 @@ function ensurePanelState(panel: HTMLElement): PanelScrollState {
     state.handleWheel = event => {
         cancelStabilization();
         state.userScrollVersion += 1;
+        state.userIntentVersion += 1;
         state.expectedProgrammaticScrollTop = null;
         state.wheelDirection = event.deltaY < 0 ? -1 : event.deltaY > 0 ? 1 : 0;
         state.lastWheelDelta = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL
@@ -262,6 +266,11 @@ export function registerEmbeddedPanelScrollGuard(panel: HTMLElement) {
 
 export function getEmbeddedPanelScrollVersion(panel: HTMLElement) {
     return ensurePanelState(panel).userScrollVersion;
+}
+
+/** Explicit input, excluding browser scroll clamping and layout corrections. */
+export function getEmbeddedPanelUserIntentVersion(panel: HTMLElement) {
+    return ensurePanelState(panel).userIntentVersion;
 }
 
 export function isEmbeddedPanelScrolling(panel: HTMLElement) {

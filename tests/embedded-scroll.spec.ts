@@ -1,5 +1,41 @@
 import { expect, test } from 'playwright/test';
 
+test('keeps registered ancestors hot when navigation promotes a child before it loads', async ({ page }) => {
+    await page.goto('/');
+    const phases = await page.evaluate(async () => {
+        const moduleUrl = '/src/lib/embedded-editor-lifecycle.ts';
+        const { registerEmbeddedOccurrence, promoteEmbeddedOccurrence, initialEmbeddedEditorPhase,
+            demoteEmbeddedOccurrence, resetEmbeddedEditorLifecycle } = await import(moduleUrl);
+        resetEmbeddedEditorLifecycle();
+        const panel = document.createElement('div');
+        panel.setAttribute('role', 'tabpanel');
+        const parentHost = document.createElement('div');
+        const childHost = document.createElement('div');
+        panel.append(parentHost, childHost);
+        document.body.append(panel);
+        const parent = JSON.stringify(['test-root', 'middle@0']);
+        const child = JSON.stringify(['test-root', 'middle@0', 'leaf@0']);
+        // Both can be promoted before registration, as occurs during loading.
+        promoteEmbeddedOccurrence(parent);
+        const releaseParent = registerEmbeddedOccurrence(parent, parentHost);
+        promoteEmbeddedOccurrence(child);
+        const before = [initialEmbeddedEditorPhase(parent), initialEmbeddedEditorPhase(child)];
+        const releaseChild = registerEmbeddedOccurrence(child, childHost);
+        const after = [initialEmbeddedEditorPhase(parent), initialEmbeddedEditorPhase(child)];
+        promoteEmbeddedOccurrence(parent);
+        const returned = [initialEmbeddedEditorPhase(parent), initialEmbeddedEditorPhase(child)];
+        demoteEmbeddedOccurrence(parent);
+        releaseChild();
+        releaseParent();
+        panel.remove();
+        resetEmbeddedEditorLifecycle();
+        return { before, after, returned };
+    });
+    expect(phases.before).toEqual(['hot', 'hot']);
+    expect(phases.after).toEqual(['hot', 'hot']);
+    expect(phases.returned).toEqual(['hot', 'warm']);
+});
+
 test('continues the wheel gesture from the actual position after content height clamps scrolling', async ({ page }) => {
     await page.goto('/');
     const movement = await page.evaluate(async () => {

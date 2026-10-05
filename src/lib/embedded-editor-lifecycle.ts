@@ -93,6 +93,15 @@ export function registerEmbeddedOccurrence(
         publishPhase(key, "hot");
         hot.add(key);
         hotOccurrencesByPanel.set(panel, hot);
+        // Keyboard navigation may promote a lazy child before it owns a DOM
+        // host. Once it registers, restore every mounted ancestor as well.
+        for (const [candidate, candidatePanel] of panelByOccurrence) {
+            if (candidatePanel === panel && isOccurrenceAncestor(candidate, key)) {
+                publishPhase(candidate, "hot");
+                hot.add(candidate);
+            }
+        }
+        if (fallbackHotOccurrenceKey === key) fallbackHotOccurrenceKey = null;
     } else {
         publishPhase(key, "warm");
     }
@@ -107,7 +116,11 @@ export function registerEmbeddedOccurrence(
 }
 
 export function promoteEmbeddedOccurrence(key: string) {
-    const panel = panelByOccurrence.get(key);
+    // An unloaded child still belongs to its nearest registered ancestor's
+    // panel. Do not send it through a global fallback that demotes its parent.
+    const panel = panelByOccurrence.get(key) ?? Array.from(panelByOccurrence)
+        .filter(([candidate]) => isOccurrenceAncestor(candidate, key))
+        .sort(([left], [right]) => occurrencePath(right).length - occurrencePath(left).length)[0]?.[1];
     if (panel) {
         const hot = hotOccurrencesByPanel.get(panel) ?? new Set<string>();
         // Keep the full active ancestry editable. A child boundary must be
@@ -128,7 +141,7 @@ export function promoteEmbeddedOccurrence(key: string) {
         hot.add(key);
         hotOccurrencesByPanel.set(panel, hot);
     } else {
-        if (fallbackHotOccurrenceKey && fallbackHotOccurrenceKey !== key) publishPhase(fallbackHotOccurrenceKey, "warm");
+        if (fallbackHotOccurrenceKey && !isOccurrenceAncestor(fallbackHotOccurrenceKey, key)) publishPhase(fallbackHotOccurrenceKey, "warm");
         fallbackHotOccurrenceKey = key;
     }
     publishPhase(key, "hot");

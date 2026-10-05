@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { getOrderedBlocks, useStore } from "./store";
 import { preloadGoogleSignIn } from "./lib/google-drive-workspace";
 import { BlockContainer } from "./components/Block";
@@ -191,7 +191,7 @@ export default function App() {
         });
     }, [settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, settings.goToParentShortcut]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
                 if (isMacroModalOpen) closeSettings();

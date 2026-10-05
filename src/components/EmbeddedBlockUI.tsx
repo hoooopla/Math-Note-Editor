@@ -178,7 +178,11 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     }, [ifToggled, instanceKey, rendersBody]);
 
     useEffect(() => {
-        if (!editorActivated || ifToggled !== "open" || activeInsideMe) return;
+        if (!rendersBody || !editorActivated || ifToggled !== "open" || activeInsideMe) return;
+        // Passive effects can run after a keyboard handoff has already changed
+        // the active occurrence. A stale render must not demote that ancestry.
+        const currentOccurrence = useStore.getState().activeOccurrenceKey;
+        if (currentOccurrence && occurrenceKeyContains(instanceKey, currentOccurrence)) return;
         const panel = editorHostRef.current?.closest<HTMLElement>('[role="tabpanel"]');
         // Each mounted tab retains its own hot occurrence. Hiding a tab must
         // not discard the nested cursor and undo state that will be restored
@@ -188,7 +192,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
         // to inexpensive, non-editable dormant mode when another block wins
         // focus.
         demoteEmbeddedOccurrence(instanceKey);
-    }, [activeInsideMe, editorActivated, ifToggled, instanceKey]);
+    }, [activeInsideMe, editorActivated, ifToggled, instanceKey, rendersBody]);
 
     if (visitedLabels.includes(fullLabel)) {
         return (

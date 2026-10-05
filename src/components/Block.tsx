@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import { findNearestExistingParentId, getOrderedBlocks, useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle, Link2 } from "lucide-react";
@@ -103,7 +103,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
         setIsEditingMeta(true);
     }, [backendMode, block.id, block.label, block.title, setActive]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const handleEditRequest = (event: Event) => {
             const blockId = (event as CustomEvent<{ blockId?: string }>).detail?.blockId;
             if (blockId === block.id) beginMetaEdit();
