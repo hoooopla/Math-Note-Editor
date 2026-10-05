@@ -9,7 +9,7 @@ import { useStore } from "../../store";
 import { EmbeddedLinkSyntax, parseEmbeddedLinks, parseEmbeddedText, resolveEmbeddedLabel, setEmbeddedOpen } from "../embedded-link-syntax";
 import { EmbeddedObjectSelection, setEmbeddedObjectSelection } from "./embedded-object-selection";
 import { embeddedContentFingerprint, promoteEmbeddedOccurrence } from "../embedded-editor-lifecycle";
-import { getEmbeddedPanelScrollVersion, isEmbeddedPanelScrolling, setEmbeddedPanelScrollTop } from "../embedded-scroll-coordinator";
+import { getEmbeddedPanelScrollVersion, getEmbeddedPanelUserIntentVersion, isEmbeddedPanelScrolling, setEmbeddedPanelScrollTop } from "../embedded-scroll-coordinator";
 import { EmbeddedLayoutDependency, isEmbeddedLayoutHydration } from "../embedded-layout-compatibility";
 import { scheduleFinalCaretReveal } from "./final-caret-reveal";
 
@@ -100,28 +100,65 @@ const embeddedWidgetLayouts = new Map<string, EmbeddedWidgetLayoutRecord>();
 const lastMeasuredLayoutByIdentity = new Map<string, string>();
 const MAX_EMBEDDED_WIDGET_LAYOUTS = 1024;
 const MAX_EMBEDDED_WIDGET_SNAPSHOTS = 128;
-const explicitReopensByView = new WeakMap<EditorView, Map<number, number>>();
-const EXPLICIT_REOPEN_SETTLE_MS = 1200;
+type ExplicitReopen = {
+    view: EditorView;
+    from: number;
+    beforeDoc: import("@codemirror/state").Text;
+    reopenedDoc?: import("@codemirror/state").Text;
+    panel: HTMLElement | null;
+    intentVersion: number;
+};
+// One pending action per editor. Readiness, document identity and newer input
+// bound its lifetime; rendering time is not a reason to abandon refinement.
+let explicitReopensByView = new WeakMap<EditorView, ExplicitReopen>();
+const explicitReopensByDOM = new WeakMap<HTMLElement, ExplicitReopen>();
 let embeddedWidgetRevisionFrame: number | null = null;
 
 function markExplicitReopen(view: EditorView, from: number) {
-    const now = performance.now();
-    const reopens = explicitReopensByView.get(view) ?? new Map<number, number>();
-    for (const [position, expiresAt] of reopens) {
-        if (expiresAt <= now) reopens.delete(position);
-    }
-    reopens.set(from, now + EXPLICIT_REOPEN_SETTLE_MS);
-    explicitReopensByView.set(view, reopens);
+    const panel = view.dom.closest<HTMLElement>('[role="tabpanel"]');
+    explicitReopensByView.set(view, {
+        view, from, beforeDoc: view.state.doc, panel,
+        intentVersion: panel ? getEmbeddedPanelUserIntentVersion(panel) : 0
+    });
 }
 
-function explicitReopenExpiry(view: EditorView, from: number) {
-    const expiresAt = explicitReopensByView.get(view)?.get(from) ?? 0;
-    return expiresAt > performance.now() ? expiresAt : 0;
+function explicitReopenFor(view: EditorView, from: number) {
+    const reopen = explicitReopensByView.get(view);
+    if (!reopen || reopen.from !== from) return undefined;
+    // markExplicitReopen runs immediately before the opening transaction.
+    if (!reopen.reopenedDoc && view.state.doc !== reopen.beforeDoc) reopen.reopenedDoc = view.state.doc;
+    if (view.state.doc !== reopen.reopenedDoc ||
+        (reopen.panel && getEmbeddedPanelUserIntentVersion(reopen.panel) !== reopen.intentVersion)) {
+        explicitReopensByView.delete(view);
+        return undefined;
+    }
+    return reopen;
 }
 
 function hasActiveExplicitReopen(dom: HTMLElement) {
-    const reopen = dom.closest<HTMLElement>('[data-explicit-reopen-until]');
-    return !!reopen && Number(reopen.dataset.explicitReopenUntil || 0) > performance.now();
+    const owner = dom.closest<HTMLElement>('[data-explicit-reopen-pending]');
+    const reopen = owner && explicitReopensByDOM.get(owner);
+    if (!owner || !reopen) return false;
+    if (explicitReopenFor(reopen.view, reopen.from) === reopen) return true;
+    delete owner.dataset.explicitReopenPending;
+    explicitReopensByDOM.delete(owner);
+    return false;
+}
+
+function finishExplicitReopen(dom: HTMLElement) {
+    // Off-screen CM gaps still contain estimated geometry. Keep the action
+    // eligible for its first visible refinement, unless newer input cancels it.
+    if (!dom.hasAttribute('data-explicit-reopen-pending') || !canSettleExplicitReopen(dom) ||
+        dom.querySelector('.cm-gap, .cm-math-editing, .cm-embedded-editing')) return;
+    if (Array.from(dom.querySelectorAll<HTMLElement>('.cm-embedded-block-wrapper[data-embed-part="body"]'))
+        .some(wrapper => {
+            const mount = wrapper.querySelector<HTMLElement>(':scope > .cm-embedded-react-mount');
+            return !mount || wrapper.getBoundingClientRect().height - mount.getBoundingClientRect().height > 8;
+        })) return;
+    const reopen = explicitReopensByDOM.get(dom);
+    if (reopen && explicitReopensByView.get(reopen.view) === reopen) explicitReopensByView.delete(reopen.view);
+    explicitReopensByDOM.delete(dom);
+    delete dom.dataset.explicitReopenPending;
 }
 
 function canSettleExplicitReopen(dom: HTMLElement) {
@@ -164,6 +201,7 @@ if (typeof window !== "undefined") {
     window.addEventListener("math-note-workspace-reset", () => {
         embeddedWidgetLayouts.clear();
         lastMeasuredLayoutByIdentity.clear();
+        explicitReopensByView = new WeakMap();
         if (embeddedWidgetRevisionFrame !== null) cancelAnimationFrame(embeddedWidgetRevisionFrame);
         embeddedWidgetRevisionFrame = null;
     });
@@ -424,11 +462,11 @@ export const embeddedObjectSelectionField = StateField.define<EmbeddedObjectSele
 
 export function scheduleEmbeddedNavigationReveal(origin: EditorView) {
     scheduleFinalCaretReveal(origin, view => {
-        const titleSelected = !!view.state.field(embeddedObjectSelectionField, false);
+        const title = view.state.field(embeddedObjectSelectionField, false) ?? null;
         const head = view.state.selection.main.head;
         return {
-            titleSelected,
-            atInlineSuffix: !titleSelected && view.state.field(parsedLinksField).some(link =>
+            title,
+            atInlineSuffix: !title && view.state.field(parsedLinksField).some(link =>
                 link.open && link.to === head && view.state.doc.lineAt(link.to).to > link.to)
         };
     });
@@ -633,7 +671,7 @@ class EmbeddedBlockWidget extends WidgetType {
                     // A just-reopened tree can become completely measured on
                     // the next frame. A 100 ms poll adds an avoidable visible
                     // reservation after its renderer is already ready.
-                    if (hasActiveExplicitReopen(dom)) {
+                    if (hasActiveExplicitReopen(dom) && ownEditorReady() && !hasTransientEditingGeometry()) {
                         (dom as any).__embeddedLayoutFrame = requestAnimationFrame(sample);
                     } else {
                         (dom as any).__embeddedLayoutTimer = setTimeout(sample, 100);
@@ -677,6 +715,7 @@ class EmbeddedBlockWidget extends WidgetType {
                 dom.dataset.settledWidthBucket = String(widthBucket);
                 this.cacheMeasuredHeight(key, settledHeight, widthBucket);
                 commitEmbeddedHeight(panel, dom, settledHeight);
+                finishExplicitReopen(dom);
                 view.requestMeasure();
             };
             (dom as any).__embeddedLayoutFrame = requestAnimationFrame(sample);
@@ -797,8 +836,11 @@ class EmbeddedBlockWidget extends WidgetType {
         this.ownerView = view;
         this.applyStandaloneLayout(dom);
         if (this.retainsBlockHeight()) {
-            const expiresAt = explicitReopenExpiry(view, this.from);
-            if (expiresAt) dom.dataset.explicitReopenUntil = String(expiresAt);
+            const reopen = explicitReopenFor(view, this.from);
+            if (reopen) {
+                explicitReopensByDOM.set(dom, reopen);
+                dom.dataset.explicitReopenPending = 'true';
+            }
         }
         registerEmbedWrapper(view, dom);
         this.reserveRetainedHeight(dom);

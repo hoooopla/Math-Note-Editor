@@ -1,12 +1,13 @@
 import { EditorView } from "@codemirror/view";
 import { getEmbeddedPanelUserIntentVersion, setEmbeddedPanelScrollTop } from "../embedded-scroll-coordinator";
+import type { EmbeddedObjectSelection } from "./embedded-object-selection";
 
 const pendingRevealByPanel = new WeakMap<HTMLElement, number>();
 let nextRevealId = 0;
 
 /** One reveal for the final caret, after native movement or an editor handoff. */
 export function scheduleFinalCaretReveal(origin: EditorView, readProjection: (view: EditorView) => {
-    titleSelected: boolean; atInlineSuffix: boolean;
+    title: EmbeddedObjectSelection | null; atInlineSuffix: boolean;
 }) {
     const panel = origin.dom.closest<HTMLElement>('[role="tabpanel"]');
     if (!panel) return;
@@ -36,15 +37,21 @@ export function scheduleFinalCaretReveal(origin: EditorView, readProjection: (vi
         if (destination && (destination.view !== view || !destination.selection.eq(view.state.selection))) return;
         destination ??= { view, selection: view.state.selection };
 
-        const projectedCaret = Array.from(view.dom.querySelectorAll<HTMLElement>(
-            '[data-embed-keyboard-selected="true"] [data-testid="embedded-title-caret"]'
-        )).find(element => element.closest(".cm-editor") === view.dom);
         const selection = view.state.selection.main;
         const projection = readProjection(view);
-        const titleSelection = projection.titleSelected;
+        const titleSelection = projection.title;
         const selectedTitle = titleSelection ? Array.from(view.dom.querySelectorAll<HTMLElement>(
             '[data-embed-keyboard-selected="true"]'
-        )).find(element => element.closest(".cm-editor") === view.dom) : null;
+        )).find(element => {
+            const wrapper = element.closest<HTMLElement>('.cm-embedded-block-wrapper');
+            return element.closest(".cm-editor") === view.dom &&
+                Number(wrapper?.dataset.embedFrom) === titleSelection.from &&
+                Number(wrapper?.dataset.embedTo) === titleSelection.to;
+        }) : null;
+        // React may still display a previous title caret after the source
+        // selection has moved. Only the current logical title may project it.
+        const projectedCaret = selectedTitle?.querySelector<HTMLElement>(
+            '[data-testid="embedded-title-caret"]');
         // The source endpoint of an expanded title can sit below its entire
         // body. Never reveal that hidden endpoint while React is mounting the
         // projected title caret.

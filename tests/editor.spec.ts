@@ -3567,7 +3567,8 @@ test('repairs a stale embedded height after scrolling and editing become idle', 
     ).toBeLessThanOrEqual(naturalHeight + 2);
 });
 
-test('reopened nested math content does not hold a large visible bottom reservation', async ({ page }) => {
+for (const lateViewportMeasurement of [false, true]) {
+test(`reopened nested math content does not hold a large visible bottom reservation${lateViewportMeasurement ? ' after delayed viewport measurement' : ''}`, async ({ page }) => {
     await page.setViewportSize({ width: 1500, height: 900 });
     const stamp = Date.now();
     const proofLabel = `test:reopen-gap-proof-${stamp}`;
@@ -3631,6 +3632,9 @@ test('reopened nested math content does not hold a large visible bottom reservat
     await expect(conditionHost).toHaveCount(0);
     await title.click();
     await expect(proofHost.locator('.cm-editor')).toBeVisible();
+    // The renderer can become ready long after the user's reopening action.
+    // A deadline measured from that click must not disable its first refinement.
+    if (lateViewportMeasurement) await page.waitForTimeout(1400);
     const settling = await panel.evaluate(async (element, ids) => {
         const gap = (id: string) => {
             const host = document.querySelector(`[data-testid="embedded-editor-host-${id}"]`);
@@ -3668,6 +3672,7 @@ test('reopened nested math content does not hold a large visible bottom reservat
     expect(settling.largeGapDuration).toBeLessThanOrEqual(180);
     expect(settling.finalGap).toBeLessThanOrEqual(20);
 });
+}
 
 test('releases retained parent height when a nested block is collapsed', async ({ page }) => {
     const suffix = Date.now();

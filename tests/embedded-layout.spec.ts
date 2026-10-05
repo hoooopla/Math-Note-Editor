@@ -10,6 +10,93 @@ test.afterEach(({ page }) => {
     expect(runtimeErrors.get(page), 'navigation and layout must not throw browser errors').toEqual([]);
 });
 
+test('reveals the logical suffix even while a previous title caret remains rendered', async ({ page, request }) => {
+    await request.post('/api/test/reset');
+    await request.post('/api/blocks', { data: {
+        title: 'Stale projection child', label: 'test:stale-projection-child',
+        content: Array.from({ length: 55 }, (_, index) => `projection row ${index}`).join('\n')
+    } });
+    await request.post('/api/blocks', { data: {
+        title: 'Stale projection source', label: 'test:stale-projection-source',
+        content: '[[test:stale-projection-child∨]]projection-tail'
+    } });
+    await page.goto('/');
+    await page.getByRole('button', { name: /^Search\b/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill('test:stale-projection-source');
+    await search.press('Enter');
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const tail = page.getByText('projection-tail', { exact: true });
+    await expect.poll(() => panel.locator('.cm-embedded-block-wrapper[data-embed-part="body"]')
+        .evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(1000);
+    await tail.click({ position: { x: 1, y: 8 } });
+    await page.keyboard.press('ArrowLeft');
+    await expect(panel.getByTestId('embedded-title-caret')).toBeVisible();
+    await expect(panel.locator('[data-embed-nav-title]')).toBeInViewport();
+    try {
+        await panel.evaluate(async element => {
+            const viewUrl = '/node_modules/.vite/deps/@codemirror_view.js';
+            const pluginUrl = '/src/lib/editor/embedded-block-plugin.tsx';
+            const { EditorView } = await import(viewUrl);
+            const { setEmbeddedObjectSelection, scheduleEmbeddedNavigationReveal } = await import(pluginUrl);
+            const editor = element.querySelector('.cm-editor');
+            const view = EditorView.findFromDOM(editor);
+            const title = editor.querySelector('[data-embed-keyboard-selected="true"]');
+            const wrapper = title.closest<HTMLElement>('.cm-embedded-block-wrapper');
+            // Hold the previous React projection without changing the source.
+            // It stays visible long enough to expose a premature one-shot reveal.
+            const stale = wrapper.cloneNode(true) as HTMLElement;
+            const rect = wrapper.getBoundingClientRect();
+            stale.dataset.testid = 'stale-title-projection';
+            stale.setAttribute('aria-hidden', 'true');
+            stale.setAttribute('inert', '');
+            Object.assign(stale.style, { position: 'fixed', top: `${rect.top}px`, left: `${rect.left}px` });
+            editor.appendChild(stale);
+            view.dispatch({
+                selection: { anchor: Number(wrapper.dataset.embedTo) },
+                effects: setEmbeddedObjectSelection.of(null)
+            });
+            scheduleEmbeddedNavigationReveal(view);
+        });
+        await expect(tail).toBeInViewport();
+    } finally {
+        await panel.getByTestId('stale-title-projection').evaluate(element => element.remove());
+    }
+});
+
+for (const cancelWith of ['wheel', 'edit'] as const) {
+test(`cancels pending reopening refinement after a newer ${cancelWith}`, async ({ page, request }) => {
+    await request.post('/api/test/reset');
+    const child = await (await request.post('/api/blocks', { data: {
+        title: 'Pending reopen child', label: 'test:pending-reopen-child',
+        content: Array.from({ length: 200 }, (_, index) => `pending row ${index}`).join('\n')
+    } })).json();
+    await request.post('/api/blocks', { data: {
+        title: 'Pending reopen source', label: 'test:pending-reopen-source',
+        content: '[[test:pending-reopen-child]]tail'
+    } });
+    await page.goto('/');
+    await page.getByRole('button', { name: /^Search\b/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill('test:pending-reopen-source');
+    await search.press('Enter');
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    await panel.locator('[data-embed-nav-title]').click();
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`).locator('.cm-content').first()).toContainText('pending row 0');
+    const pending = panel.locator('[data-explicit-reopen-pending]');
+    await expect(pending).toHaveCount(1);
+    if (cancelWith === 'wheel') {
+        const box = await panel.boundingBox();
+        await page.mouse.move(box!.x + 20, box!.y + 120);
+        await page.mouse.wheel(0, 50);
+    } else {
+        await panel.locator('.cm-content').first().fill('edited [[test:pending-reopen-child∨]]tail');
+    }
+    await expect(pending).toHaveCount(0);
+    await expect(page.getByTestId(`embedded-editor-host-${child.id}`)).toBeVisible();
+});
+}
+
 for (const cancelWithWheel of [false, true]) {
 test(`reveals a suffix after delayed body loading${cancelWithWheel ? ' without overriding later wheel input' : ''}`, async ({ page, request }) => {
     await request.post('/api/test/reset');
@@ -30,7 +117,7 @@ test(`reveals a suffix after delayed body loading${cancelWithWheel ? ' without o
     try {
         await page.goto('/');
         await expect(page.getByLabel('In-memory test mode')).toBeVisible();
-        await page.getByRole('button', { name: /Search/ }).click();
+        await page.getByRole('button', { name: /^Search\b/ }).click();
         const search = page.getByPlaceholder('Search blocks or create new...');
         await search.fill('test:delayed-suffix-source');
         await search.press('Enter');
@@ -87,7 +174,7 @@ test('keeps a measured widget estimate during descendant hydration but invalidat
     try {
         await page.goto('/');
         await expect(page.getByLabel('In-memory test mode')).toBeVisible();
-        await page.getByRole('button', { name: /Search/ }).click();
+        await page.getByRole('button', { name: /^Search\b/ }).click();
         const search = page.getByPlaceholder('Search blocks or create new...');
         await search.fill('test:hydration-source');
         await search.press('Enter');
