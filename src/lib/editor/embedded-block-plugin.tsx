@@ -114,9 +114,13 @@ function explicitReopenExpiry(view: EditorView, from: number) {
     return expiresAt > performance.now() ? expiresAt : 0;
 }
 
-function canSettleExplicitReopen(dom: HTMLElement) {
+function hasActiveExplicitReopen(dom: HTMLElement) {
     const reopen = dom.closest<HTMLElement>('[data-explicit-reopen-until]');
-    if (!reopen || Number(reopen.dataset.explicitReopenUntil || 0) <= performance.now()) return false;
+    return !!reopen && Number(reopen.dataset.explicitReopenUntil || 0) > performance.now();
+}
+
+function canSettleExplicitReopen(dom: HTMLElement) {
+    if (!hasActiveExplicitReopen(dom)) return false;
     const editors = Array.from(dom.querySelectorAll<HTMLElement>('.cm-editor'))
         .filter(editor => !editor.closest('.cm-embedded-snapshot'));
     if (editors.length === 0) return false;
@@ -127,9 +131,17 @@ function canSettleExplicitReopen(dom: HTMLElement) {
     )) return false;
     return editors.every(editor => {
         const view = EditorView.findFromDOM(editor);
-        return !!view && view.viewport.to === view.state.doc.length &&
-            !view.contentDOM.lastElementChild?.classList.contains('cm-gap');
+        return !!view && view.viewport.from === 0 && view.viewport.to === view.state.doc.length &&
+            !Array.from(view.contentDOM.children).some(child => child.classList.contains('cm-gap'));
     });
+}
+
+function canRefineEmbeddedHeight(panel: HTMLElement | null, dom: HTMLElement) {
+    if (!dom.isConnected) return false;
+    if (!panel) return true;
+    const viewport = panel.getBoundingClientRect();
+    const rect = dom.getBoundingClientRect();
+    return rect.height > 0 && rect.bottom > viewport.top && rect.top < viewport.bottom;
 }
 
 if (typeof window !== "undefined") {
@@ -528,7 +540,14 @@ class EmbeddedBlockWidget extends WidgetType {
                 if (generation !== layoutGeneration || (dom as any).__embeddedWidgetOwner !== this || !dom.isConnected || !mount.isConnected) return;
                 if (((panel && isEmbeddedPanelScrolling(panel)) && !canSettleExplicitReopen(dom)) ||
                     hasTransientEditingGeometry()) {
-                    (dom as any).__embeddedLayoutTimer = setTimeout(sample, 100);
+                    // A just-reopened tree can become completely measured on
+                    // the next frame. A 100 ms poll adds an avoidable visible
+                    // reservation after its renderer is already ready.
+                    if (hasActiveExplicitReopen(dom)) {
+                        (dom as any).__embeddedLayoutFrame = requestAnimationFrame(sample);
+                    } else {
+                        (dom as any).__embeddedLayoutTimer = setTimeout(sample, 100);
+                    }
                     return;
                 }
                 const naturalHeight = mount.getBoundingClientRect().height;
@@ -552,13 +571,14 @@ class EmbeddedBlockWidget extends WidgetType {
                 const cachedWidthBucket = cachedLayout?.widthBucket;
                 // Keep the larger value only for the exact same content tree
                 // and width. That prevents an off-screen CodeMirror estimate
-                // from shrinking a stable widget while scrolling. A real
+                // from shrinking a stable widget, including idle remounts. A real
                 // descendant toggle changes the tree key and may shrink; the
                 // destroy path below also caches the live mount rather than a
                 // stale outer min-height, so the new key cannot be poisoned.
                 const measuredHeight = Math.ceil(naturalHeight);
                 const sameLayoutCache = cachedHeight !== undefined && cachedWidthBucket === widthBucket;
-                const staleLargeReservation = sameLayoutCache && cachedHeight > measuredHeight + 8;
+                const staleLargeReservation = sameLayoutCache && cachedHeight > measuredHeight + 8 &&
+                    canRefineEmbeddedHeight(panel, dom);
                 const settledHeight = sameLayoutCache && !staleLargeReservation
                     ? Math.max(cachedHeight, measuredHeight)
                     : measuredHeight;
@@ -586,8 +606,8 @@ class EmbeddedBlockWidget extends WidgetType {
             const key = this.occurrenceKey();
             const widthBucket = Math.max(1, Math.round(mount.clientWidth / 8) * 8);
             const cachedLayout = embeddedWidgetLayouts.get(key);
-            const measuredHeight = panel && isEmbeddedPanelScrolling(panel) &&
-                cachedLayout?.height !== undefined && cachedLayout.widthBucket === widthBucket
+            const measuredHeight = cachedLayout?.height !== undefined && cachedLayout.widthBucket === widthBucket &&
+                ((panel && isEmbeddedPanelScrolling(panel)) || !canRefineEmbeddedHeight(panel, dom))
                 ? Math.max(cachedLayout.height, Math.ceil(initialHeight))
                 : Math.ceil(initialHeight);
             dom.dataset.widgetOccurrenceKey = key;
@@ -892,10 +912,10 @@ class EmbeddedBlockWidget extends WidgetType {
                 // An off-screen CodeMirror replaces real lines with estimated
                 // gaps while the panel moves. Its live mount can therefore be
                 // temporarily hundreds of pixels shorter. Do not let the
-                // destroy/remount path publish that estimate mid-gesture. Once
-                // scrolling is idle, observeRenderedHeight can accept the
-                // settled smaller value while the panel's visual anchor holds.
-                const heightToCache = panel && isEmbeddedPanelScrolling(panel)
+                // destroy/remount path publish that estimate mid-gesture or
+                // while still off-screen. Once visible and idle, the observer
+                // can refine it while the panel's visual anchor holds.
+                const heightToCache = ((panel && isEmbeddedPanelScrolling(panel)) || !canRefineEmbeddedHeight(panel, dom))
                     && cachedLayout?.height !== undefined
                     && cachedLayout.widthBucket === widthBucket
                     ? Math.max(cachedLayout.height, currentHeight)
@@ -1446,7 +1466,8 @@ function moveFromSelectedTitleToAdjacentRow(
     link: ParsedLink,
     title: HTMLElement,
     direction: "up" | "down",
-    x: number
+    x: number,
+    ownedWrappers: HTMLElement[]
 ) {
     const forward = direction === "down";
     if (!forward && moveUpFromStandaloneTitleLogically(view, link, x)) return true;
@@ -1534,7 +1555,9 @@ function moveFromSelectedTitleToAdjacentRow(
             // rendered-row move.
             const probeY = forward ? rect.top + 1 : rect.bottom - 1;
             const anchor = view.posAtCoords({ x: probeX, y: probeY }, false);
-            if (anchor === null || (anchor >= link.from && anchor <= link.to)) continue;
+            if (anchor === null || view.state.field(parsedLinksField).some(candidate =>
+                anchor >= candidate.from && anchor <= candidate.to && !isRawEmbeddedSourceVisible(view.state, candidate)
+            )) continue;
             const coords = view.coordsAtPos(anchor, forward ? 1 : -1);
             if (!coords) continue;
             adjacent = {
@@ -1546,6 +1569,31 @@ function moveFromSelectedTitleToAdjacentRow(
         }
     }
     if (!adjacent || (adjacent.anchor >= link.from && adjacent.anchor <= link.to)) return false;
+
+    // Text probes can see a short row beyond a rendered title/body, especially
+    // when the horizontal goal is wider than that intervening title. Let the
+    // common portal resolver choose the first visible boundary in that case.
+    // A plain cursor here would otherwise skip the embed or enter its source.
+    const adjacentCoords = view.coordsAtPos(adjacent.anchor, adjacent.assoc);
+    if (!adjacentCoords) return false;
+    const links = view.state.field(parsedLinksField);
+    const interveningPortal = ownedWrappers.some(wrapper => {
+        const from = Number(wrapper.dataset.embedFrom);
+        const to = Number(wrapper.dataset.embedTo);
+        const candidate = links.find(item => item.from === from && item.to === to);
+        if (!candidate || isRawEmbeddedSourceVisible(view.state, candidate)) return false;
+        return (["title", "body"] as const).some(kind => {
+            if (kind === "body" && !candidate.open) return false;
+            const element = directEmbedElement(wrapper, `[data-embed-nav-${kind}]`);
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return false;
+            return forward
+                ? rect.top >= titleRect.bottom - 1 && rect.top < adjacentCoords.bottom - 1
+                : rect.bottom <= titleRect.top + 1 && rect.bottom > adjacentCoords.top + 1;
+        });
+    });
+    if (interveningPortal) return false;
 
     const goalColumn = Math.max(0, x - view.contentDOM.getBoundingClientRect().left);
     const destination = EditorSelection.cursor(adjacent.anchor, adjacent.assoc, undefined, goalColumn);
@@ -1849,7 +1897,7 @@ function runVisualEmbeddedNavigation(view: EditorView, direction: "up" | "down")
             }
         }
         if (selectedLink && selectedTitle &&
-            moveFromSelectedTitleToAdjacentRow(view, selectedLink, selectedTitle, direction, currentX)) {
+            moveFromSelectedTitleToAdjacentRow(view, selectedLink, selectedTitle, direction, currentX, ownedWrappers)) {
             return true;
         }
     }

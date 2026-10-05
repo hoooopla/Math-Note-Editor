@@ -35,7 +35,8 @@ jobs:
         with:
           name: playwright-traces-${{ runner.os }}
           path: .playwright-results
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: warn
       - run: npm run build:desktop
       - run: npm run test:desktop-server
       - run: npx electron-builder --publish never

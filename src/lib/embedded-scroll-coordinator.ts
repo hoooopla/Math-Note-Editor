@@ -22,6 +22,16 @@ interface PanelScrollState {
 
 const panelStates = new WeakMap<HTMLElement, PanelScrollState>();
 
+function writePanelScrollPosition(panel: HTMLElement, state: PanelScrollState, scrollTop: number) {
+    const bounded = Math.max(0, Math.min(scrollTop, panel.scrollHeight - panel.clientHeight));
+    panel.scrollTop = bounded;
+    // A height change can make the old position unreachable. Record the
+    // browser's actual position immediately: assigning an already-clamped
+    // position may emit no subsequent scroll event to update this state.
+    state.expectedProgrammaticScrollTop = panel.scrollTop;
+    state.lastScrollTop = panel.scrollTop;
+}
+
 function ensurePanelState(panel: HTMLElement): PanelScrollState {
     const existing = panelStates.get(panel);
     if (existing) {
@@ -96,9 +106,7 @@ function ensurePanelState(panel: HTMLElement): PanelScrollState {
                     Math.min(panel.scrollTop + visualDelta, panel.scrollHeight - panel.clientHeight)
                 );
                 if (Math.abs(target - panel.scrollTop) > 0.5) {
-                    state.expectedProgrammaticScrollTop = target;
-                    panel.scrollTop = target;
-                    state.lastScrollTop = panel.scrollTop;
+                    writePanelScrollPosition(panel, state, target);
                 }
             }
             state.stabilizationFrame = requestAnimationFrame(stabilize);
@@ -147,8 +155,7 @@ function ensurePanelState(panel: HTMLElement): PanelScrollState {
         // allowed direction, and keyboard/programmatic movement is untouched.
         if (wheelIsActive && state.wheelDirection !== 0 && Math.abs(scrollDelta) > 0.5
             && Math.sign(scrollDelta) !== state.wheelDirection) {
-            state.expectedProgrammaticScrollTop = state.lastScrollTop;
-            panel.scrollTop = state.lastScrollTop;
+            writePanelScrollPosition(panel, state, state.lastScrollTop);
             return;
         }
         // A viewport remeasurement may be delivered as one large scroll in
@@ -170,8 +177,7 @@ function ensurePanelState(panel: HTMLElement): PanelScrollState {
                 )
             );
             state.wheelStepPending = false;
-            state.expectedProgrammaticScrollTop = intended;
-            panel.scrollTop = intended;
+            writePanelScrollPosition(panel, state, intended);
             return;
         }
         state.expectedProgrammaticScrollTop = null;
@@ -270,8 +276,5 @@ export function isEmbeddedPanelScrolling(panel: HTMLElement) {
 
 export function setEmbeddedPanelScrollTop(panel: HTMLElement, scrollTop: number) {
     const state = ensurePanelState(panel);
-    const boundedScrollTop = Math.max(0, Math.min(scrollTop, panel.scrollHeight - panel.clientHeight));
-    state.expectedProgrammaticScrollTop = boundedScrollTop;
-    panel.scrollTop = boundedScrollTop;
-    state.lastScrollTop = panel.scrollTop;
+    writePanelScrollPosition(panel, state, scrollTop);
 }
