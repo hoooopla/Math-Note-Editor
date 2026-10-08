@@ -1,10 +1,50 @@
 import { CompletionContext, CompletionResult, Completion, closeCompletion } from "@codemirror/autocomplete";
 import { Transaction } from "@codemirror/state";
+import { createElement } from "react";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { useStore } from "../../store";
+import { MathTitle } from "../../components/MathTitle";
 import { parentLabelFacet } from "./embedded-block-plugin";
 import { encodeEmbeddedLabel, findActiveEmbeddedTarget } from "../embedded-link-syntax";
 import { normalizeBlockLabel, validateBlockMetadata } from "../label-policy";
 import { splitPath } from "../utils/path";
+
+function distinguishingPath(label: string, suffixCounts: Map<string, number>): string {
+    const segments = splitPath(label);
+    let count = 1;
+    while (count < segments.length && (suffixCounts.get(JSON.stringify(segments.slice(-count))) || 0) > 1) count++;
+    const suffix = segments.slice(-count).join(" › ");
+    return count < segments.length ? `… › ${suffix}` : suffix;
+}
+
+function completionPreview(fullLabel: string, title: string, insertedText: string) {
+    const preview = document.createElement("div");
+    preview.className = "cm-link-completion-preview";
+    let titleHost: HTMLElement | null = null;
+    for (const [caption, value] of [["Title", title], ["Full label", fullLabel], ["Target to insert", insertedText]]) {
+        const row = document.createElement("div");
+        row.className = "cm-link-completion-preview-row";
+        const heading = document.createElement("span");
+        heading.className = "cm-link-completion-preview-caption";
+        heading.textContent = `${caption}:`;
+        const text = document.createElement("span");
+        text.className = "cm-link-completion-preview-value";
+        if (caption === "Title") {
+            text.classList.add("cm-link-completion-preview-title");
+            titleHost = text;
+        } else {
+            text.textContent = value;
+        }
+        row.append(heading, text);
+        preview.appendChild(row);
+    }
+    const root = createRoot(titleHost!);
+    // CM6 measures and positions the info pane as soon as it is attached.
+    // Render the math title before that measurement so its height is included.
+    flushSync(() => root.render(createElement(MathTitle, { text: title })));
+    return { dom: preview, destroy: () => root.unmount() };
+}
 
 export function linkCompletion(context: CompletionContext): CompletionResult | null {
     const activeTarget = findActiveEmbeddedTarget(context.state.doc.toString(), context.pos, { allowUnclosed: false });
@@ -39,8 +79,9 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
             label: applyText,
             displayLabel: `Create new block: "${queryLabel}"`,
             detail: "create",
-            type: "create",
+            type: "link-create",
             boost: 998,
+            info: () => completionPreview(normalizedCreateLabel, newTitle, applyText),
             apply: (view, completion, applyFrom, applyTo) => {
                 view.dispatch({
                     changes: { from: applyFrom, to: applyTo, insert: applyText },
@@ -59,21 +100,35 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
         });
     }
 
-    for (const id of store.blockOrder) {
-        const b = store.blocksById[id];
-        if (!b) continue;
-        // filter blocks so we only suggest ones matching query
-        if (queryLabel && !b.label.toLowerCase().includes(fullQueryLabel.toLowerCase()) && !b.title.toLowerCase().includes(queryLabel.toLowerCase())) {
-            continue;
+    const matches = store.blockOrder.flatMap(id => {
+        const block = store.blocksById[id];
+        if (!block) return [];
+        const relativeText = parentLabel && block.label.startsWith(parentLabel + "/")
+            ? block.label.slice(parentLabel.length) : null;
+        if (isRelative && !relativeText) return [];
+        const searchableLabel = isRelative ? relativeText! : block.label;
+        if (queryLabel && !searchableLabel.toLowerCase().includes(queryLabel.toLowerCase()) &&
+            !block.title.toLowerCase().includes(queryLabel.toLowerCase())) return [];
+        return [{ block, relativeText }];
+    });
+    const suffixCounts = new Map<string, number>();
+    for (const { block } of matches) {
+        const segments = splitPath(block.label);
+        for (let count = 1; count <= segments.length; count++) {
+            const key = JSON.stringify(segments.slice(-count));
+            suffixCounts.set(key, (suffixCounts.get(key) || 0) + 1);
         }
-
-        const applyText = encodeEmbeddedLabel(b.label);
-
+    }
+    for (const { block, relativeText } of matches) {
+        const applyText = isRelative
+            ? encodeEmbeddedLabel(relativeText!, { relative: true })
+            : encodeEmbeddedLabel(block.label);
         options.push({
-            label: applyText, // `label` is the primary searchable string and default insertion text
-            displayLabel: b.label,
-            detail: b.title && b.title !== b.label ? b.title : "",
-            type: "text",
+            label: applyText,
+            displayLabel: `${isRelative ? "relative · " : ""}${distinguishingPath(block.label, suffixCounts)}`,
+            detail: block.title && block.title !== block.label ? block.title : "",
+            type: "link",
+            info: () => completionPreview(block.label, block.title, applyText),
             apply: (view, completion, applyFrom, applyTo) => {
                 view.dispatch({
                     changes: { from: applyFrom, to: applyTo, insert: applyText },
@@ -81,27 +136,6 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
                 });
             }
         });
-
-        // "account for relative path"
-        if (parentLabel && b.label.startsWith(parentLabel + "/")) {
-            const relText = b.label.slice(parentLabel.length); // starts with "/"
-            if (!queryLabel || relText.toLowerCase().includes(queryLabel.toLowerCase()) || b.title.toLowerCase().includes(queryLabel.toLowerCase())) {
-                const applyRelText = encodeEmbeddedLabel(relText, { relative: true });
-                
-                options.push({
-                    label: applyRelText,
-                    displayLabel: relText,
-                    detail: b.title && b.title !== b.label ? b.title : "",
-                    type: "text",
-                    apply: (view, completion, applyFrom, applyTo) => {
-                        view.dispatch({
-                            changes: { from: applyFrom, to: applyTo, insert: applyRelText },
-                            annotations: Transaction.userEvent.of("input.complete")
-                        });
-                    }
-                });
-            }
-        }
     }
 
     // Make sure we apply based on the calculated full range inside brackets

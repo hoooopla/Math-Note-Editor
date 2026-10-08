@@ -169,7 +169,8 @@ function canSettleExplicitReopen(dom: HTMLElement) {
     // KaTeX emits source-less decorative <img> elements. Only a real note
     // image can still load and change the measured body height.
     if (Array.from(dom.querySelectorAll<HTMLImageElement>('img')).some(image =>
-        image.hasAttribute('src') && (!image.complete || image.naturalWidth === 0)
+        image.hasAttribute('src') && image.dataset.imageReserved !== 'true' && image.dataset.imageFailed !== 'true'
+            && (!image.complete || image.naturalWidth === 0)
     )) return false;
     const panelRect = dom.closest<HTMLElement>('[role="tabpanel"]')?.getBoundingClientRect();
     if (!panelRect) return false;
@@ -2447,7 +2448,8 @@ export const embedKeymap: KeyBinding[] = [
                         const newText = `[[${inner}]]`;
                         view.dispatch({
                             changes: { from: link.from, to: link.to, insert: newText },
-                            selection: { anchor: link.from + newText.length }
+                            selection: { anchor: link.from + newText.length },
+                            userEvent: "input"
                         });
 
                         preserveEmbeddedTogglePosition(view, link.from, initialY);

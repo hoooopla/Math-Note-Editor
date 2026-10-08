@@ -4,9 +4,11 @@ import { api as backendApi, createDefaultEditorSettings, EditorSettings, Workspa
 import { metadataText } from '../lib/block-metadata';
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 import { SafeRelabelPlan } from '../lib/safe-relabel';
+import { AssetMovePlan } from '../lib/safe-asset-move';
 import { DuplicateLabelIssue, findDuplicateLabelIssues } from '../lib/workspace-validation';
 import { resetEmbeddedEditorLifecycle } from '../lib/embedded-editor-lifecycle';
 import { resetEmbeddedPrefetchWorkspace } from '../lib/embedded-prefetch';
+import { invalidateImageAsset, resetImageResourceWorkspace } from '../lib/editor/image-resources';
 
 export interface BlockData {
   id: string;
@@ -33,6 +35,12 @@ interface ClosedTab {
   focusState?: TabFocusState;
 }
 
+interface ImageUploadParams {
+  file: File | null;
+  onInsert: (text: string) => void;
+  assertInsertable: () => void;
+}
+
 export interface AppState {
   isLoaded: boolean;
   isLoadingFiles?: boolean;
@@ -41,6 +49,7 @@ export interface AppState {
   blockIdByLabel: Record<string, string>;
   workspaceIssues: DuplicateLabelIssue[];
   blocksRevision: number;
+  workspaceRevision: number;
   activeBlockId: string | null;
   activePath: string[] | null;
   activeOccurrenceKey: string | null;
@@ -87,13 +96,16 @@ export interface AppState {
   openBlockInTab: (id: string, activate: boolean) => void;
   openBlockNextToActive: (id: string) => void;
   initSync: () => void;
-  saveAsset: (file: File, filename: string) => Promise<string>;
+  saveAsset: (file: File, filename: string, overwrite?: boolean) => Promise<string>;
+  assetRevision: number;
   listAssets: () => Promise<string[]>;
   getAssetUrl: (path: string) => Promise<string>;
+  previewAssetMove: (source: string, destination: string) => Promise<AssetMovePlan>;
+  commitAssetMove: (plan: AssetMovePlan) => Promise<string | undefined>;
   viewOnlyBlocks: Record<string, boolean>;
   toggleViewOnly: (id: string) => void;
-  imageUploadParams: { file: File, onInsert: (text: string) => void } | null;
-  setImageUploadParams: (params: { file: File, onInsert: (text: string) => void } | null) => void;
+  imageUploadParams: ImageUploadParams | null;
+  setImageUploadParams: (params: ImageUploadParams | null) => void;
   persistenceError: string | null;
   blockLoadErrors: Record<string, string>;
   clearPersistenceError: () => void;
@@ -104,6 +116,14 @@ const dirtyBlockVersions = new Map<string, number>();
 const blockSaveChains = new Map<string, Promise<void>>();
 const pendingBlockLabels = new Set<string>();
 let workspaceGeneration = 0;
+let assetMoveInProgress = false;
+let workspaceSwitchInProgress = false;
+
+function beginWorkspaceSwitch() {
+  if (assetMoveInProgress) throw new Error('Finish the image move before changing workspaces.');
+  if (workspaceSwitchInProgress) throw new Error('Another workspace change is still running.');
+  workspaceSwitchInProgress = true;
+}
 
 let eventSource: EventSource | null = null;
 let sessionSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -167,7 +187,9 @@ function stopServerSync() {
 }
 
 function prepareWorkspaceSwitch() {
+  if (assetMoveInProgress) throw new Error('Finish the image move before changing workspaces.');
   resetEmbeddedWorkspaceCaches();
+  resetImageResourceWorkspace();
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('math-note-workspace-reset'));
   stopServerSync();
   if (sessionSaveTimer) {
@@ -183,6 +205,7 @@ function emptyWorkspaceState(
   return {
     ...normalizeBlocks([]),
     blocksRevision: state.blocksRevision + 1,
+    workspaceRevision: state.workspaceRevision + 1,
     isLoaded: false,
     activeBlockId: null,
     activePath: null,
@@ -231,6 +254,7 @@ export const useStore = create<AppState>((set, get) => ({
   blockIdByLabel: cloneLabelIndex(),
   workspaceIssues: [],
   blocksRevision: 0,
+  workspaceRevision: 0,
   activeBlockId: null,
   activePath: null,
   activeOccurrenceKey: null,
@@ -255,14 +279,50 @@ export const useStore = create<AppState>((set, get) => ({
   blockLoadErrors: {},
   clearPersistenceError: () => set({ persistenceError: null }),
   settings: createDefaultEditorSettings({ "\\R": "\\mathbb{R}", "\\N": "\\mathbb{N}" }),
-  saveAsset: async (file: File, filename: string) => {
-    return await backendApi.saveAsset(file, filename);
+  assetRevision: 0,
+  saveAsset: async (file: File, filename: string, overwrite = false) => {
+    const path = await backendApi.saveAsset(file, filename, overwrite);
+    invalidateImageAsset(path);
+    set(state => ({ assetRevision: state.assetRevision + 1 }));
+    return path;
   },
   listAssets: async () => {
     return await backendApi.listAssets();
   },
   getAssetUrl: async (path: string) => {
     return await backendApi.getAssetUrl(path);
+  },
+  previewAssetMove: async (source, destination) => {
+    await get().flushPendingSaves();
+    return backendApi.previewAssetMove(source, destination);
+  },
+  commitAssetMove: async (plan) => {
+    if (assetMoveInProgress) throw new Error('Another image move is still running.');
+    if (workspaceSwitchInProgress) throw new Error('Finish changing workspaces before moving an image.');
+    assetMoveInProgress = true;
+    try {
+      await get().flushPendingSaves();
+      let result: Awaited<ReturnType<typeof backendApi.commitAssetMove>>;
+      try { result = await backendApi.commitAssetMove(plan); }
+      catch (error) {
+        await get().loadBlocks();
+        set(state => ({ assetRevision: state.assetRevision + 1 }));
+        throw error;
+      }
+      invalidateImageAsset(result.plan.source);
+      invalidateImageAsset(result.plan.destination);
+      set(state => {
+        const blocksById = { ...state.blocksById };
+        for (const updated of result.updatedBlocks) {
+          const current = blocksById[updated.id];
+          if (current) blocksById[updated.id] = { ...current, content: updated.content,
+            hasContent: updated.hasContent, references: updated.references };
+        }
+        return { blocksById, assetRevision: state.assetRevision + 1,
+          blocksRevision: state.blocksRevision + 1, persistenceError: null };
+      });
+      return result.warning;
+    } finally { assetMoveInProgress = false; }
   },
   initBackend: async () => {
     await backendApi.init();
@@ -286,7 +346,10 @@ export const useStore = create<AppState>((set, get) => ({
     // The input is cleared after this handler starts; keep its files before awaiting.
     const selectedFiles = Array.from(files);
     set({ isLoadingFiles: true });
+    let beganSwitch = false;
     try {
+    beginWorkspaceSwitch();
+    beganSwitch = true;
     await get().flushPendingSaves();
     const newBlocks: BlockData[] = [];
     let loadedSettings: any = null;
@@ -339,14 +402,22 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({ persistenceError: errorMessage(error) });
     } finally {
+      if (beganSwitch) workspaceSwitchInProgress = false;
       set({ isLoadingFiles: false });
     }
   },
 
   connectLocalFS: async () => {
     set({ isLoadingFiles: true });
+    let beganSwitch = false;
     try {
-      const success = await backendApi.connectLocalFS(() => get().flushPendingSaves());
+      beginWorkspaceSwitch();
+      beganSwitch = true;
+      const success = await backendApi.connectLocalFS(async () => {
+        if (assetMoveInProgress) throw new Error('Finish the image move before changing workspaces.');
+        await get().flushPendingSaves();
+        if (assetMoveInProgress) throw new Error('Finish the image move before changing workspaces.');
+      });
       if (success) {
         prepareWorkspaceSwitch();
         set(state => emptyWorkspaceState(state, {
@@ -361,13 +432,21 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({ persistenceError: errorMessage(error) });
     } finally {
+      if (beganSwitch) workspaceSwitchInProgress = false;
       set({ isLoadingFiles: false });
     }
   },
   connectGoogleDrive: async () => {
     set({ isLoadingFiles: true, persistenceError: null });
+    let beganSwitch = false;
     try {
-      const selected = await backendApi.connectGoogleDrive(() => get().flushPendingSaves());
+      beginWorkspaceSwitch();
+      beganSwitch = true;
+      const selected = await backendApi.connectGoogleDrive(async () => {
+        if (assetMoveInProgress) throw new Error('Finish the image move before changing workspaces.');
+        await get().flushPendingSaves();
+        if (assetMoveInProgress) throw new Error('Finish the image move before changing workspaces.');
+      });
       prepareWorkspaceSwitch();
       set(state => emptyWorkspaceState(state, {
         backendMode: 'google',
@@ -382,11 +461,15 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({ persistenceError: errorMessage(error) });
     } finally {
+      if (beganSwitch) workspaceSwitchInProgress = false;
       set({ isLoadingFiles: false });
     }
   },
   disconnectGoogleDrive: async () => {
+    let beganSwitch = false;
     try {
+      beginWorkspaceSwitch();
+      beganSwitch = true;
       await get().flushPendingSaves();
       await backendApi.disconnectGoogleDrive();
       prepareWorkspaceSwitch();
@@ -397,7 +480,7 @@ export const useStore = create<AppState>((set, get) => ({
       }));
     } catch (error) {
       set({ persistenceError: errorMessage(error) });
-    }
+    } finally { if (beganSwitch) workspaceSwitchInProgress = false; }
   },
   loadSettings: async () => {
     const generation = workspaceGeneration;

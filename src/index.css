@@ -147,6 +147,14 @@ body {
   font-size: 14.5px;
 }
 
+/* Fira Code is also used for raw LaTeX and small UI labels. Keep those
+   characters literal; the selected prose operators opt in below. */
+.cm-math-editing,
+.font-mono {
+  font-variant-ligatures: none !important;
+  font-feature-settings: "calt" 0 !important;
+}
+
 .cm-math-comment { color: var(--math-color-comment, #8b949e) !important; }
 .cm-math-command { color: var(--math-color-command, #61afef) !important; }
 .cm-math-escaped { color: var(--math-color-escaped, #56b6c2) !important; }
@@ -168,6 +176,43 @@ body {
 
 .cm-tooltip-autocomplete > ul {
   background: var(--color-popup) !important;
+}
+
+.cm-tooltip-autocomplete > .cm-completionInfo.cm-link-completion-footer {
+  position: static !important;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  padding: 8px 10px;
+  border-top: 1px solid rgb(255 255 255 / 18%);
+  background: var(--color-popup);
+  color: var(--color-secondary);
+  white-space: normal;
+}
+
+.cm-link-completion-preview {
+  max-height: 8rem;
+  overflow: auto;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.cm-link-completion-preview-row {
+  display: flex;
+  gap: 0.5em;
+  overflow-wrap: anywhere;
+}
+
+.cm-link-completion-preview-caption {
+  flex: none;
+  color: var(--color-secondary);
+}
+
+.cm-link-completion-preview-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-primary);
 }
 
 .cm-tooltip-autocomplete > ul > li[aria-selected="true"] {
@@ -195,10 +240,10 @@ body {
   display: none;
 }
 
-.cm-completionIcon-create:after {
-  content: "+";
-  color: var(--color-accent);
-  font-weight: bold;
+/* Link rows use their path text and footer for identification, not CM6 icons. */
+.cm-tooltip-autocomplete .cm-completionIcon-link,
+.cm-tooltip-autocomplete .cm-completionIcon-link-create {
+  display: none !important;
 }
 
 @layer components {

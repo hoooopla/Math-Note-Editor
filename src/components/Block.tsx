@@ -352,7 +352,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                     onFocus={handleFocus}
                     parentLabel={block.label}
                     visitedLabels={[block.label]}
-                    onImagePaste={(file, insertContent) => setImageUploadParams({ file, onInsert: insertContent })}
+                    onImagePaste={(file, insertContent, assertInsertable) => setImageUploadParams({ file, onInsert: insertContent, assertInsertable })}
                 />
             </div>
             {pendingRelabel && <React.Suspense fallback={<RelabelLoading onCancel={() => setPendingRelabel(null)}/>}><SafeRelabelModal

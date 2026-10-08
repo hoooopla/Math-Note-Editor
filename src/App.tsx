@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { EditorView } from "@codemirror/view";
 import { getOrderedBlocks, useStore } from "./store";
 import { preloadGoogleSignIn } from "./lib/google-drive-workspace";
 import { BlockContainer } from "./components/Block";
@@ -81,6 +82,66 @@ export default function App() {
     const [googleSignInError, setGoogleSignInError] = useState<string | null>(null);
     const [isWorkspaceIssuesOpen, setIsWorkspaceIssuesOpen] = useState(false);
     const previousWorkspaceIssueCount = useRef(0);
+    const editorDragRef = useRef<{ x: number; y: number; content: HTMLElement; moved: boolean } | null>(null);
+    const lastFocusedEditorRef = useRef<EditorView | null>(null);
+    const [imageInsertError, setImageInsertError] = useState('');
+
+    useEffect(() => {
+        const rememberEditor = (event: FocusEvent) => {
+            if (!(event.target instanceof HTMLElement)) return;
+            const view = EditorView.findFromDOM(event.target);
+            if (view) lastFocusedEditorRef.current = view;
+        };
+        document.addEventListener('focusin', rememberEditor);
+        return () => document.removeEventListener('focusin', rememberEditor);
+    }, []);
+
+    const openImagePicker = () => {
+        const panel = document.querySelector<HTMLElement>('[role="tabpanel"][aria-hidden="false"]');
+        const remembered = lastFocusedEditorRef.current;
+        const view = remembered?.dom.isConnected && panel?.contains(remembered.dom)
+            ? remembered
+            : panel?.querySelector<HTMLElement>('.cm-editor') && EditorView.findFromDOM(panel.querySelector<HTMLElement>('.cm-content')!);
+        if (!view || view.state.readOnly) {
+            setImageInsertError('Focus an editable note before inserting an image.');
+            return;
+        }
+        setImageInsertError('');
+        const selection = view.state.selection.main;
+        const originalDoc = view.state.doc;
+        const assertInsertable = () => {
+            if (!view.dom.isConnected || view.state.readOnly || !panel?.contains(view.dom)) {
+                throw new Error('The original note is no longer editable. Open the picker again from the intended note.');
+            }
+            if (view.state.doc !== originalDoc) {
+                throw new Error('The note changed while the image picker was open. Open the picker again at the intended position.');
+            }
+        };
+        setImageUploadParams({
+            file: null,
+            assertInsertable,
+            onInsert: text => {
+                assertInsertable();
+                view.dispatch({ changes: { from: selection.from, to: selection.to, insert: text }, selection: { anchor: selection.from + text.length } });
+                view.focus();
+            }
+        });
+    };
+    useLayoutEffect(() => {
+        const handleInsertImageShortcut = (event: KeyboardEvent) => {
+            if (event.isComposing || backendMode === 'viewer' || imageUploadParams
+                || isMacroModalOpen || isSearchModalOpen || isGraphModalOpen
+                || isBlockMapOpen || isWorkspaceIssuesOpen
+                || !shortcutMatches(event, settings.insertImageShortcut || 'mod+i')) return;
+            // Capture this before CodeMirror handles the same combination as an editor command.
+            event.preventDefault();
+            event.stopPropagation();
+            openImagePicker();
+        };
+        window.addEventListener('keydown', handleInsertImageShortcut, true);
+        return () => window.removeEventListener('keydown', handleInsertImageShortcut, true);
+    }, [backendMode, imageUploadParams, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen,
+        isBlockMapOpen, isWorkspaceIssuesOpen, settings.insertImageShortcut]);
     const closeSettings = React.useCallback(() => {
         setIsMacroModalOpen(false);
         window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
@@ -204,7 +265,7 @@ export default function App() {
                 e.preventDefault();
                 return;
             }
-            if (shortcutMatches(e, settings.searchShortcut || 'meta+k')) {
+            if (shortcutMatches(e, settings.searchShortcut || 'mod+k')) {
                 e.preventDefault();
                 setIsSearchModalOpen(true);
                 return;
@@ -335,7 +396,7 @@ export default function App() {
         >
             <div className="flex h-12 bg-surface border-b border-outline items-center px-4 justify-between shrink-0">
                 <div className="flex items-center gap-4">
-                    <h1 className="text-[16px] font-bold tracking-tight text-primary flex items-center gap-2">
+                    <h1 className="text-[16px] font-bold tracking-tight text-primary flex items-center gap-2 whitespace-nowrap">
                         <Command className="text-accent" size={20} />
                         {isTestMode && (
                             <span
@@ -351,7 +412,7 @@ export default function App() {
                                 DESKTOP
                             </span>
                         )}
-                        NoteFlow
+                        Math Note Editor
                     </h1>
                 </div>
 
@@ -369,11 +430,11 @@ export default function App() {
                         <button
                             onClick={() => void connectGoogleDrive()}
                             disabled={isLoadingFiles || !googleSignInReady}
-                            className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 disabled:opacity-50"
+                            className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors disabled:opacity-50"
                             title="Sign in to Google and choose a Drive folder. This app needs Drive access to edit files in the chosen folder."
+                            aria-label="Google Drive"
                         >
-                            {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <Cloud size={16} />}
-                            Google Drive
+                            {isLoadingFiles ? <Loader2 size={18} className="animate-spin" /> : <Cloud size={18} />}
                         </button>
                     )}
 {backendMode === "none" && (
@@ -402,18 +463,20 @@ export default function App() {
                         <button
                             onClick={() => fileInputRef.current?.click()}
                             disabled={isLoadingFiles}
-                            className="px-3 py-1.5 border border-outline hover:bg-outline rounded-lg font-medium text-sm transition-colors flex items-center gap-2 mr-2 disabled:opacity-50"
+                            className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors disabled:opacity-50"
                             title="View a local folder without changing its files"
+                            aria-label="Read-Only Viewer"
                         >
-                            {isLoadingFiles ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
-                            Read-Only Viewer
+                            {isLoadingFiles ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
                         </button>
                     </>}
                     <button 
                         onClick={() => setIsSearchModalOpen(true)}
-                        className="px-3 py-1.5 text-secondary hover:text-primary hover:bg-outline rounded flex items-center gap-2 text-sm transition-colors border border-transparent hover:border-outline"
+                        className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
+                        title={`Search (${settings.searchShortcut || 'mod+k'})`}
+                        aria-label="Search"
                     >
-                        <Search size={16} /> Search <kbd className="text-xs font-mono bg-base px-1.5 rounded ml-1 border border-outline shadow-sm">{settings.searchShortcut || 'meta+k'}</kbd>
+                        <Search size={18} />
                     </button>
                     <button 
                         onClick={() => setIsGraphModalOpen(true)}
@@ -473,6 +536,13 @@ export default function App() {
                             <X size={16} />
                         </button>
                     </div>
+                </div>
+            )}
+
+            {imageInsertError && (
+                <div role="alert" className="mx-4 mt-3 flex items-center justify-between gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
+                    <span>{imageInsertError}</span>
+                    <button type="button" onClick={() => setImageInsertError('')} aria-label="Dismiss image insertion message"><X size={16} /></button>
                 </div>
             )}
 
@@ -542,9 +612,33 @@ export default function App() {
                             role="tabpanel"
                             aria-hidden={activeTab !== id}
                             className={`absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base ${activeTab === id ? 'visible pointer-events-auto' : 'invisible pointer-events-none'}`}
+                            onMouseDownCapture={(e) => {
+                                const target = e.target;
+                                const content = e.button === 0 && target instanceof Element
+                                    ? target.closest<HTMLElement>('.cm-content')
+                                    : null;
+                                editorDragRef.current = content && target instanceof Element && target.closest('[data-block-root]')
+                                    ? { x: e.clientX, y: e.clientY, content, moved: false }
+                                    : null;
+                            }}
+                            onMouseMoveCapture={(e) => {
+                                const drag = editorDragRef.current;
+                                if (drag && (e.buttons & 1) && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) >= 4) {
+                                    drag.moved = true;
+                                }
+                            }}
                             onClick={(e) => {
+                                const drag = editorDragRef.current;
+                                editorDragRef.current = null;
                                 const target = e.target;
                                 if (target instanceof Element && !target.closest('[data-block-root]')) {
+                                    // A text drag can end on this background and produce a
+                                    // click here. Keep its editor focused; a separate click
+                                    // on empty space should still dismiss the editor.
+                                    if (drag?.moved && drag.content.isConnected) {
+                                        if (!drag.content.contains(document.activeElement)) drag.content.focus({ preventScroll: true });
+                                        return;
+                                    }
                                     setActiveBlock(null);
                                     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
                                 }

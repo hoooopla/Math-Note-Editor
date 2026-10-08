@@ -162,9 +162,11 @@ test('renders existing Drive images and uploads new images into the assets folde
         data.items.add(new File([new Uint8Array(bytes)], 'new.gif', { type: 'image/gif' }));
         element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
     }, Array.from(imageGif));
-    await expect(page.getByRole('heading', { name: 'Upload Image' })).toBeVisible();
-    await page.getByPlaceholder('folder/image.png').fill('figures/new.gif');
-    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Insert image' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'assets', exact: true }).click();
+    await dialog.getByRole('button', { name: 'figures', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Save & insert' }).click();
     await expect.poll(drive.uploadedImage).toBe(true);
     await editor.press('ArrowRight');
     await expect(images).toHaveCount(3);

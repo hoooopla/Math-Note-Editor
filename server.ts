@@ -9,6 +9,9 @@ import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBl
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from "./src/lib/safe-relabel";
 import { atomicWriteFile, backupFile } from "./src/lib/atomic-file";
 import { createBlocksViewFixture } from "./src/lib/blocks-view-fixture";
+import { validateAssetPath } from "./src/lib/asset-reference";
+import { assetMoveRevisionInput, buildAssetMovePlan, replaceAssetImageReferences, AssetMovePlan } from "./src/lib/safe-asset-move";
+import { imageSignatureMatches, validateImageFilename, validateImageUpload } from "./src/lib/image-upload-policy";
 
 const app = express();
 const portArgumentIndex = process.argv.indexOf("--port");
@@ -42,6 +45,21 @@ let sseClients: express.Response[] = [];
 let testSettings: Record<string, unknown> | null = null;
 let testWorkspaceSession: { openTabs: string[]; activeTab: string | null } | null = null;
 const testAssets = new Map<string, { buffer: Buffer; contentType: string }>();
+const assetWriteLocks = new Map<string, Promise<void>>();
+
+async function withAssetWriteLock<T>(assetPath: string, operation: () => Promise<T>): Promise<T> {
+    const previous = assetWriteLocks.get(assetPath) || Promise.resolve();
+    let release = () => {};
+    const lock = new Promise<void>(resolve => { release = resolve; });
+    assetWriteLocks.set(assetPath, lock);
+    await previous;
+    try {
+        return await operation();
+    } finally {
+        release();
+        if (assetWriteLocks.get(assetPath) === lock) assetWriteLocks.delete(assetPath);
+    }
+}
 
 app.get("/api/runtime", (_req, res) => {
     res.json({ testMode: isTestMode, desktop: process.env.MATH_NOTE_DESKTOP === "true", workspaceName: path.basename(WORKSPACE_DIR) });
@@ -180,45 +198,67 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item
 const INITIAL_BLOCKS = [
     {
         id: uuidv4(),
-        title: '0. Welcome to Math Notes 🚀',
+        title: 'Welcome to Math Note Editor',
         label: 'showcase:main',
-        content: "Welcome to **Math Notes**!\n\nThis editor is designed to break down long, complex mathematical treatises into small, composable blocks. You can reference blocks inside other blocks.\n\nTry clicking on the chip below, or moving your cursor inside it and pressing `Enter`:\n[[showcase:embed-1]]\n\nWhen a block is toggled 'open', it expands inline so you can read and edit it directly within the parent block context. Like this:\n[[showcase:embed-2∨]]\n\nUse the + button to create a new root block in its own tab.",
+        content: [
+            "Welcome to **Math Note Editor**. This is an example note: click this sentence and type. Your edits save automatically.",
+            "",
+            "Markdown like syntax are also supported: ",
+            "* **Bold**",
+            "* *Italic*",
+            "* _underline_",
+            "> You may also use > at the start.",
+            "",
+            "**Start here**",
+            "1. Click **+** in the upright corner inside the toolbar to create a note. Its *title* is for reading; its *label* is its link address. Double-click the heading or press **F2** to edit the title and label of the root block of current tab. Each block is saved as a markdown file in the workspace folder.",
+            "2. Click **Search** (shortcut **Cmd/Ctrl+K**) to find a note. To link one while writing, type two opening square brackets and an autocomplete will popup.",
+            "3. This embedded note starts open. Click its title to close and reopen it; click its content to edit that note without leaving this page:",
+            "[[showcase:embed-1∨]]",
+            "",
+            "**Try next:** [[showcase:math || Math]], [[showcase:embed-2 || Nested notes]], [[showcase:aliases || Links]], [[showcase:discover || Finding connections]], and [[showcase:features || Images & workspace∨]]."
+        ].join('\n'),
     },
     {
         id: uuidv4(),
-        title: '0.1 Inline Editing',
+        title: 'An embedded note you can edit',
         label: 'showcase:embed-1',
-        content: "You've successfully opened an embedded block! \n\nNotice how your focus smoothly shifted into this space. Try editing the text here, and press `Esc` or `Enter` or click the header to close it when you are done.\n\nYou can also use `ArrowUp` and `ArrowDown` to seamlessly step into open embedded blocks and out of them.",
+        content: "This text belongs to a separate note. Click here and type something; the change stays with this note even if you close and reopen it.\n\nTry ↑ and ↓ to move across its boundary. With the caret on its title, **Enter** toggles it and **Cmd/Ctrl+Enter** opens it in a tab.",
     },
     {
         id: uuidv4(),
-        title: '0.2 Relative Referencing & Infinite Recursion',
+        title: 'A standout note with a child',
         label: 'showcase:embed-2',
-        content: "Blocks can have paths like `folder:subfolder:block`. You can reference them relatively using a leading `/` in the embed syntax.\n\nFor example, this is `showcase:embed-2`, and there is a block called `showcase:embed-2/child`. Let's embed it!\n[[/child]]\n\nWhat happens if we try to embed `showcase:main` inside here?\n[[showcase:main]]\nCyclic references are automatically detected and stopped to prevent your browser from crashing!",
+        content: "This large title is a *standout embed*: it opens the same way as the smaller linked title above. Notes can also nest. Click the child title in this sentence and watch where **after** moves: before [[/child]] after.\n\nTry ↑/↓ across the visible rows, or ←/→ across a title's edges. The child's short **/child** link means **showcase:embed-2/child** inside this note.",
     },
     {
         id: uuidv4(),
-        title: '0.2.1 Relative Child Block',
+        title: 'A child note',
         label: 'showcase:embed-2/child',
-        content: "I was referenced using `[[/child]]` rather than my full name `showcase:embed-2/child`!",
+        content: "You are editing a note inside another note. Type here, then close and reopen the child; your change remains. With the caret on its title, **Cmd/Ctrl+Enter** opens it in a tab.",
     },
     {
         id: uuidv4(),
-        title: '1. Mathematical Capabilities 🧮',
+        title: 'Write mathematics',
         label: 'showcase:math',
-        content: "Math Notes uses **KaTeX** to provide blazingly fast live previews of your math.\n\nFor block math, write your equations wrapped in `\\[` and `\\]`:\n\\[\n\\mathcal{F}\\{f(t)\\} = \\int_{-\\infty}^{\\infty} f(t) e^{-i\\omega t} dt\n\\]\n\nFor inline math, use single `$`. Try clicking into this equation to see the interactive math tooltip: $\\sum_{v \\in V} \\text{deg}(v) = 2|E|$. It lets you safely edit the raw LaTeX while previewing the outcome immediately above your cursor!",
+        content: "**Inline math** sits in a sentence, like $x^2+y^2=1$. Click it to see the dollar signs around its source.\n\n**Display math** gets a row of its own. Click the equation below to reveal its source and the backslash-bracket markers around it:\n\\[\na^2+b^2=c^2\n\\]\nChange a number and move the caret away to see it render. You can mix math with **bold** and *italic* text.",
     },
     {
         id: uuidv4(),
-        title: '2. Aliases and Block Creation 🪄',
+        title: 'Link and organize notes',
         label: 'showcase:aliases',
-        content: "Sometimes you want to reference a block, but its label doesn't flow correctly in your sentence. Use the `||` double pipe character to set a custom alias!\n\nFor example: For more details, check out the [[showcase:math || math examples]]!\n\n**Creating on the fly:**\nWhat if you want to reference a block that doesn't exist yet?\nType its label inside `[[...]]` and choose the `Create new block` autocomplete option. The new target is created while your focus remains in the source note."
+        content: "Click [[showcase:math || these formulas]]. The words you see are an alias; the link still points to **showcase:math**.\n\nTo make your own link, click the end of this note, type two opening square brackets, and choose an autocomplete result. Type a new label and choose **Create new block** to make a note. A title is what people read; a label is the link address. Double-click a note heading or press **F2** to rename it (on some Macs, **Fn+F2**)."
     },
     {
         id: uuidv4(),
-        title: '3. All Features Showcase 🌟',
+        title: 'Find connections between notes',
+        label: 'showcase:discover',
+        content: "Open [[showcase:math || the math note]], then click the **backlinks count** beside its heading to find notes that link to it.\n\nTry **Search** (**Cmd/Ctrl+K**) for a title or label. The toolbar's **Blocks View** shows the note hierarchy and issues; **Graph View** shows connections. **View Raw Markdown** beside a heading shows what is saved in that note's file."
+    },
+    {
+        id: uuidv4(),
+        title: 'Images and workspace',
         label: 'showcase:features',
-        content: "Here is a quick showcase of **all the formatting** you can use in Math Notes!\n\n**Markdown Styling**\n* You can use **bold text** for emphasis.\n* You can also use *italic text* if you prefer.\n* Or perhaps some _underline text_ to highlight things.\n\n**Mathematics**\nMath features make it easy to write equations, like $e^{i\\pi} + 1 = 0$ inline!\n\nFor more complex formulas, use block math:\n\\[\n\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}\n\\]\n\n**Embedded Blocks**\nYou can easily embed other blocks inline to build up complex thoughts.\nHere is the math page again: [[showcase:math || Math Features∨]]"
+        content: "Click in this note and press **Cmd/Ctrl+I**. The image picker lets you add an image or choose one from the assets folder; you can set its name, width, and description before inserting it. Cancel if you are only exploring.\n\nTry **Settings → General Setting → Manage Assets** to browse images; renaming or moving one there updates its references. Notes are Markdown files in your workspace, and images live in its assets folder. Settings also contains **Backup Recovery**, shortcuts, math macros, and autocomplete."
     }
 ];
 
@@ -429,28 +469,41 @@ async function initBlocks() {
 
 app.post("/api/assets", express.json({limit: '20mb'}), async (req, res) => {
     try {
-        const { filePath, content } = req.body;
+        if (relabelInProgress) return res.status(409).json({ error: 'A workspace transformation is currently running' });
+        const { filePath, content, overwrite } = req.body;
         const { normalized, target: absolutePath } = safeWorkspaceRelativePath(filePath);
         if (!normalized.startsWith('assets/') || normalized === 'assets') return res.status(400).json({error: "Invalid asset path"});
         const assetPath = normalized.slice('assets/'.length);
-        if (typeof content !== 'string' || !/^data:[^;]+;base64,/.test(content)) return res.status(400).json({ error: 'Invalid asset content' });
-        const base64Data = content.replace(/^data:[^;]+;base64,/, "");
+        const pathError = validateAssetPath(assetPath);
+        if (pathError) return res.status(400).json({ error: pathError });
+        const dataUri = typeof content === 'string' ? content.match(/^data:([^;]+);base64,([A-Za-z0-9+/=]+)$/) : null;
+        if (!dataUri) return res.status(400).json({ error: 'Invalid asset content' });
+        const contentType = dataUri[1].toLowerCase();
+        const base64Data = dataUri[2];
         const buffer = Buffer.from(base64Data, 'base64');
-        if (isTestMode) {
-            const contentType = content.match(/^data:([^;]+);base64,/)?.[1] || 'application/octet-stream';
-            testAssets.set(assetPath, { buffer, contentType });
+        const imageError = validateImageUpload({ type: contentType, size: buffer.length }, 'server');
+        if (imageError) return res.status(400).json({ error: imageError });
+        const nameError = validateImageFilename(assetPath, contentType);
+        if (nameError) return res.status(400).json({ error: nameError });
+        if (!imageSignatureMatches(buffer, contentType)) return res.status(400).json({ error: 'The file does not match its image format.' });
+        await withAssetWriteLock(assetPath, async () => {
+            if (overwrite !== true && (testAssets.has(assetPath) || fsSync.existsSync(absolutePath))) {
+                return res.status(409).json({ error: 'An image with this name already exists. Choose Replace or rename it.' });
+            }
+            if (isTestMode) {
+                testAssets.set(assetPath, { buffer, contentType });
+                return res.json({ success: true, url: `assets/${assetPath}` });
+            }
+            await ensureDir(path.dirname(absolutePath));
+            await writeWorkspaceFile(absolutePath, buffer);
             return res.json({ success: true, url: `assets/${assetPath}` });
-        }
-        await ensureDir(path.dirname(absolutePath));
-        await writeWorkspaceFile(absolutePath, buffer);
-        res.json({ success: true, url: `assets/${assetPath}` });
+        });
     } catch (e) {
         res.status(400).json({ error: String(e) });
     }
 });
 
-app.get("/api/assets-list", async (req, res) => {
-    try {
+async function listWorkspaceAssets(): Promise<string[]> {
         const assetsPath = path.join(BLOCKS_DIR, "assets");
         if (!isTestMode) await ensureDir(assetsPath);
         const files: string[] = Array.from(testAssets.keys());
@@ -465,14 +518,92 @@ app.get("/api/assets-list", async (req, res) => {
             }
         }
         if (fsSync.existsSync(assetsPath)) await scanDir(assetsPath, "");
-        res.json(files);
+        return files.map(file => `assets/${file}`);
+}
+
+app.get("/api/assets-list", async (_req, res) => {
+    try {
+        res.json((await listWorkspaceAssets()).map(file => file.slice('assets/'.length)));
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
 });
 
+async function createAssetMovePlan(sourceInput: string, destinationInput: string) {
+    const source = `assets/${String(sourceInput).replace(/^assets\//, '')}`;
+    const { target } = safeWorkspaceRelativePath(source);
+    const testAsset = testAssets.get(source.slice('assets/'.length));
+    const bytes = testAsset?.buffer || await fs.readFile(target).catch(() => null);
+    const sourceVersion = bytes ? crypto.createHash('sha256').update(bytes).digest('hex') : '';
+    const loadedBefore = new Set(Array.from(blocksMap.entries()).filter(([, block]) => block.content !== undefined).map(([id]) => id));
+    await mapWithConcurrency(Array.from(blocksMap.keys()), 16, ensureBlockContent);
+    const blocks = Array.from(blocksMap.values()).filter((block): block is BlockData & { content: string } => block.content !== undefined);
+    const assets = await listWorkspaceAssets();
+    const plan = buildAssetMovePlan(blocks, assets, sourceInput, destinationInput, sourceVersion);
+    for (const impact of plan.impacts) impact.fileName = blockIdToFileMap.get(impact.blockId);
+    plan.revision = crypto.createHash('sha256').update(assetMoveRevisionInput(blocks, assets, plan)).digest('hex');
+    return { plan, blocks, loadedBefore, bytes, testAsset };
+}
+
+app.post('/api/assets/move/preview', async (req, res) => {
+    let loadedBefore: Set<string> | null = null;
+    try {
+        if (relabelInProgress) return res.status(409).json({ error: 'Another workspace transformation is running' });
+        const prepared = await createAssetMovePlan(req.body?.source, req.body?.destination);
+        loadedBefore = prepared.loadedBefore;
+        res.json(prepared.plan);
+    } catch (error) { res.status(400).json({ error: String(error) }); }
+    finally { if (loadedBefore) restoreLazyBlockBodies(loadedBefore); }
+});
+
+app.post('/api/assets/move/commit', async (req, res) => {
+    if (relabelInProgress) return res.status(409).json({ error: 'Another workspace transformation is running' });
+    relabelInProgress = true;
+    let loadedBefore: Set<string> | null = null;
+    try {
+        const prepared = await createAssetMovePlan(req.body?.source, req.body?.destination);
+        const { plan, blocks, bytes, testAsset } = prepared;
+        loadedBefore = prepared.loadedBefore;
+        if (plan.conflicts.length) return res.status(409).json({ error: plan.conflicts.join(' '), plan });
+        if (!req.body?.revision || req.body.revision !== plan.revision) {
+            return res.status(409).json({ error: 'The workspace or image changed. Review the move again.', plan });
+        }
+        if (!bytes) throw new Error('The source image is missing.');
+        const sourceTarget = safeWorkspaceRelativePath(plan.source).target;
+        const destinationTarget = safeWorkspaceRelativePath(plan.destination).target;
+        if (testAsset) testAssets.set(plan.destination.slice('assets/'.length), testAsset);
+        else {
+            await ensureDir(path.dirname(destinationTarget));
+            await fs.writeFile(destinationTarget, bytes, { flag: 'wx' });
+        }
+        const updatedBlocks = blocks.flatMap(block => {
+            const result = replaceAssetImageReferences(block.content || '', plan.source, plan.destination);
+            return result.references.length ? [{ ...block, content: result.content,
+                references: computeReferences(result.content), hasContent: result.content.trim().length > 0 }] : [];
+        });
+        // Copy first. If writing a note fails, both image paths remain available.
+        await writeRelabelTransaction(updatedBlocks);
+        for (const block of updatedBlocks) blocksMap.set(block.id, block);
+        for (const block of updatedBlocks) notifyClients({ type: 'update', block });
+        let warning: string | undefined;
+        try {
+            if (testAsset) testAssets.delete(plan.source.slice('assets/'.length));
+            else { await backupWorkspaceFile(sourceTarget); await fs.unlink(sourceTarget); }
+        } catch { warning = 'The notes now use the new image, but the original could not be removed. Both copies remain; remove the old one after checking the workspace.'; }
+        res.json({ plan, updatedBlocks, warning });
+    } catch (error) {
+        notifyClients({ type: 'reload' });
+        res.status(500).json({ error: String(error) });
+    } finally {
+        if (loadedBefore) restoreLazyBlockBodies(loadedBefore);
+        relabelInProgress = false;
+    }
+});
+
 app.get(/^\/api\/assets\/(.+)$/, async (req, res) => {
     try {
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', 'sandbox');
         const { normalized, target: absolutePath } = safeWorkspaceRelativePath(`assets/${req.params[0]}`);
         if (!normalized.startsWith('assets/')) return res.status(400).json({ error: 'Invalid asset path' });
         const assetPath = normalized.slice('assets/'.length);
@@ -866,8 +997,11 @@ async function startServer() {
     // Vite middleware for development
     if (!isProduction) {
         const { createServer: createViteServer } = await import("vite");
+        const testHmrPort = PORT <= 55535 ? PORT + 10000 : PORT - 10000;
         const vite = await createViteServer({
-            server: { middlewareMode: true, hmr: isTestMode ? false : undefined },
+            // Middleware-mode Vite still binds its default HMR socket when two
+            // dev servers run. Give each test server a port derived from HTTP.
+            server: { middlewareMode: true, hmr: isTestMode ? { port: testHmrPort } : undefined },
             appType: "spa",
         });
         app.use(vite.middlewares);

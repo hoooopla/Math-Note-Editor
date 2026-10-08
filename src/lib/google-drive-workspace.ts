@@ -194,12 +194,13 @@ async function findAsset(path: string): Promise<DriveFile | null> {
         : null;
 }
 
-async function uploadAsset(file: File, path: string): Promise<void> {
+async function uploadAsset(file: File, path: string, overwrite: boolean): Promise<void> {
     const parts = assetSegments(path);
     if (file.size > MAX_MULTIPART_UPLOAD_BYTES) throw new Error('Google Drive image uploads are limited to 5 MB. Choose a smaller image.');
     const parentId = await assetDirectory(parts.slice(0, -1), true);
     if (!parentId) throw new Error('Could not create the Google Drive assets folder.');
     const existing = await findAsset(path);
+    if (existing && !overwrite) throw new Error('An image with this name already exists. Choose Replace or rename it.');
     if (existing?.version) {
         const latest = await (await driveFetch(`/drive/v3/files/${encodeURIComponent(existing.id)}?fields=id,name,version`)).json() as DriveFile;
         if (latest.version && latest.version !== existing.version) {
@@ -279,10 +280,31 @@ export const googleDriveWorkspace = {
         await scan(assetsId, '');
         return files;
     },
-    async saveAsset(file: File, filename: string): Promise<string> {
+    async saveAsset(file: File, filename: string, overwrite = false): Promise<string> {
         const path = `assets/${filename}`;
-        await uploadAsset(file, path);
+        await uploadAsset(file, path, overwrite);
         return path;
+    },
+    async assetVersion(path: string): Promise<string> {
+        const asset = await findAsset(path);
+        return asset ? `${asset.id}:${asset.version || asset.modifiedTime || ''}` : '';
+    },
+    async copyAsset(source: string, destination: string): Promise<void> {
+        const asset = await findAsset(source);
+        if (!asset) throw new Error('The source asset no longer exists.');
+        if (await findAsset(destination)) throw new Error('An asset already exists at the destination.');
+        const parts = assetSegments(destination);
+        const parentId = await assetDirectory(parts.slice(0, -1), true);
+        if (!parentId) throw new Error('Could not create the destination folder.');
+        await driveFetch(`/drive/v3/files/${encodeURIComponent(asset.id)}/copy?fields=id,name,version`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: parts.at(-1), parents: [parentId] })
+        });
+    },
+    async deleteAsset(path: string): Promise<void> {
+        const asset = await findAsset(path);
+        if (!asset) throw new Error('The source asset no longer exists.');
+        await driveFetch(`/drive/v3/files/${encodeURIComponent(asset.id)}`, { method: 'DELETE' });
     },
     async loadBlocks(): Promise<BlockData[]> {
         const markdown = (await listFiles()).filter(file => file.mimeType !== FOLDER_MIME && file.name.toLowerCase().endsWith('.md'));

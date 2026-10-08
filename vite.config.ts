@@ -103,7 +103,9 @@ export default defineConfig(({mode}) => {
       VitePWA({
         registerType: 'autoUpdate',
         devOptions: {
-          enabled: true
+          // The disposable test server must not register a persistent worker:
+          // it would otherwise serve yesterday's editor after a reload.
+          enabled: !process.argv.includes('--test-mode')
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,json}'],
@@ -158,7 +160,7 @@ export default defineConfig(({mode}) => {
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // File watching is disabled for workspace data to avoid reloads during saves.
-      watch: { ignored: ['**/blocks/**', '**/macros.json'] },
+      watch: { ignored: ['**/blocks/**', '**/macros.json', '**/.playwright-results/**', '**/dist/**', '**/desktop-server/**', '**/dev-dist/**'] },
       hmr: process.env.DISABLE_HMR !== 'true',
     },
   };

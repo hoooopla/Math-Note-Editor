@@ -463,7 +463,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                             });
                         });
                     }}
-                    onImagePaste={(file, insertContent) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent })}
+                    onImagePaste={(file, insertContent, assertInsertable) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent, assertInsertable })}
                     onEsc={() => toggleOpen()}
                     onFocus={() => {
                         promoteEmbeddedOccurrence(instanceKey);

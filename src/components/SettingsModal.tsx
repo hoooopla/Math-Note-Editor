@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
-import { X, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
+import { X, Plus, Trash2, ArrowUp, ArrowDown, ChevronDown, Image as ImageIcon } from 'lucide-react';
 import { BackupRecovery } from './BackupRecovery';
+import { ManageAssets } from './ManageAssets';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -28,6 +29,17 @@ const isValidShortcut = (value: string) => {
         && /^(?:[a-z0-9]|f(?:[1-9]|1[0-2])|tab|enter|space|escape|backspace|delete|arrow(?:up|down|left|right)|\/)$/.test(key);
 };
 
+const shortcutIdentity = (value: string) => {
+    const parts = value.split('+');
+    const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+    const modifiers = new Set(parts.slice(0, -1).map(part => {
+        if (part === 'cmd') return 'meta';
+        if (part === 'mod') return isMac ? 'meta' : 'ctrl';
+        return part;
+    }));
+    return `${[...modifiers].sort().join('+')}+${parts.at(-1)}`;
+};
+
 const settingsTabs = [
     { id: 'general', label: 'General Setting' },
     { id: 'keyboard', label: 'Keyboard Shortcuts' },
@@ -45,6 +57,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const saveSettings = useStore(state => state.saveSettings);
     const backendMode = useStore(state => state.backendMode);
     const workspaceName = useStore(state => state.workspaceName);
+    const workspaceRevision = useStore(state => state.workspaceRevision);
     const connectLocalFS = useStore(state => state.connectLocalFS);
     const connectGoogleDrive = useStore(state => state.connectGoogleDrive);
     const disconnectGoogleDrive = useStore(state => state.disconnectGoogleDrive);
@@ -58,10 +71,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+    const [manageAssetsOpen, setManageAssetsOpen] = useState(false);
     const [localMacros, setLocalMacros] = useState<Array<{key: string, value: string}>>([]);
     const [localCommands, setLocalCommands] = useState<string[]>([]);
     const [localTextCommands, setLocalTextCommands] = useState<string[]>([]);
-    const [localSearchShortcut, setLocalSearchShortcut] = useState<string>('meta+k');
+    const [localSearchShortcut, setLocalSearchShortcut] = useState<string>('mod+k');
+    const [localInsertImageShortcut, setLocalInsertImageShortcut] = useState<string>('mod+i');
     const [localEditMetadataShortcut, setLocalEditMetadataShortcut] = useState<string>('f2');
     const [localGoToParentShortcut, setLocalGoToParentShortcut] = useState<string>('mod+shift+arrowup');
     const [localCloseTabShortcut, setLocalCloseTabShortcut] = useState<string>('mod+w');
@@ -116,7 +131,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalMacros(Object.entries(settings.macros || {}).map(([key, value]) => ({ key, value })));
             setLocalCommands([...(settings.customCommands || [])]);
             setLocalTextCommands([...(settings.textCommands || [])]);
-            setLocalSearchShortcut(settings.searchShortcut || 'meta+k');
+            setLocalSearchShortcut(settings.searchShortcut || 'mod+k');
+            setLocalInsertImageShortcut(settings.insertImageShortcut || 'mod+i');
             setLocalEditMetadataShortcut(settings.editMetadataShortcut || 'f2');
             setLocalGoToParentShortcut(settings.goToParentShortcut || 'mod+shift+arrowup');
             setLocalCloseTabShortcut(settings.closeTabShortcut || 'mod+w');
@@ -247,6 +263,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
         const normalizedShortcuts = {
             search: localSearchShortcut.trim().toLowerCase(),
+            insertImage: localInsertImageShortcut.trim().toLowerCase(),
             editMetadata: localEditMetadataShortcut.trim().toLowerCase(),
             goToParent: localGoToParentShortcut.trim().toLowerCase(),
             closeTab: localCloseTabShortcut.trim().toLowerCase(),
@@ -255,9 +272,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             previousTab: localPreviousTabShortcut.trim().toLowerCase()
         };
         for (const [name, shortcut] of Object.entries(normalizedShortcuts)) {
-            if (!isValidShortcut(shortcut)) errors.push(`${({ search: 'Search', editMetadata: 'Edit block metadata', goToParent: 'Go to parent', closeTab: 'Close tab', reopenTab: 'Reopen tab', nextTab: 'Next tab', previousTab: 'Previous tab' } as Record<string, string>)[name]} shortcut must be F1–F12 or contain Ctrl, Meta, Cmd, or Mod plus one supported key.`);
+            if (!isValidShortcut(shortcut)) errors.push(`${({ search: 'Search', insertImage: 'Insert image', editMetadata: 'Edit block metadata', goToParent: 'Go to parent', closeTab: 'Close tab', reopenTab: 'Reopen tab', nextTab: 'Next tab', previousTab: 'Previous tab' } as Record<string, string>)[name]} shortcut must be F1–F12 or contain Ctrl, Meta, Cmd, or Mod plus one supported key.`);
         }
-        const shortcutValues = Object.values(normalizedShortcuts);
+        const shortcutValues = Object.values(normalizedShortcuts).map(shortcutIdentity);
         if (new Set(shortcutValues).size !== shortcutValues.length) {
             errors.push('Keyboard shortcuts must be unique.');
         }
@@ -317,6 +334,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             customCommands: newCommands,
             textCommands: newTextCommands,
             searchShortcut: normalizedShortcuts.search,
+            insertImageShortcut: normalizedShortcuts.insertImage,
             editMetadataShortcut: normalizedShortcuts.editMetadata,
             goToParentShortcut: normalizedShortcuts.goToParent,
             closeTabShortcut: normalizedShortcuts.closeTab,
@@ -722,6 +740,19 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         {persistenceError && <p className="mt-3 text-xs text-red-500" role="alert">{persistenceError}</p>}
                                     </>}
                                 </div>
+                                <details className="group mt-4 overflow-hidden rounded-lg border border-outline bg-base/40" onToggle={event => setManageAssetsOpen(event.currentTarget.open)}>
+                                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 marker:hidden hover:bg-outline/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent [&::-webkit-details-marker]:hidden">
+                                        <span className="flex min-w-0 items-start gap-2.5">
+                                            <ImageIcon size={16} className="mt-0.5 shrink-0 text-secondary" />
+                                            <span className="min-w-0">
+                                                <span className="block text-sm font-semibold text-primary">Manage Assets</span>
+                                                <span className="mt-1 block text-xs text-secondary">Browse images and safely rename or move one.</span>
+                                            </span>
+                                        </span>
+                                        <ChevronDown size={16} className="shrink-0 text-secondary transition-transform group-open:rotate-180" />
+                                    </summary>
+                                    {manageAssetsOpen && <ManageAssets key={workspaceRevision} />}
+                                </details>
                                 <BackupRecovery />
                             </div>
                         )}
@@ -750,6 +781,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <div>
                                                 <label htmlFor="settings-search-shortcut" className="text-sm font-medium text-primary">Global search</label>
                                                 <p className="text-xs text-secondary">Opens note search from anywhere in the application.</p>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-[minmax(180px,auto)_1fr] gap-3 rounded-lg border border-outline bg-base/40 px-3 py-3">
+                                            <input
+                                                id="settings-insert-image-shortcut"
+                                                aria-label="Insert image shortcut"
+                                                type="text"
+                                                value={localInsertImageShortcut}
+                                                onChange={event => setLocalInsertImageShortcut(event.target.value)}
+                                                placeholder="e.g. mod+i"
+                                                className="w-full rounded border border-outline bg-surface px-3 py-2 text-xs font-mono text-primary focus:border-accent focus:outline-none"
+                                            />
+                                            <div>
+                                                <label htmlFor="settings-insert-image-shortcut" className="text-sm font-medium text-primary">Insert image</label>
+                                                <p className="text-xs text-secondary">Opens the image picker for the focused note. Mod means Cmd on Mac or Ctrl on Windows/Linux.</p>
                                             </div>
                                         </div>
                                         <div className="grid grid-cols-[minmax(180px,auto)_1fr] gap-3 rounded-lg border border-outline bg-base/40 px-3 py-3">

@@ -70,7 +70,7 @@ export interface CodeMirrorEditorProps {
     visitedLabels?: string[];
     occurrencePath?: string[];
     onEsc?: () => void;
-    onImagePaste?: (file: File, insertContent: (text: string) => void) => void;
+    onImagePaste?: (file: File, insertContent: (text: string) => void, assertInsertable: () => void) => void;
     onReady?: (view: EditorView) => void;
 }
 
@@ -554,7 +554,12 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     key: "Shift-Tab",
                     run: (view) => indentBlockMath(view, true)
                 }]),
-                autocompletion({ override: [latexCompletion, linkCompletion, textCompletion] }),
+                autocompletion({
+                    override: [latexCompletion, linkCompletion, textCompletion],
+                    // Link completions provide their exact target and insertion text
+                    // as CM6 selection info. Keep that info under the scrolling list.
+                    positionInfo: () => ({ class: "cm-link-completion-footer", style: "position: static" })
+                }),
                 EditorView.domEventHandlers({
                     keydown: (e, view) => {
                         if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Backspace", "Delete"].includes(e.key)) {
@@ -589,15 +594,25 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                                 const file = e.clipboardData.files[i];
                                 if (file.type.startsWith("image/")) {
                                     if (onImagePasteRef.current) {
-                                        const cursorPos = view.state.selection.main.head;
+                                        const selection = view.state.selection.main;
+                                        const originalDoc = view.state.doc;
+                                        const assertInsertable = () => {
+                                            if (!view.dom.isConnected || view.state.readOnly) {
+                                                throw new Error('The original note is no longer editable. Paste the image again in the intended note.');
+                                            }
+                                            if (view.state.doc !== originalDoc) {
+                                                throw new Error('The note changed while the image picker was open. Paste the image again at the intended position.');
+                                            }
+                                        };
                                         e.preventDefault();
                                         onImagePasteRef.current(file, (text) => {
+                                            assertInsertable();
                                             view.dispatch({
-                                                changes: { from: cursorPos, insert: text },
-                                                selection: { anchor: cursorPos + text.length }
+                                                changes: { from: selection.from, to: selection.to, insert: text },
+                                                selection: { anchor: selection.from + text.length }
                                             });
                                             view.focus();
-                                        });
+                                        }, assertInsertable);
                                         return true;
                                     }
                                 }
@@ -673,7 +688,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                         overflow: "visible"
                     },
                     "&.cm-focused": { outline: "none" },
-                    ".cm-content": { caretColor: "var(--color-accent)", padding: "0", color: "var(--color-primary) !important", fontFamily: "var(--font-sans) !important", fontVariantLigatures: "contextual !important", fontFeatureSettings: '"calt" 1 !important' },
+                    ".cm-content": { caretColor: "var(--color-accent)", padding: "0", color: "var(--color-primary) !important", fontFamily: "var(--font-sans) !important" },
                     ".cm-cursor, .cm-dropCursor": { borderLeftWidth: "2px !important", borderLeftColor: "var(--color-accent) !important" },
                     "&.cm-embedded-object-selected .cm-cursor": { display: "none !important" },
                     ".cm-line": { padding: "0", lineHeight: "1.6" },

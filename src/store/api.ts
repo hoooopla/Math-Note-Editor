@@ -4,6 +4,9 @@ import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter
 import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from '../lib/safe-relabel';
 import { googleDriveWorkspace } from '../lib/google-drive-workspace';
+import { decodedAssetPath, encodedAssetReference, validateAssetPath } from '../lib/asset-reference';
+import { assetMoveRevisionInput, buildAssetMovePlan, replaceAssetImageReferences, AssetMovePlan } from '../lib/safe-asset-move';
+import { imageSignatureMatches, validateImageFilename, validateImageUpload } from '../lib/image-upload-policy';
 
 export { computeReferences, parseFrontmatter } from '../lib/block-metadata';
 
@@ -12,6 +15,7 @@ export interface EditorSettings {
     customCommands: string[];
     textCommands: string[];
     searchShortcut?: string;
+    insertImageShortcut?: string;
     editMetadataShortcut?: string;
     goToParentShortcut?: string;
     closeTabShortcut?: string;
@@ -75,7 +79,8 @@ export function createDefaultEditorSettings(macros: Record<string, string> = {})
         macros: { ...macros },
         customCommands: [],
         textCommands: [],
-        searchShortcut: "meta+k",
+        searchShortcut: "mod+k",
+        insertImageShortcut: "mod+i",
         editMetadataShortcut: "f2",
         goToParentShortcut: "mod+shift+arrowup",
         closeTabShortcut: "mod+w",
@@ -126,9 +131,11 @@ export interface BackendApi {
     saveWorkspaceSession: (session: WorkspaceSession) => Promise<void>;
     listBackups: () => Promise<WorkspaceBackup[]>;
     restoreBackup: (path: string) => Promise<void>;
-    saveAsset: (file: File, filename: string) => Promise<string>;
+    saveAsset: (file: File, filename: string, overwrite?: boolean) => Promise<string>;
     listAssets: () => Promise<string[]>;
     getAssetUrl: (path: string) => Promise<string>;
+    previewAssetMove: (source: string, destination: string) => Promise<AssetMovePlan>;
+    commitAssetMove: (plan: AssetMovePlan) => Promise<{ plan: AssetMovePlan; updatedBlocks: BlockData[]; warning?: string }>;
     setViewerFiles: (files: readonly File[]) => void;
     loadBlocks: () => Promise<BlockData[]>;
     loadBlockContent: (id: string) => Promise<BlockData | null>;
@@ -230,6 +237,36 @@ const shortHash = (text: string) => {
     return (hash >>> 0).toString(16);
 };
 
+const localAssetLocation = async (path: string, createDirectory = false) => {
+    if (!dirHandle) throw new Error('No writable workspace is connected');
+    const relative = path.replace(/^assets\//, '');
+    const error = validateAssetPath(relative);
+    if (error) throw new Error(error);
+    const parts = relative.split('/');
+    const root = await dirHandle.getDirectoryHandle('assets', { create: createDirectory });
+    const directory = await getDirectoryForPath(root, parts.slice(0, -1), createDirectory);
+    return { directory, name: parts.at(-1)! };
+};
+
+const assetContentVersion = async (file: File) => {
+    const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+};
+
+const createClientAssetMovePlan = async (source: string, destination: string) => {
+    const blocks = api.mode === 'google' ? await loadAllGoogleBlocks() : await loadAllLocalBlocks();
+    const assets = (await api.listAssets()).map(path => path.startsWith('assets/') ? path : `assets/${path}`);
+    let sourceVersion = '';
+    if (api.mode === 'google') sourceVersion = await googleDriveWorkspace.assetVersion(source);
+    else {
+        try { const location = await localAssetLocation(source); sourceVersion = await assetContentVersion(await (await location.directory.getFileHandle(location.name)).getFile()); }
+        catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
+    }
+    const plan = buildAssetMovePlan(blocks, assets, source, destination, sourceVersion);
+    plan.revision = shortHash(assetMoveRevisionInput(blocks, assets, plan));
+    return { plan, blocks };
+};
+
 const loadAllLocalBlocks = async (): Promise<BlockData[]> => {
     if (!dirHandle) return [];
     const metadata = await api.loadBlocks();
@@ -255,10 +292,7 @@ const requireOk = async (response: Response, operation: string) => {
     throw new Error(`${operation} failed (${response.status})${detail}`);
 };
 
-const portableAssetPath = (value: string): string | null => {
-    const match = value.match(/^(?:\/api\/)?assets\/(.+)$/);
-    return match ? `assets/${match[1]}` : null;
-};
+const portableAssetPath = decodedAssetPath;
 
 const getFileLocationByBlockId = async (
     id: string,
@@ -461,8 +495,17 @@ export const api: BackendApi = {
         await replaceLocalFile(targetHandle, backupContents);
         if (currentContents) await replaceLocalFile(backupHandle, currentContents);
     },
-    saveAsset: async (file, filename) => {
-        if (api.mode === 'google') return googleDriveWorkspace.saveAsset(file, filename);
+    saveAsset: async (file, filename, overwrite = false) => {
+        const pathError = validateAssetPath(filename);
+        if (pathError) throw new Error(pathError);
+        const fileError = validateImageUpload(file, api.mode);
+        if (fileError) throw new Error(fileError);
+        const nameError = validateImageFilename(filename, file.type);
+        if (nameError) throw new Error(nameError);
+        if (!imageSignatureMatches(new Uint8Array(await file.slice(0, 64).arrayBuffer()), file.type)) {
+            throw new Error('The selected file does not match its image format.');
+        }
+        if (api.mode === 'google') return googleDriveWorkspace.saveAsset(file, filename, overwrite);
         if (useServer) {
             const base64: string = await new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -473,7 +516,7 @@ export const api: BackendApi = {
             const res = await fetch('/api/assets', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filePath: 'assets/' + filename, content: base64 }),
+                body: JSON.stringify({ filePath: 'assets/' + filename, content: base64, overwrite }),
             });
             await requireOk(res, 'Saving asset');
             const json = await res.json();
@@ -495,6 +538,7 @@ export const api: BackendApi = {
                 existed = false;
                 fileHandle = await currentDir.getFileHandle(assetName, { create: true });
             }
+            if (existed && !overwrite) throw new Error('An image with this name already exists. Choose Replace or rename it.');
             await writeLocalFile({
                 handle: fileHandle,
                 directory: currentDir,
@@ -503,36 +547,34 @@ export const api: BackendApi = {
             }, file, existed);
             return 'assets/' + filename; 
         }
-        return '';
+        throw new Error('Connect a writable workspace before saving an image.');
     },
     listAssets: async () => {
         if (api.mode === 'google') return googleDriveWorkspace.listAssets();
         if (useServer) {
-            try {
-                const res = await fetch('/api/assets-list');
-                await requireOk(res, 'Listing assets');
-                return await res.json();
-            } catch {
-                return [];
-            }
+            const res = await fetch('/api/assets-list');
+            await requireOk(res, 'Listing assets');
+            return await res.json();
         }
         if (api.mode === "local" && dirHandle) {
             const files: string[] = [];
+            let assetsDir: FileSystemDirectoryHandle;
             try {
-                const assetsDir = await dirHandle.getDirectoryHandle('assets', { create: false });
-                async function scanDir(handle: FileSystemDirectoryHandle, currentPath = '') {
-                    for await (const entry of handle.values()) {
-                        if (entry.kind === 'file') {
-                            files.push(currentPath ? `${currentPath}/${entry.name}` : entry.name);
-                        } else if (entry.kind === 'directory') {
-                            await scanDir(entry, currentPath ? `${currentPath}/${entry.name}` : entry.name);
-                        }
+                assetsDir = await dirHandle.getDirectoryHandle('assets', { create: false });
+            } catch (error) {
+                if (error instanceof DOMException && error.name === 'NotFoundError') return [];
+                throw error;
+            }
+            async function scanDir(handle: FileSystemDirectoryHandle, currentPath = '') {
+                for await (const entry of handle.values()) {
+                    if (entry.kind === 'file') {
+                        files.push(currentPath ? `${currentPath}/${entry.name}` : entry.name);
+                    } else if (entry.kind === 'directory') {
+                        await scanDir(entry, currentPath ? `${currentPath}/${entry.name}` : entry.name);
                     }
                 }
-                await scanDir(assetsDir);
-            } catch(e) {
-                // assets dir might not exist
             }
+            await scanDir(assetsDir);
             return files;
         }
         if (api.mode === "viewer") return Array.from(viewerAssets.keys());
@@ -557,7 +599,7 @@ export const api: BackendApi = {
         const assetPath = portableAssetPath(path);
         if (api.mode === 'google' && assetPath) return googleDriveWorkspace.getAssetUrl(assetPath);
         if (useServer) {
-            if (assetPath) return `/api/${assetPath}`;
+            if (assetPath) return `/api/${encodedAssetReference(assetPath)}`;
             return path; // fallback
         }
         if (api.mode === "local" && dirHandle) {
@@ -582,6 +624,79 @@ export const api: BackendApi = {
             if (file) return URL.createObjectURL(file);
         }
         return path;
+    },
+    previewAssetMove: async (source, destination) => {
+        if (api.mode === 'viewer' || api.mode === 'none') throw new Error('Connect a writable workspace to manage assets.');
+        if (useServer) {
+            const res = await fetch('/api/assets/move/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source, destination }) });
+            await requireOk(res, 'Previewing asset move');
+            return await res.json();
+        }
+        return (await createClientAssetMovePlan(source, destination)).plan;
+    },
+    commitAssetMove: async (preview) => {
+        if (api.mode === 'viewer' || api.mode === 'none') throw new Error('Connect a writable workspace to manage assets.');
+        if (useServer) {
+            const res = await fetch('/api/assets/move/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(preview) });
+            await requireOk(res, 'Moving asset');
+            return await res.json();
+        }
+        const { plan, blocks } = await createClientAssetMovePlan(preview.source, preview.destination);
+        if (plan.conflicts.length) throw new Error(plan.conflicts.join(' '));
+        if (plan.revision !== preview.revision) throw new Error('The workspace or image changed. Review the move again.');
+        if (api.mode === 'google') await googleDriveWorkspace.copyAsset(plan.source, plan.destination);
+        else {
+            const source = await localAssetLocation(plan.source);
+            const destination = await localAssetLocation(plan.destination, true);
+            const sourceFile = await (await source.directory.getFileHandle(source.name)).getFile();
+            try { await destination.directory.getFileHandle(destination.name); throw new Error('An asset appeared at the destination. Review the move again.'); }
+            catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
+            const destinationHandle = await destination.directory.getFileHandle(destination.name, { create: true });
+            await replaceLocalFile(destinationHandle, sourceFile);
+        }
+        const updatedBlocks = blocks.flatMap(block => {
+            const result = replaceAssetImageReferences(block.content || '', plan.source, plan.destination);
+            return result.references.length ? [{ ...block, content: result.content, references: computeReferences(result.content), hasContent: result.content.trim().length > 0 }] : [];
+        });
+        if (api.mode === 'google') {
+            const written: BlockData[] = [];
+            try {
+                for (const block of updatedBlocks) written.push(await googleDriveWorkspace.updateBlock(block));
+            } catch (error) {
+                for (const block of written) {
+                    const original = blocks.find(candidate => candidate.id === block.id);
+                    if (original) await googleDriveWorkspace.updateBlock(original).catch(() => {});
+                }
+                throw new Error(`Could not update every note. The original and copied image remain available. ${String(error)}`);
+            }
+            let warning: string | undefined;
+            try { await googleDriveWorkspace.deleteAsset(plan.source); }
+            catch { warning = 'The notes now use the new image, but the original could not be removed. Both copies remain; remove the old one after checking the workspace.'; }
+            return { plan, updatedBlocks: written, warning };
+        }
+        const prepared = await Promise.all(updatedBlocks.map(async block => {
+            const file = await getFileLocationByBlockId(block.id);
+            if (!file) throw new Error(`Could not find the file for “${block.title}”.`);
+            return { block, file, original: await (await file.handle.getFile()).text() };
+        }));
+        const written: typeof prepared = [];
+        try {
+            for (const item of prepared) {
+                written.push(item);
+                await writeLocalFile(item.file, stringifyFrontmatter({ id: item.block.id, title: item.block.title, label: item.block.label }, item.block.content || ''));
+            }
+        } catch (error) {
+            for (const item of written) await replaceLocalFile(item.file.handle, item.original).catch(() => {});
+            throw new Error(`Could not update every note. The original and copied image remain available. ${String(error)}`);
+        }
+        const source = await localAssetLocation(plan.source);
+        const handle = await source.directory.getFileHandle(source.name);
+        let warning: string | undefined;
+        try {
+            await backupLocalFile({ handle, directory: source.directory, name: source.name, relativePath: plan.source });
+            await source.directory.removeEntry(source.name);
+        } catch { warning = 'The notes now use the new image, but the original could not be removed. Both copies remain; remove the old one after checking the workspace.'; }
+        return { plan, updatedBlocks, warning };
     },
     loadBlocks: async () => {
         if (useServer) {
