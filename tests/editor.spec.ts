@@ -144,12 +144,27 @@ async function openEditor(page: Page) {
 }
 
 async function replaceEditorText(page: Page, editor: Locator, text: string) {
-    await editor.focus();
-    await expect(editor).toBeFocused();
+    // CodeMirror may replace its content DOM while an earlier save finishes.
+    // Re-resolve and focus the locator until the current content node owns focus.
+    await expect(async () => {
+        await editor.focus();
+        await expect(editor).toBeFocused({ timeout: 500 });
+    }).toPass({ timeout: 5_000 });
     // Playwright's contenteditable fill emits one deterministic input update.
     // Character-by-character typing is slow for large documents and the
     // platform's Select All shortcut can race CodeMirror's focus effects.
     await editor.fill(text);
+}
+
+async function expectCaretToOverlapRow(caret: Locator, row: Locator, tolerance = 2) {
+    await expect.poll(async () => {
+        const [caretRect, rowRect] = await Promise.all([
+            caret.evaluate(element => element.getBoundingClientRect().toJSON()),
+            row.evaluate(element => element.getBoundingClientRect().toJSON())
+        ]);
+        return caretRect.top < rowRect.bottom + tolerance
+            && caretRect.bottom > rowRect.top - tolerance;
+    }).toBe(true);
 }
 
 test('first-run guide teaches core workflows and all its example links resolve', async ({ request, page }) => {
@@ -2866,19 +2881,11 @@ test('moves up into the visible suffix before an open embedded body', async ({ p
     await page.keyboard.press('Home');
     await page.keyboard.press('ArrowUp');
 
-    const suffixRect = await rootEditor.getByText(', we get', { exact: true })
-        .evaluate(element => element.getBoundingClientRect().toJSON());
-    const caretRect = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
-        .evaluate(element => element.getBoundingClientRect().toJSON());
-    expect(caretRect.top).toBeLessThan(suffixRect.bottom);
-    expect(caretRect.bottom).toBeGreaterThan(suffixRect.top);
+    const caret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary');
+    await expectCaretToOverlapRow(caret, rootEditor.getByText(', we get', { exact: true }));
     await expect(page.getByTestId(`embedded-editor-host-${child.id}`).locator('.cm-focused')).toHaveCount(0);
     await page.keyboard.press('ArrowDown');
-    const nextRect = await nextRow.evaluate(element => element.getBoundingClientRect().toJSON());
-    const returnedCaret = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
-        .evaluate(element => element.getBoundingClientRect().toJSON());
-    expect(returnedCaret.top).toBeLessThan(nextRect.bottom);
-    expect(returnedCaret.bottom).toBeGreaterThan(nextRect.top);
+    await expectCaretToOverlapRow(caret, nextRow);
 });
 
 test('moves up from display math into the preceding open embed suffix', async ({ page }) => {
@@ -4675,7 +4682,7 @@ test('inserts images with a customizable shortcut and no toolbar button', async 
     await page.getByRole('tab', { name: 'Keyboard Shortcuts' }).click();
     const shortcut = page.getByLabel('Insert image shortcut');
     await expect(shortcut).toHaveValue('mod+i');
-    await shortcut.fill('cmd+k');
+    await shortcut.fill('mod+k');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect(page.getByRole('alert')).toContainText('Keyboard shortcuts must be unique.');
     await shortcut.fill('mod+shift+i');
