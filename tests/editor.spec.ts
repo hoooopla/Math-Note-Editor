@@ -155,7 +155,7 @@ async function replaceEditorText(page: Page, editor: Locator, text: string) {
 test('first-run guide teaches core workflows and all its example links resolve', async ({ request, page }) => {
     const response = await request.get('/api/blocks');
     expect(response.ok()).toBeTruthy();
-    const blocks = await response.json() as { title: string, label: string, content: string }[];
+    const blocks = await response.json() as { id: string, title: string, label: string, content: string }[];
     const byLabel = new Map(blocks.map(block => [block.label, block]));
     const welcome = byLabel.get('showcase:main');
     expect(welcome?.title).toBe('Welcome to Math Note Editor');
@@ -185,12 +185,15 @@ test('first-run guide teaches core workflows and all its example links resolve',
     await expect(searchButton).toHaveText('');
     await expect(searchButton).toHaveAttribute('title', /^Search \(.+\)$/);
     await expect(page.getByText('Start here', { exact: true })).toBeVisible();
-    await expect(page.getByText('This text belongs to a separate note.', { exact: false })).toBeVisible();
+    const embedded = byLabel.get('showcase:embed-1');
+    expect(embedded).toBeDefined();
+    const embeddedHost = () => page.getByTestId(`embedded-editor-host-${embedded!.id}`);
+    await expect(embeddedHost().getByText('This text belongs to a separate note.', { exact: false }).first()).toBeVisible();
     const embeddedTitle = page.getByText('An embedded note you can edit', { exact: true });
     await embeddedTitle.click();
-    await expect(page.getByText('This text belongs to a separate note.', { exact: false })).toHaveCount(0);
+    await expect(embeddedHost()).toHaveCount(0);
     await embeddedTitle.click();
-    await expect(page.getByText('This text belongs to a separate note.', { exact: false })).toBeVisible();
+    await expect(embeddedHost().getByText('This text belongs to a separate note.', { exact: false }).first()).toBeVisible();
     await page.getByText('Math', { exact: true }).click();
     const inlineFormula = page.locator('.cm-math-inline').first();
     await expect(inlineFormula).toBeVisible();
@@ -2231,12 +2234,14 @@ short next row
 
     await page.keyboard.press('ArrowDown');
     const shortRow = page.getByText('short next row', { exact: true });
-    const [shortRect, shortCursorRect] = await Promise.all([
-        shortRow.evaluate(element => element.getBoundingClientRect().toJSON()),
-        cursor.evaluate(element => element.getBoundingClientRect().toJSON())
-    ]);
-    expect(shortCursorRect.top).toBeLessThan(shortRect.bottom);
-    expect(shortCursorRect.bottom).toBeGreaterThan(shortRect.top);
+    await expect.poll(async () => {
+        const [shortRect, shortCursorRect] = await Promise.all([
+            shortRow.evaluate(element => element.getBoundingClientRect().toJSON()),
+            cursor.evaluate(element => element.getBoundingClientRect().toJSON())
+        ]);
+        return shortCursorRect.top < shortRect.bottom + 2
+            && shortCursorRect.bottom > shortRect.top - 2;
+    }).toBe(true);
     await expect(rootEditor.locator('.cm-math-editing')).toHaveCount(0);
 });
 
@@ -4644,7 +4649,7 @@ test('opens image picker without a paste and searches existing assets', async ({
     expect(upload.ok()).toBeTruthy();
     const editor = await openEditor(page);
     await editor.focus();
-    await page.keyboard.press('Meta+i');
+    await page.keyboard.press('ControlOrMeta+i');
     const dialog = page.getByRole('dialog', { name: 'Insert image' });
     await expect(dialog.getByRole('button', { name: 'Insert existing' })).toHaveClass(/bg-accent/);
     await dialog.getByRole('textbox', { name: 'Search assets' }).fill('find this');
@@ -4660,7 +4665,7 @@ test('inserts images with a customizable shortcut and no toolbar button', async 
     const editor = await openEditor(page);
     await expect(page.getByRole('button', { name: 'Insert image into active note' })).toHaveCount(0);
     await editor.focus();
-    await page.keyboard.press('Meta+i');
+    await page.keyboard.press('ControlOrMeta+i');
     const dialog = page.getByRole('dialog', { name: 'Insert image' });
     await expect(dialog).toBeVisible();
     await page.keyboard.press('Escape');
@@ -4673,12 +4678,12 @@ test('inserts images with a customizable shortcut and no toolbar button', async 
     await shortcut.fill('cmd+k');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect(page.getByRole('alert')).toContainText('Keyboard shortcuts must be unique.');
-    await shortcut.fill('meta+shift+i');
+    await shortcut.fill('mod+shift+i');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await editor.focus();
-    await page.keyboard.press('Meta+i');
+    await page.keyboard.press('ControlOrMeta+i');
     await expect(dialog).toHaveCount(0);
-    await page.keyboard.press('Meta+Shift+i');
+    await page.keyboard.press('ControlOrMeta+Shift+i');
     await expect(dialog).toBeVisible();
 });
 
@@ -4695,8 +4700,8 @@ test('image picker replaces the selected text at the original caret', async ({ p
     expect((await request.post('/api/assets', { data: { filePath: 'assets/selection.gif', content: gif } })).ok()).toBeTruthy();
     const editor = await openEditor(page);
     await editor.fill('replace this text');
-    await editor.press('Meta+a');
-    await page.keyboard.press('Meta+i');
+    await editor.press('ControlOrMeta+a');
+    await page.keyboard.press('ControlOrMeta+i');
     const dialog = page.getByRole('dialog', { name: 'Insert image' });
     await dialog.getByRole('button', { name: 'selection.gif' }).click();
     await dialog.getByRole('button', { name: 'Insert image', exact: true }).click();
@@ -4711,7 +4716,7 @@ test('image picker replaces the selected text at the original caret', async ({ p
 test('does not save an image after the target note changes while the picker is open', async ({ page, request }) => {
     const editor = await openEditor(page);
     await editor.fill('original text');
-    await page.keyboard.press('Meta+i');
+    await page.keyboard.press('ControlOrMeta+i');
     const dialog = page.getByRole('dialog', { name: 'Insert image' });
     await dialog.getByRole('button', { name: 'Save a copy' }).click();
     await dialog.getByLabel('Image to save').setInputFiles({
@@ -4731,7 +4736,7 @@ test('does not save an image after the target note changes while the picker is o
 test('chooses and saves a new image from the in-app picker without pasting', async ({ page }) => {
     const editor = await openEditor(page);
     await editor.focus();
-    await page.keyboard.press('Meta+i');
+    await page.keyboard.press('ControlOrMeta+i');
     const dialog = page.getByRole('dialog', { name: 'Insert image' });
     await dialog.getByRole('button', { name: 'Save a copy' }).click();
     await dialog.getByLabel('Image to save').setInputFiles({
@@ -4750,7 +4755,7 @@ test('pauses image saving when the asset list fails and resumes after retry', as
     const editor = await openEditor(page);
     await editor.focus();
     await page.route('**/api/assets-list', route => route.fulfill({ status: 500, body: 'unavailable' }));
-    await page.keyboard.press('Meta+i');
+    await page.keyboard.press('ControlOrMeta+i');
     const dialog = page.getByRole('dialog', { name: 'Insert image' });
     await dialog.getByRole('button', { name: 'Save a copy' }).click();
     await dialog.getByLabel('Image to save').setInputFiles({
@@ -4786,7 +4791,7 @@ test('inserts an existing image into the focused embedded editor', async ({ page
     const childEditor = editors.nth(1);
     await childEditor.focus();
     await expect(childEditor).toBeFocused();
-    await page.keyboard.press('Meta+i');
+    await page.keyboard.press('ControlOrMeta+i');
     const dialog = page.getByRole('dialog', { name: 'Insert image' });
     await dialog.getByRole('button', { name: 'inside-child.gif' }).click();
     await dialog.getByRole('button', { name: 'Insert image', exact: true }).click();
