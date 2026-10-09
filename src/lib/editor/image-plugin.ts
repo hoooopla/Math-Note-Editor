@@ -11,23 +11,25 @@ class ImageWidget extends WidgetType {
     private disposed = false;
 
     constructor(readonly src: string, readonly width: string, readonly revision: number,
-        readonly from: number, readonly to: number, readonly geometry: ImageGeometry | null) {
+        readonly from: number, readonly to: number, readonly geometry: ImageGeometry | null,
+        readonly isReadOnly: boolean) {
         super();
     }
 
     eq(other: ImageWidget) {
         return other.src === this.src && other.width === this.width && other.revision === this.revision
             && other.from === this.from && other.to === this.to
+            && other.isReadOnly === this.isReadOnly
             && other.geometry?.width === this.geometry?.width && other.geometry?.height === this.geometry?.height;
     }
 
     toDOM(view: EditorView) {
         const span = document.createElement("span");
         span.className = "cm-image-widget";
-        span.title = "Click to edit image source";
-        span.style.cursor = "text";
+        span.title = this.isReadOnly ? this.src : "Click to edit image source";
+        span.style.cursor = this.isReadOnly ? "default" : "text";
         span.addEventListener('pointerdown', event => {
-            if (event.button !== 0 || !view.dom.isConnected) return;
+            if (event.button !== 0 || !view.dom.isConnected || view.state.readOnly) return;
             event.preventDefault();
             event.stopPropagation();
             // The selection intersects the replaced range, so the next decoration
@@ -164,14 +166,15 @@ function buildImageDecorations(view: EditorView) {
             if (inCode) continue;
             const src = match.src;
             const width = match.width;
-            const hasSelectionInside = selection.from <= end && selection.to >= start;
+            const hasSelectionInside = !view.state.readOnly && selection.from <= end && selection.to >= start;
 
             if (!hasSelectionInside) {
                 decos.push({
                     from: start,
                     to: end,
                     deco: Decoration.replace({
-                        widget: new ImageWidget(src, width, useStore.getState().assetRevision, start, end, match.geometry || null)
+                        widget: new ImageWidget(src, width, useStore.getState().assetRevision, start, end,
+                            match.geometry || null, view.state.readOnly)
                     })
                 });
             }
@@ -195,6 +198,7 @@ export const imagePlugin = ViewPlugin.fromClass(class {
     }
     update(update: ViewUpdate) {
         if (update.docChanged || update.selectionSet || update.focusChanged || update.viewportChanged ||
+            update.startState.readOnly !== update.state.readOnly ||
             update.transactions.some(transaction => transaction.effects.some(effect => effect.is(refreshImages)))) {
             this.decorations = buildImageDecorations(update.view);
         }

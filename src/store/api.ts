@@ -66,6 +66,7 @@ export interface EditorSettings {
 export interface WorkspaceSession {
     openTabs: string[];
     activeTab: string | null;
+    lockedTabs?: string[];
 }
 
 export interface WorkspaceBackup {

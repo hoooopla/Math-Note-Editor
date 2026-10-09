@@ -6,6 +6,7 @@ import { MathTitle } from "./MathTitle";
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from "../lib/label-policy";
 import { BacklinksPopover } from "./BacklinksPopover";
 import { buildBacklinkIndex } from "../lib/backlinks";
+import { isIPhoneOrIPad } from "../lib/ios-device";
 
 const SafeRelabelModal = React.lazy(() => import("./SafeRelabelModal").then(module => ({ default: module.SafeRelabelModal })));
 
@@ -81,7 +82,14 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     }, [block.label, blocksRevision]);
     const hasDuplicateLabel = useStore(state => state.workspaceIssues.some(issue => issue.blocks.some(candidate => candidate.id === block.id)));
     const repairDuplicateLabel = useStore(state => state.repairDuplicateLabel);
-    const isViewOnly = hasDuplicateLabel || (isViewOnlyState ?? (backendMode === "viewer"));
+    const isIOSDevice = isIPhoneOrIPad();
+    const activeTabId = useStore(state => state.activeTab);
+    const isLocked = hasDuplicateLabel || (isViewOnlyState ?? (backendMode === "viewer"));
+    const [mobileEditMode, setMobileEditMode] = useState(false);
+    const isTouchReading = isIOSDevice && !mobileEditMode;
+    const isViewOnly = isLocked || isTouchReading;
+    const hasViewerDrafts = useStore(state => Object.keys(state.viewerDraftBlockIds).length > 0);
+    const resetViewerDrafts = useStore(state => state.resetViewerDrafts);
     const setImageUploadParams = useStore(state => state.setImageUploadParams);
     const [isEditingMeta, setIsEditingMeta] = useState(false);
     const [titleInput, setTitleInput] = useState(block.title);
@@ -94,14 +102,18 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
 
     const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
+    useEffect(() => {
+        if (activeTabId !== block.id || isLocked) setMobileEditMode(false);
+    }, [activeTabId, block.id, isLocked]);
+
     const beginMetaEdit = useCallback(() => {
-        if (backendMode === "viewer") return;
+        if (isViewOnly) return;
         setActive(block.id, null, [block.label]);
         setTitleInput(block.title);
         setLabelInput(block.label);
         setError(null);
         setIsEditingMeta(true);
-    }, [backendMode, block.id, block.label, block.title, setActive]);
+    }, [isViewOnly, block.id, block.label, block.title, setActive]);
 
     useLayoutEffect(() => {
         const handleEditRequest = (event: Event) => {
@@ -225,8 +237,9 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                             <div className="relative flex items-center gap-2">
                                 <input 
                                     aria-label="Block label"
+                                    disabled={backendMode === "viewer"}
                                     maxLength={512}
-                                    className={`bg-base text-secondary px-2 py-1 rounded outline-none border ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} text-xs tracking-widest font-sans max-w-[150px]`}
+                                    className={`bg-base text-secondary px-2 py-1 rounded outline-none border ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} text-xs tracking-widest font-sans max-w-[150px] disabled:cursor-not-allowed disabled:opacity-60`}
                                     value={labelInput}
                                     onChange={e => {
                                         setError(null);
@@ -267,7 +280,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                     )}
                 </div>
                 
-                {isFocused && (
+                {(isFocused || isIOSDevice) && (
                     <div className="relative flex items-center gap-2">
                         {nearestParentId && nearestParentLabel && (
                             <button
@@ -313,13 +326,13 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                         )}
                         <button
                             onClick={(e) => { e.stopPropagation(); useStore.getState().toggleViewOnly(block.id); }}
-                            className="text-secondary hover:text-accent transition-colors opacity-0 group-hover:opacity-100 flex items-center"
+                            className={`text-secondary hover:text-accent transition-colors flex items-center ${isLocked || isIOSDevice ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
                             disabled={hasDuplicateLabel}
-                            title={hasDuplicateLabel ? "Rename the duplicate label before editing" : isViewOnly ? "Unlock for editing" : "Lock for view-only"}
+                            title={hasDuplicateLabel ? "Rename the duplicate label before editing" : isLocked ? "Unlock for editing" : "Lock for view-only"}
                         >
-                            {isViewOnly ? <Lock size={16} /> : <Unlock size={16} />}
+                            {isLocked ? <Lock size={16} /> : <Unlock size={16} />}
                         </button>
-                        {isConfirmingDelete ? (
+                        {backendMode !== "viewer" && !isViewOnly && (isConfirmingDelete ? (
                             <div className="flex items-center gap-1 opacity-100 bg-red-500/10 text-red-500 rounded px-2 py-0.5" onClick={e => e.stopPropagation()}>
                                 <span className="text-xs font-sans mr-1">Delete?</span>
                                 <button onClick={() => deleteBlock(block.id)} className="hover:text-red-400 p-0.5"><Check size={14} /></button>
@@ -333,11 +346,33 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                             >
                                 <Trash2 size={16} />
                             </button>
-                        )}
+                        ))}
                     </div>
                 )}
             </div>
 
+            {isIOSDevice && !isLocked && (
+                <div className="flex items-center justify-between gap-3 border-b border-outline px-4 py-2 text-sm text-secondary" data-testid="mobile-reading-controls">
+                    <span>{isTouchReading ? 'Reading' : 'Editing'}</span>
+                    <button type="button" className="min-h-11 rounded-lg bg-accent/15 px-4 font-semibold text-accent" onClick={() => {
+                        if (mobileEditMode) {
+                            setMobileEditMode(false);
+                            setActive(null);
+                            if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+                        } else {
+                            setMobileEditMode(true);
+                            setActive(block.id, 'start', [block.label]);
+                            setFocusRequestKey(key => key + 1);
+                        }
+                    }}>{isTouchReading ? 'Edit' : 'Done'}</button>
+                </div>
+            )}
+            {backendMode === "viewer" && !isViewOnly && (
+                <div className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200" role="status" data-testid="viewer-draft-banner">
+                    <span>Preview editing — changes stay in memory and will not be saved.</span>
+                    {hasViewerDrafts && <button type="button" className="shrink-0 rounded px-2 py-1 font-semibold hover:bg-amber-400/15" onClick={resetViewerDrafts}>Reset preview changes</button>}
+                </div>
+            )}
             <div className="p-4 relative font-sans text-primary min-h-[3rem] z-20">
                 <CodeMirrorEditor 
                     content={block.content} 
@@ -352,7 +387,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                     onFocus={handleFocus}
                     parentLabel={block.label}
                     visitedLabels={[block.label]}
-                    onImagePaste={(file, insertContent, assertInsertable) => setImageUploadParams({ file, onInsert: insertContent, assertInsertable })}
+                    onImagePaste={backendMode === "viewer" ? undefined : (file, insertContent, assertInsertable) => setImageUploadParams({ file, onInsert: insertContent, assertInsertable })}
                 />
             </div>
             {pendingRelabel && <React.Suspense fallback={<RelabelLoading onCancel={() => setPendingRelabel(null)}/>}><SafeRelabelModal

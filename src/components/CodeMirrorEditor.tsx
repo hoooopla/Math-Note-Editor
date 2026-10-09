@@ -10,7 +10,7 @@ import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, c
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
 import { textCompletion } from "../lib/editor/text-autocomplete";
-import { clearEmbeddedVisualMove, embeddedAtomicRanges, embeddedBlockPlugin, embeddedObjectInputHandler, embeddedObjectSelectionField, parentLabelFacet, visitedLabelsFacet, occurrencePathFacet, parsedLinksField, embedTooltipField, enterOpenEmbeddedAtEnd, runEmbeddedKey, runEmbeddedGroupNavigation, openEmbeddedTargetInTab } from "../lib/editor/embedded-block-plugin";
+import { clearEmbeddedVisualMove, clearTransientEmbeddedOpen, embeddedAtomicRanges, embeddedBlockPlugin, embeddedObjectInputHandler, embeddedObjectSelectionField, parentLabelFacet, visitedLabelsFacet, occurrencePathFacet, parsedLinksField, transientEmbeddedOpenField, embedTooltipField, enterOpenEmbeddedAtEnd, runEmbeddedKey, runEmbeddedGroupNavigation, openEmbeddedTargetInTab } from "../lib/editor/embedded-block-plugin";
 import { runLogicalVerticalNavigation, scheduleFinalNavigationReveal } from "../lib/editor/logical-navigation";
 import { ligaturePlugin } from "../lib/editor/ligature-plugin";
 import { imagePlugin } from "../lib/editor/image-plugin";
@@ -507,6 +507,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 mathTooltipField,
                 mathPlugin,
                 parsedLinksField,
+                transientEmbeddedOpenField,
                 embeddedObjectSelectionField,
                 EditorView.editorAttributes.of(view => ({
                     class: view.state.field(embeddedObjectSelectionField, false)
@@ -750,17 +751,18 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
     useLayoutEffect(() => {
         if (!viewRef.current) return;
         viewRef.current.dispatch({
-            effects: readOnlyCompartmentRef.current.reconfigure([
+            effects: [readOnlyCompartmentRef.current.reconfigure([
                 EditorState.readOnly.of(!!isReadOnly),
                 EditorView.editable.of(!isReadOnly)
-            ])
+            ]), setEditorFocus.of(!isReadOnly && isFocused), ...(!isReadOnly ? [clearTransientEmbeddedOpen.of(null)] : [])]
         });
+        if (isReadOnly && viewRef.current.hasFocus) viewRef.current.contentDOM.blur();
     }, [isReadOnly, isDormant]);
 
     useEffect(() => {
         let focusRetryFrame: number | null = null;
         if (viewRef.current) {
-            viewRef.current.dispatch({ effects: setEditorFocus.of(isFocused) });
+            viewRef.current.dispatch({ effects: setEditorFocus.of(!isReadOnly && isFocused) });
         }
 
         const isDOMFocused = viewRef.current ? (
@@ -768,7 +770,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
             (containerRef.current ? containerRef.current.contains(document.activeElement) : false)
         ) : false;
 
-        if (isFocused && !isDormant && viewRef.current) {
+        if (!isReadOnly && isFocused && !isDormant && viewRef.current) {
             const editorView = viewRef.current;
             let forwardedToFinalEmbed = false;
             if (!isDOMFocused && (focusDirection === "end" || focusDirection === "start")) {
@@ -827,7 +829,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         return () => {
             if (focusRetryFrame !== null) cancelAnimationFrame(focusRetryFrame);
         };
-    }, [isFocused, isDormant, focusDirection, focusX, focusRequestKey]);
+    }, [isReadOnly, isFocused, isDormant, focusDirection, focusX, focusRequestKey]);
 
     // Sync external content changes
     useEffect(() => {
@@ -889,6 +891,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         ref={containerRef}
         className="w-full"
         data-editor-dormant={isDormant ? "true" : "false"}
+        data-editor-read-only={isReadOnly ? "true" : "false"}
         data-editor-wants-focus={isFocused ? "true" : "false"}
     />;
 }

@@ -430,7 +430,8 @@ class MathWidget extends WidgetType {
         public isBlock: boolean,
         public macros: Record<string, string>,
         public isLinked = false,
-        public isQuoted = false
+        public isQuoted = false,
+        public isReadOnly = false
     ) {
         super();
         this.heightEstimate = isBlock
@@ -443,6 +444,7 @@ class MathWidget extends WidgetType {
                this.isBlock === other.isBlock && 
                this.isLinked === other.isLinked &&
                this.isQuoted === other.isQuoted &&
+               this.isReadOnly === other.isReadOnly &&
                this.heightEstimate === other.heightEstimate &&
                JSON.stringify(this.macros) === JSON.stringify(other.macros);
     }
@@ -457,22 +459,56 @@ class MathWidget extends WidgetType {
             ? "cm-math-block cm-math-rendered text-center border border-transparent hover:border-accent/50 hover:bg-accent/5 rounded-lg transition-all"
             : `cm-math-inline${this.isQuoted ? " cm-quote-math" : ""}`;
         span.className = baseClass;
-        span.style.cursor = "text";
+        span.style.cursor = this.isReadOnly ? "default" : "text";
+        span.dataset.mathReadOnly = String(this.isReadOnly);
 
-        const handleFocus = (e: Event) => {
+        const focusSource = (e: Event, pos: number) => {
+            if (view.state.readOnly) return;
             e.preventDefault();
             e.stopPropagation();
-            const pos = view.posAtDOM(span);
             view.dispatch({
                 selection: { anchor: pos },
                 effects: setEditorFocus.of(true)
             });
             view.focus();
         };
+        const handleFocus = (e: Event) => focusSource(e, view.posAtDOM(span));
 
-        if (!this.isLinked) {
-            span.addEventListener("mousedown", handleFocus);
-            span.addEventListener("touchstart", handleFocus, { passive: false });
+        if (!this.isLinked && !this.isReadOnly) {
+            let lastPointerType = 'mouse';
+            span.addEventListener("pointerdown", event => { lastPointerType = (event as PointerEvent).pointerType; });
+            // Let the browser decide whether a touch is a scroll. Reveal the
+            // source only after a stationary touch ends. Listen on window
+            // because CodeMirror may replace this widget during the gesture.
+            span.addEventListener("touchstart", event => {
+                lastPointerType = 'touch';
+                const touch = (event as TouchEvent).touches[0];
+                if (!touch) return;
+                const position = view.posAtDOM(span);
+                const startX = touch.clientX;
+                const startY = touch.clientY;
+                let moved = false;
+                const cleanup = () => {
+                    window.removeEventListener('touchmove', onMove, true);
+                    window.removeEventListener('touchend', onEnd, true);
+                    window.removeEventListener('touchcancel', cleanup, true);
+                };
+                const onMove = (move: TouchEvent) => {
+                    const current = move.touches[0];
+                    if (current && Math.hypot(current.clientX - startX, current.clientY - startY) > 8) moved = true;
+                };
+                const onEnd = (end: TouchEvent) => {
+                    cleanup();
+                    if (!moved && view.dom.isConnected) focusSource(end, position);
+                };
+                window.addEventListener('touchmove', onMove, { capture: true, passive: true });
+                window.addEventListener('touchend', onEnd, { capture: true, passive: false });
+                window.addEventListener('touchcancel', cleanup, { capture: true, once: true });
+            }, { passive: true });
+            span.addEventListener("mousedown", event => {
+                if (lastPointerType === 'touch') return;
+                handleFocus(event);
+            });
         }
 
         try {
@@ -517,7 +553,8 @@ class MathWidget extends WidgetType {
     }
 
     updateDOM(dom: HTMLElement) {
-        return this.isBlock && dom.dataset.mathRenderKey === blockMathHeightKey(this.text, this.macros);
+        return this.isBlock && dom.dataset.mathRenderKey === blockMathHeightKey(this.text, this.macros)
+            && dom.dataset.mathReadOnly === String(this.isReadOnly);
     }
 
     destroy(dom: HTMLElement) {
@@ -678,7 +715,7 @@ function buildBlockMathDecorations(state: EditorState) {
     const decos: DecorationEntry[] = [];
 
     for (const range of state.field(parsedRangesField).filter(range => range.type === "blockMath")) {
-        const overlapping = isFocused !== false && selection.from <= range.to && selection.to >= range.from;
+        const overlapping = !state.readOnly && isFocused !== false && selection.from <= range.to && selection.to >= range.from;
         if (overlapping || !range.text) {
             decos.push({
                 from: range.from,
@@ -700,7 +737,7 @@ function buildBlockMathDecorations(state: EditorState) {
                 from: range.from,
                 to: range.to,
                 deco: Decoration.replace({
-                    widget: new MathWidget(range.text, true, macros),
+                    widget: new MathWidget(range.text, true, macros, false, false, state.readOnly),
                     block: true
                 })
             });
@@ -719,6 +756,7 @@ export const blockMathDecorationField = StateField.define<DecorationSet>({
             before.field(parsedRangesField) === after.field(parsedRangesField) &&
             before.selection.eq(after.selection) &&
             before.field(editorFocusField) === after.field(editorFocusField) &&
+            before.readOnly === after.readOnly &&
             before.facet(livePreviewMacros) === after.facet(livePreviewMacros)) return value;
         return buildBlockMathDecorations(after);
     },
@@ -745,7 +783,7 @@ function buildLiveDecorations(view: EditorView) {
         if (!isVisible && !containsSelection) continue;
 
         let overlapping = false;
-        if (isFocused !== false) {
+        if (!state.readOnly && isFocused !== false) {
             if (r.type === "quote") {
                 overlapping = selection.from <= r.from + 2 && selection.to >= r.from;
             } else {
@@ -815,7 +853,7 @@ function buildLiveDecorations(view: EditorView) {
                     candidate.type === "quote" && candidate.from <= r.from && candidate.to >= r.to
                 );
                 decos.push({from: r.from, to: r.to, deco: Decoration.replace({
-                    widget: new MathWidget(r.text, false, macros, isLinked, isQuoted)
+                    widget: new MathWidget(r.text, false, macros, isLinked, isQuoted, state.readOnly)
                 })});
             }
         }
@@ -834,7 +872,8 @@ export const mathPlugin = ViewPlugin.fromClass(class {
     update(update: ViewUpdate) {
         const macrosChanged = update.state.facet(livePreviewMacros) !== update.startState.facet(livePreviewMacros);
         const focusChanged = update.transactions.some(transaction => transaction.effects.some(effect => effect.is(setEditorFocus)));
-        if (update.docChanged || update.selectionSet || update.viewportChanged || macrosChanged || focusChanged) {
+        if (update.docChanged || update.selectionSet || update.viewportChanged || macrosChanged || focusChanged ||
+            update.startState.readOnly !== update.state.readOnly) {
             this.decorations = buildLiveDecorations(update.view);
         }
     }

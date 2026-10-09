@@ -43,7 +43,7 @@ interface BlockData {
 let blocksMap = new Map<string, BlockData>();
 let sseClients: express.Response[] = [];
 let testSettings: Record<string, unknown> | null = null;
-let testWorkspaceSession: { openTabs: string[]; activeTab: string | null } | null = null;
+let testWorkspaceSession: { openTabs: string[]; activeTab: string | null; lockedTabs: string[] } | null = null;
 const testAssets = new Map<string, { buffer: Buffer; contentType: string }>();
 const assetWriteLocks = new Map<string, Promise<void>>();
 
@@ -691,14 +691,15 @@ app.post('/api/workspace/session', async (req, res) => {
     try {
         const openTabs = Array.isArray(req.body?.openTabs) ? req.body.openTabs.filter((id: unknown) => typeof id === 'string') : [];
         const activeTab = typeof req.body?.activeTab === 'string' && openTabs.includes(req.body.activeTab) ? req.body.activeTab : null;
+        const lockedTabs = Array.isArray(req.body?.lockedTabs) ? req.body.lockedTabs.filter((id: unknown) => typeof id === 'string') : [];
         if (isTestMode) {
-            if (req.body?.persistForTest === true) testWorkspaceSession = { openTabs, activeTab };
+            if (req.body?.persistForTest === true) testWorkspaceSession = { openTabs, activeTab, lockedTabs };
             return res.json({ success: true });
         }
         const settingsPath = path.join(WORKSPACE_DIR, 'setting', 'settings.json');
         const current = JSON.parse(await fs.readFile(settingsPath, 'utf8').catch(() => '{}'));
         await ensureDir(path.dirname(settingsPath));
-        await writeWorkspaceFile(settingsPath, JSON.stringify({ ...current, workspaceSession: { openTabs, activeTab } }, null, 2));
+        await writeWorkspaceFile(settingsPath, JSON.stringify({ ...current, workspaceSession: { openTabs, activeTab, lockedTabs } }, null, 2));
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: String(e) }); }
 });

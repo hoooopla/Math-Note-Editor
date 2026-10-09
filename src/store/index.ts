@@ -104,6 +104,9 @@ export interface AppState {
   commitAssetMove: (plan: AssetMovePlan) => Promise<string | undefined>;
   viewOnlyBlocks: Record<string, boolean>;
   toggleViewOnly: (id: string) => void;
+  viewerOriginalBlocks: Record<string, BlockData>;
+  viewerDraftBlockIds: Record<string, boolean>;
+  resetViewerDrafts: () => void;
   imageUploadParams: ImageUploadParams | null;
   setImageUploadParams: (params: ImageUploadParams | null) => void;
   persistenceError: string | null;
@@ -138,7 +141,11 @@ function persistWorkspaceSession() {
   if (state.backendMode !== 'server' && state.backendMode !== 'local' && state.backendMode !== 'google') return sessionSavePromise;
   sessionSavePromise = sessionSavePromise.then(() => {
     const current = useStore.getState();
-    const workspaceSession = { openTabs: current.openTabs, activeTab: current.activeTab };
+    const workspaceSession = {
+      openTabs: current.openTabs,
+      activeTab: current.activeTab,
+      lockedTabs: Object.entries(current.viewOnlyBlocks).filter(([, locked]) => locked).map(([id]) => id)
+    };
     return backendApi.saveWorkspaceSession(workspaceSession);
   });
   return sessionSavePromise;
@@ -218,6 +225,8 @@ function emptyWorkspaceState(
     tabFocusStates: {},
     closedTabs: [],
     viewOnlyBlocks: {},
+    viewerOriginalBlocks: {},
+    viewerDraftBlockIds: {},
     blockLoadErrors: {},
     settings: createDefaultEditorSettings(),
     persistenceError: null,
@@ -272,6 +281,25 @@ export const useStore = create<AppState>((set, get) => ({
   toggleViewOnly: (id) => set(state => {
     const current = state.viewOnlyBlocks[id] ?? (state.backendMode === "viewer");
     return { viewOnlyBlocks: { ...state.viewOnlyBlocks, [id]: !current } };
+  }),
+  viewerOriginalBlocks: {},
+  viewerDraftBlockIds: {},
+  resetViewerDrafts: () => set(state => {
+    if (Object.keys(state.viewerDraftBlockIds).length === 0) return state;
+    const blocksById = { ...state.blocksById };
+    for (const id of Object.keys(state.viewerDraftBlockIds)) {
+      const original = state.viewerOriginalBlocks[id];
+      if (original) blocksById[id] = { ...original };
+    }
+    const normalized = normalizeBlocks(state.blockOrder.map(blockId => blocksById[blockId]).filter(Boolean));
+    return {
+      blocksById,
+      blockIdByLabel: normalized.blockIdByLabel,
+      workspaceIssues: normalized.workspaceIssues,
+      viewerDraftBlockIds: {},
+      blocksRevision: state.blocksRevision + 1,
+      persistenceError: null
+    };
   }),
   imageUploadParams: null,
   setImageUploadParams: (params) => set({ imageUploadParams: params }),
@@ -383,6 +411,8 @@ export const useStore = create<AppState>((set, get) => ({
     set(state => ({
       ...emptyWorkspaceState(state, { backendMode: 'viewer', workspaceName, googleFolderName: null }),
       ...normalizeBlocks(newBlocks),
+      viewerOriginalBlocks: Object.fromEntries(newBlocks.map(block => [block.id, { ...block }])),
+      viewerDraftBlockIds: {},
       isLoaded: true,
       blockLoadErrors: {}
     }));
@@ -491,7 +521,13 @@ export const useStore = create<AppState>((set, get) => ({
         const validIds = new Set(get().blockOrder);
         const openTabs = (data.workspaceSession?.openTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
         const activeTab = openTabs.includes(data.workspaceSession?.activeTab || '') ? data.workspaceSession!.activeTab : openTabs[0] || null;
-        set({ settings: data, openTabs, activeTab });
+        const lockedTabs = (data.workspaceSession?.lockedTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
+        set({
+          settings: data,
+          openTabs,
+          activeTab,
+          viewOnlyBlocks: Object.fromEntries(lockedTabs.map(id => [id, true]))
+        });
       }
     } catch (e) {
       if (generation !== workspaceGeneration) return;
@@ -503,7 +539,11 @@ export const useStore = create<AppState>((set, get) => ({
     const previousSettings = get().settings;
     const settingsWithSession = {
       ...settings,
-      workspaceSession: { openTabs: get().openTabs, activeTab: get().activeTab }
+      workspaceSession: {
+        openTabs: get().openTabs,
+        activeTab: get().activeTab,
+        lockedTabs: Object.entries(get().viewOnlyBlocks).filter(([, locked]) => locked).map(([id]) => id)
+      }
     };
     try {
       set({ settings: settingsWithSession, persistenceError: null });
@@ -656,6 +696,20 @@ export const useStore = create<AppState>((set, get) => ({
       (current as unknown as Record<string, unknown>)[key] !== value
     );
     if (!hasActualChange) return;
+    if (get().backendMode === 'viewer') {
+      set((state) => {
+        const current = state.blocksById[id];
+        if (!current) return state;
+        const next = { ...current, ...data };
+        return {
+          blocksById: { ...state.blocksById, [id]: next },
+          viewerDraftBlockIds: { ...state.viewerDraftBlockIds, [id]: true },
+          blocksRevision: hasMetadataChange(current, data) ? state.blocksRevision + 1 : state.blocksRevision,
+          persistenceError: null
+        };
+      });
+      return;
+    }
     set((state) => {
       const current = state.blocksById[id];
       if (!current) return state;
@@ -1181,10 +1235,12 @@ async function flushBlockSave(id: string): Promise<void> {
 
 let lastTabs = useStore.getState().openTabs;
 let lastActiveTab = useStore.getState().activeTab;
+let lastViewOnlyBlocks = useStore.getState().viewOnlyBlocks;
 useStore.subscribe((state) => {
-    if (state.openTabs === lastTabs && state.activeTab === lastActiveTab) return;
+    if (state.openTabs === lastTabs && state.activeTab === lastActiveTab && state.viewOnlyBlocks === lastViewOnlyBlocks) return;
     lastTabs = state.openTabs;
     lastActiveTab = state.activeTab;
+    lastViewOnlyBlocks = state.viewOnlyBlocks;
     if (!state.isLoaded || (state.backendMode !== 'server' && state.backendMode !== 'local' && state.backendMode !== 'google')) return;
     if (sessionSaveTimer) clearTimeout(sessionSaveTimer);
     sessionSaveTimer = setTimeout(() => {

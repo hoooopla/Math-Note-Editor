@@ -99,9 +99,14 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     const rootBlock = useStore(state => rootBlockId ? state.blocksById[rootBlockId] : undefined);
     const viewOnlyBlocks = useStore(state => state.viewOnlyBlocks);
     
-    const targetViewOnly = targetBlock ? (viewOnlyBlocks[targetBlock.id] ?? (backendMode === "viewer")) : false;
     const rootViewOnly = rootBlock ? (viewOnlyBlocks[rootBlock.id] ?? (backendMode === "viewer")) : false;
-    const isReadOnly = targetViewOnly || rootViewOnly || !!view?.state.readOnly;
+    const targetHasDuplicateLabel = useStore(state => targetBlock
+        ? state.workspaceIssues.some(issue => issue.blocks.some(candidate => candidate.id === targetBlock.id))
+        : false);
+    // The root lock belongs to this tab. A target locked in another root tab
+    // must not leak into this occurrence, while duplicate-label safety remains
+    // global because editing that target would be ambiguous.
+    const isReadOnly = rootViewOnly || targetHasDuplicateLabel || !!view?.state.readOnly;
 
     const instancePath = useMemo(() => [...visitedLabels, fullLabel], [fullLabel, visitedLabels.join("\u0000")]);
     const occurrenceSegment = `${targetBlock?.id || fullLabel}@${pos ?? "unknown"}`;
@@ -248,6 +253,17 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
             toggleOpen(e);
         }
     };
+    const readOnlyTitleProps = isReadOnly ? {
+        role: "button",
+        tabIndex: 0,
+        "aria-expanded": ifToggled === "open",
+        onKeyDown: (event: React.KeyboardEvent) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            event.stopPropagation();
+            toggleOpen();
+        }
+    } : {};
 
     // if_toggled = closed
     if (ifToggled === "closed") {
@@ -277,6 +293,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
             
             return (
                 <div 
+                    {...readOnlyTitleProps}
                     className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-visible bg-[var(--standout-bg)] hover:bg-[var(--standout-bg-hover)] group/embed`}
                     style={{ 
                         marginLeft: indentWidth > 0 ? `${indentWidth}px` : undefined,
@@ -322,6 +339,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
             const color = hasContent ? filledColor : emptyColor;
             return (
                 <span 
+                    {...readOnlyTitleProps}
                     ref={titleNavigationRef as React.RefObject<HTMLSpanElement>}
                     data-embed-nav-title="true"
                     className="relative inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors opacity-90 hover:opacity-100"
@@ -463,7 +481,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                             });
                         });
                     }}
-                    onImagePaste={(file, insertContent, assertInsertable) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent, assertInsertable })}
+                    onImagePaste={backendMode === "viewer" ? undefined : (file, insertContent, assertInsertable) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent, assertInsertable })}
                     onEsc={() => toggleOpen()}
                     onFocus={() => {
                         promoteEmbeddedOccurrence(instanceKey);
@@ -551,6 +569,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                 style={outerStyle}
             >
                 <span
+                    {...readOnlyTitleProps}
                     className="flex min-w-0 justify-between items-center gap-3 cursor-pointer transition-colors group/embed rounded-t-lg"
                     style={{ 
                         paddingLeft: `${titlePl}px`, 
@@ -630,6 +649,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
         const indentWidth = settings?.inlineBlockIndentWidth ?? 16;
         const title = (
             <span
+                    {...readOnlyTitleProps}
                     ref={titleNavigationRef as React.RefObject<HTMLSpanElement>}
                     data-embed-nav-title="true"
                     className="relative inline border-b-2 border-dotted cursor-pointer mx-1 select-none font-semibold transition-colors opacity-90 hover:opacity-100"

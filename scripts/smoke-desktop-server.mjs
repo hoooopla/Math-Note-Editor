@@ -66,12 +66,14 @@ try {
   const sessionResponse = await fetch(`${url}/api/workspace/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ openTabs: ['tab-a', 'tab-b'], activeTab: 'tab-b' })
+    body: JSON.stringify({ openTabs: ['tab-a', 'tab-b'], activeTab: 'tab-b', lockedTabs: ['tab-a'] })
   });
   if (!sessionResponse.ok) throw new Error('Could not save the workspace tab session.');
   const settingsWithSession = await (await fetch(`${url}/api/settings`)).json();
-  if (settingsWithSession.macros?.['\\C'] !== '\\mathbb{C}' || settingsWithSession.workspaceSession?.activeTab !== 'tab-b') {
-    throw new Error('Saving the workspace tab session overwrote settings or failed to persist the active tab.');
+  if (settingsWithSession.macros?.['\\C'] !== '\\mathbb{C}' ||
+      settingsWithSession.workspaceSession?.activeTab !== 'tab-b' ||
+      settingsWithSession.workspaceSession?.lockedTabs?.[0] !== 'tab-a') {
+    throw new Error('Saving the workspace tab session overwrote settings or failed to persist the active and locked tabs.');
   }
 
   const noteResponse = await fetch(`${url}/api/blocks`, {

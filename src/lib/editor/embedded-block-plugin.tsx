@@ -1,5 +1,5 @@
 import { Decoration, DecorationSet, EditorView, WidgetType, showTooltip, Tooltip, KeyBinding } from "@codemirror/view";
-import { EditorSelection, RangeSetBuilder, StateField, Facet } from "@codemirror/state";
+import { EditorSelection, RangeSetBuilder, StateEffect, StateField, Facet } from "@codemirror/state";
 import { completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { editorFocusField, parsedRangesField, setEditorFocus } from "./katex-plugin";
 import { Root, createRoot } from "react-dom/client";
@@ -16,6 +16,28 @@ import { scheduleFinalCaretReveal } from "./final-caret-reveal";
 export { setEmbeddedObjectSelection } from "./embedded-object-selection";
 
 export type ParsedLink = EmbeddedLinkSyntax & { occurrenceId: number };
+
+export const setTransientEmbeddedOpen = StateEffect.define<{ from: number; open: boolean }>();
+export const clearTransientEmbeddedOpen = StateEffect.define<null>();
+export const transientEmbeddedOpenField = StateField.define<ReadonlyMap<number, boolean>>({
+    create: () => new Map(),
+    update(value, transaction) {
+        let next = value;
+        if (transaction.docChanged && value.size > 0) {
+            next = new Map(Array.from(value, ([from, open]) => [transaction.changes.mapPos(from, 1), open]));
+        }
+        for (const effect of transaction.effects) {
+            if (effect.is(clearTransientEmbeddedOpen)) {
+                next = new Map();
+                continue;
+            }
+            if (!effect.is(setTransientEmbeddedOpen)) continue;
+            if (next === value) next = new Map(value);
+            (next as Map<number, boolean>).set(effect.value.from, effect.value.open);
+        }
+        return next;
+    }
+});
 
 let nextEmbeddedLinkOccurrenceId = 1;
 
@@ -886,6 +908,12 @@ class EmbeddedBlockWidget extends WidgetType {
                     const coords = view.coordsAtPos(this.from);
                     const initialY = coords ? coords.top : 0;
 
+                    if (view.state.readOnly) {
+                        const open = parseEmbeddedText(this.text).open;
+                        view.dispatch({ effects: setTransientEmbeddedOpen.of({ from: this.from, open: !open }) });
+                        preserveEmbeddedTogglePosition(view, this.from, initialY);
+                        return;
+                    }
                     const doc = view.state.doc.toString();
                     const slice = doc.slice(this.from, this.to);
                     if (slice.startsWith("[[") && slice.endsWith("]]")) {
@@ -968,6 +996,12 @@ class EmbeddedBlockWidget extends WidgetType {
                         const coords = view.coordsAtPos(this.from);
                         const initialY = coords ? coords.top : 0;
 
+                        if (view.state.readOnly) {
+                            const open = parseEmbeddedText(this.text).open;
+                            view.dispatch({ effects: setTransientEmbeddedOpen.of({ from: this.from, open: !open }) });
+                            preserveEmbeddedTogglePosition(view, this.from, initialY);
+                            return;
+                        }
                         const doc = view.state.doc.toString();
                         const slice = doc.slice(this.from, this.to);
                         if (slice.startsWith("[[") && slice.endsWith("]]")) {
@@ -1099,11 +1133,14 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
     const occurrencePath = state.facet(occurrencePathFacet);
     const selection = state.selection.main;
     const objectSelection = state.field(embeddedObjectSelectionField, false);
+    const transientOpen = state.field(transientEmbeddedOpenField, false);
     
     const decos: {from: number, to: number, deco: Decoration}[] = [];
 
     for (const link of links) {
-        const showRawSource = isRawEmbeddedSourceVisible(state, link);
+        const showRawSource = !state.readOnly && isRawEmbeddedSourceVisible(state, link);
+        const effectiveOpen = transientOpen?.get(link.from) ?? link.open;
+        const effectiveText = effectiveOpen === link.open ? link.text : setEmbeddedOpen(link.text, effectiveOpen);
         const isKeyboardSelected = isFocused && selection.empty &&
             objectSelection?.from === link.from && objectSelection.to === link.to;
 
@@ -1121,7 +1158,7 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
             const isAtStartOfLine = textBefore.trim() === "";
 
             const makeWidget = (renderPart: "full" | "title" | "body") => new EmbeddedBlockWidget(
-                link.text,
+                effectiveText,
                 parentLabel,
                 visitedLabels,
                 occurrencePath,
@@ -1139,7 +1176,7 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
                 from: link.from,
                 to: link.to,
                 deco: Decoration.replace({
-                    widget: makeWidget(link.open ? "title" : "full"),
+                    widget: makeWidget(effectiveOpen ? "title" : "full"),
                     // Only the title replaces the Markdown token. The expanded
                     // body is a separate block decoration below the containing
                     // source line, so the real positions at link.from/link.to
@@ -1147,7 +1184,7 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
                     block: false
                 })
             });
-            if (link.open) {
+            if (effectiveOpen) {
                 const bodyPosition = link.to;
                 decos.push({
                     // Keep the expansion at the embedded token boundary. A
@@ -1196,7 +1233,7 @@ export const embeddedBlockPlugin = StateField.define<DecorationSet>({
         return buildEmbeddedDecorations(state);
     },
     update(decorations, tr) {
-        if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(setEditorFocus) || e.is(setEmbeddedObjectSelection))) {
+        if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(setEditorFocus) || e.is(setEmbeddedObjectSelection) || e.is(setTransientEmbeddedOpen) || e.is(clearTransientEmbeddedOpen))) {
             return buildEmbeddedDecorations(tr.state);
         }
         return decorations;

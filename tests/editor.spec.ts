@@ -4864,6 +4864,126 @@ test('renders workspace assets in the web read-only viewer', async ({ page }) =>
         .toEqual([2, 2]);
 });
 
+test('unlocks read-only viewer notes as resettable in-memory drafts', async ({ page }) => {
+    await page.route('**/api/blocks?metaOnly=true', route => route.abort());
+    await page.goto('/');
+    await page.locator('input[type="file"][webkitdirectory]').setInputFiles(
+        path.resolve('tests/fixtures/viewer-workspace')
+    );
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const header = panel.locator('[data-testid="block-metadata-header-viewer-image-test"]');
+    const editor = panel.locator('.cm-content').first();
+    await header.click();
+    await expect(editor).toHaveAttribute('contenteditable', 'false');
+    await page.getByTitle('Unlock for editing').click();
+    await expect(page.getByTestId('viewer-draft-banner')).toBeVisible();
+    await expect(editor).toHaveAttribute('contenteditable', 'true');
+
+    await editor.fill('Temporary viewer draft');
+    await expect(page.getByTestId('viewer-draft-banner').getByRole('button', { name: 'Reset preview changes' })).toBeVisible();
+    await header.click();
+    await page.getByTitle('Lock for view-only').click();
+    await expect(editor).toHaveAttribute('contenteditable', 'false');
+    await expect(editor).toContainText('Temporary viewer draft');
+    await header.click();
+    await page.getByTitle('Unlock for editing').click();
+    await page.getByTestId('viewer-draft-banner').getByRole('button', { name: 'Reset preview changes' }).click();
+    await expect(editor).toContainText('Viewer images:');
+    await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('locks an entire tab while keeping math, images, and transient embeds rendered', async ({ page, request }) => {
+    const suffix = Date.now();
+    const childLabel = `test:locked-child-${suffix}`;
+    const rootLabel = `test:locked-root-${suffix}`;
+    const child = await (await request.post('/api/blocks', { data: {
+        title: 'Locked child', label: childLabel, content: 'Nested locked text'
+    } })).json();
+    const gif = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+    expect((await request.post('/api/assets', { data: { filePath: 'assets/locked-test.gif', content: gif } })).ok()).toBeTruthy();
+    const source = `Before $x^2$\n\n\\[\ny=x+1\n\\]\n\n<img src="assets/locked-test.gif" />\n\n[[${childLabel}]]`;
+    const root = await (await request.post('/api/blocks', { data: {
+        title: 'Locked root', label: rootLabel, content: source
+    } })).json();
+
+    await openEditor(page);
+    await page.getByRole('button', { name: 'Search' }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(rootLabel);
+    await search.press('Enter');
+
+    const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const header = panel.locator(`[data-testid="block-metadata-header-${root.id}"]`);
+    const rootEditor = panel.locator('.cm-editor').first();
+    const rootContent = rootEditor.locator(':scope > .cm-scroller > .cm-content');
+    await header.click();
+    await page.getByTitle('Lock for view-only').click();
+    await expect(rootContent).toHaveAttribute('contenteditable', 'false');
+    await expect(rootEditor.locator('.cm-math-inline')).toBeVisible();
+    await rootEditor.locator('.cm-math-inline').click();
+    await expect(rootEditor.locator('.cm-math-editing')).toHaveCount(0);
+    await expect(rootEditor.locator('.cm-math-block.cm-math-rendered')).toBeVisible();
+    await rootEditor.locator('.cm-math-block.cm-math-rendered').click();
+    await expect(rootEditor.locator('.cm-math-block.cm-math-rendered')).toBeVisible();
+    await expect(rootEditor.locator('.cm-math-editing')).toHaveCount(0);
+    await rootEditor.locator('.cm-image-widget').click();
+    await expect(rootEditor.locator('.cm-image-widget')).toBeVisible();
+    await expect(rootContent).not.toBeFocused();
+
+    await rootEditor.getByText('Locked child', { exact: true }).click();
+    const childHost = page.getByTestId(`embedded-editor-host-${child.id}`);
+    await expect(childHost).toContainText('Nested locked text');
+    await expect(childHost.locator('.cm-content')).toHaveAttribute('contenteditable', 'false');
+    expect(await (await request.get(`/api/blocks/${root.id}/raw`)).text()).toBe(source);
+
+    const childTitle = rootEditor.getByRole('button', { name: 'Locked child', exact: true });
+    await childTitle.click();
+    await expect(childHost).toHaveCount(0);
+    await childTitle.focus();
+    await childTitle.press('Enter');
+    await expect(childHost).toContainText('Nested locked text');
+    expect(await (await request.get(`/api/blocks/${root.id}/raw`)).text()).toBe(source);
+
+    await header.dblclick();
+    await expect(page.getByLabel('Block title')).toHaveCount(0);
+    await expect(page.getByTitle('Delete Block')).toHaveCount(0);
+});
+
+test('keeps a root-tab lock from leaking into the same note embedded elsewhere', async ({ page, request }) => {
+    const suffix = Date.now();
+    const childLabel = `test:isolated-lock-child-${suffix}`;
+    const rootLabel = `test:isolated-lock-root-${suffix}`;
+    const child = await (await request.post('/api/blocks', { data: {
+        title: 'Separately locked child', label: childLabel, content: 'Editable through the parent tab'
+    } })).json();
+    const root = await (await request.post('/api/blocks', { data: {
+        title: 'Unlocked parent', label: rootLabel, content: `[[${childLabel}∨]]`
+    } })).json();
+
+    await openEditor(page);
+    const openByLabel = async (label: string) => {
+        await page.getByRole('button', { name: 'Search' }).click();
+        const search = page.getByPlaceholder('Search blocks or create new...');
+        await search.fill(label);
+        await search.press('Enter');
+    };
+    await openByLabel(childLabel);
+    const childPanel = page.locator(`[role="tabpanel"]#block-tab-panel-${child.id}`);
+    await childPanel.locator(`[data-testid="block-metadata-header-${child.id}"]`).click();
+    await page.getByTitle('Lock for view-only').click();
+    await expect(childPanel.locator('.cm-content').first()).toHaveAttribute('contenteditable', 'false');
+
+    await openByLabel(rootLabel);
+    const rootPanel = page.locator(`[role="tabpanel"]#block-tab-panel-${root.id}`);
+    const embeddedHost = rootPanel.getByTestId(`embedded-editor-host-${child.id}`);
+    await expect(embeddedHost).toContainText('Editable through the parent tab');
+    await expect(embeddedHost.locator('.cm-content')).toHaveAttribute('contenteditable', 'true');
+
+    await page.getByRole('tab', { name: 'Separately locked child' }).click();
+    await expect(childPanel.locator('.cm-content').first()).toHaveAttribute('contenteditable', 'false');
+});
+
 test('prepares the real embedded renderer more than two screens before it becomes visible', async ({ page }) => {
     const suffix = Date.now();
     const targetLabel = `test:three-screen-target-${suffix}`;
@@ -6183,10 +6303,14 @@ test('restores open tabs and the active tab from workspace settings', async ({ p
     const blocks = await (await request.get('/api/blocks?metaOnly=true')).json();
     const ids = blocks.slice(0, 2).map((block: { id: string }) => block.id);
     expect(ids).toHaveLength(2);
-    const saved = await request.post('/api/workspace/session', { data: { openTabs: ids, activeTab: ids[1], persistForTest: true } });
+    const saved = await request.post('/api/workspace/session', { data: {
+        openTabs: ids, activeTab: ids[1], lockedTabs: [ids[0]], persistForTest: true
+    } });
     expect(saved.ok()).toBeTruthy();
 
     await openEditor(page);
     await expect(page.getByRole('tab')).toHaveCount(2);
     await expect(page.getByRole('tab', { selected: true })).toHaveAttribute('aria-controls', `block-tab-panel-${ids[1]}`);
+    await page.locator(`[role="tab"][aria-controls="block-tab-panel-${ids[0]}"]`).click();
+    await expect(page.locator(`[role="tabpanel"]#block-tab-panel-${ids[0]} .cm-content`).first()).toHaveAttribute('contenteditable', 'false');
 });
