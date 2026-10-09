@@ -126,6 +126,19 @@ export default defineConfig(({mode}) => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,json}'],
+          // The diagram engine is large and loaded only when a tikzcd is
+          // visible. Cache it on first use instead of adding 7 MB to every
+          // PWA installation.
+          globIgnores: ['**/vendor/tikzjax.js'],
+          runtimeCaching: [{
+            urlPattern: ({ url }) => url.pathname.endsWith('/vendor/tikzjax.js'),
+            handler: 'CacheFirst',
+            options: { cacheName: 'math-note-tikzjax-v1', expiration: { maxEntries: 2 } }
+          }, {
+            urlPattern: ({ url }) => url.pathname.includes('/vendor/bakoma/fonts/') && url.pathname.endsWith('.ttf'),
+            handler: 'CacheFirst',
+            options: { cacheName: 'math-note-bakoma-v1', expiration: { maxEntries: 140 } }
+          }],
         },
         manifest: {
           name: 'Math Note Editor',

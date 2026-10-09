@@ -1,6 +1,7 @@
 export {};
 declare global {
     interface ImportMetaEnv {
+        readonly BASE_URL: string;
         readonly VITE_ENABLE_GOOGLE_DRIVE?: string;
         readonly VITE_GOOGLE_CLIENT_ID?: string;
         readonly VITE_GOOGLE_API_KEY?: string;

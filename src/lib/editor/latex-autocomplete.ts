@@ -6,6 +6,7 @@ import { parsedRangesField } from "./katex-plugin";
 // Standard Overleaf-style rich snippets that auto-place your cursor inside brackets
 const inlineMathSnippets = [
     snippetCompletion("\\frac{${}}{${}}", { label: "\\frac", detail: "fraction (num, den)" }),
+    snippetCompletion("\\tooltip{${}}{${}}", { label: "\\tooltip", detail: "explained math (symbol, explanation)" }),
     snippetCompletion("\\sqrt{${}}", { label: "\\sqrt", detail: "square root" }),
     snippetCompletion("\\sqrt[${}]{${}}", { label: "\\sqrt[]" }),
     snippetCompletion("\\sum_{${}}^{${}}", { label: "\\sum", detail: "summation (lower, upper)" }),

@@ -8,11 +8,13 @@ import { EditorView } from "@codemirror/view";
 import { getOrderedBlocks, useStore } from "./store";
 import { preloadGoogleSignIn } from "./lib/google-drive-workspace";
 import { BlockContainer } from "./components/Block";
+import { CodeMirrorEditor } from "./components/CodeMirrorEditor";
 import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut } from "lucide-react";
 import { isIPhoneOrIPad } from "./lib/ios-device";
 import "./index.css";
 
 const enableGoogleDrive = import.meta.env.VITE_ENABLE_GOOGLE_DRIVE === 'true';
+type ExplanationTab = { id: string; math: string; content: string; parentLabel?: string; macros: Record<string, string> };
 
 const SettingsModal = React.lazy(() => import("./components/SettingsModal").then(module => ({ default: module.SettingsModal })));
 const ImageUploadModal = React.lazy(() => import("./components/ImageUploadModal").then(module => ({ default: module.ImageUploadModal })));
@@ -151,6 +153,24 @@ export default function App() {
     
     // Drag state for tabs
     const [draggedTab, setDraggedTab] = useState<string | null>(null);
+    const [explanationTabs, setExplanationTabs] = useState<ExplanationTab[]>([]);
+    const [activeExplanationId, setActiveExplanationId] = useState<string | null>(null);
+    const activeExplanationRef = useRef<string | null>(null);
+    activeExplanationRef.current = activeExplanationId;
+
+    useEffect(() => {
+        const open = (event: Event) => {
+            const detail = (event as CustomEvent<Omit<ExplanationTab, 'id'>>).detail;
+            const id = `explanation:${crypto.randomUUID()}`;
+            setExplanationTabs(tabs => [...tabs, { ...detail, id }]);
+            setActiveExplanationId(id);
+        };
+        window.addEventListener('math-explanation-open-tab', open);
+        return () => window.removeEventListener('math-explanation-open-tab', open);
+    }, []);
+
+    useEffect(() => { setActiveExplanationId(null); }, [activeTab]);
+    useEffect(() => { window.dispatchEvent(new Event('math-explanation-dismiss')); }, [activeTab, activeExplanationId]);
 
     useEffect(() => {
         initBackend();
@@ -186,6 +206,12 @@ export default function App() {
     useEffect(() => {
         return window.mathNotesDesktop?.onCommand(command => {
             if (command === 'close-tab') {
+                if (activeExplanationRef.current) {
+                    const id = activeExplanationRef.current;
+                    setExplanationTabs(tabs => tabs.filter(tab => tab.id !== id));
+                    setActiveExplanationId(null);
+                    return;
+                }
                 const current = useStore.getState().activeTab;
                 if (current) void useStore.getState().closeTab(current);
             } else if (command === 'reopen-tab') {
@@ -297,7 +323,10 @@ export default function App() {
             if (window.mathNotesDesktop) return;
             const state = useStore.getState();
             if (shortcutMatches(e, settings.closeTabShortcut || 'mod+w')) {
-                if (state.activeTab) void state.closeTab(state.activeTab);
+                if (activeExplanationId) {
+                    setExplanationTabs(tabs => tabs.filter(tab => tab.id !== activeExplanationId));
+                    setActiveExplanationId(null);
+                } else if (state.activeTab) void state.closeTab(state.activeTab);
             } else if (shortcutMatches(e, settings.reopenClosedTabShortcut || 'mod+shift+t')) {
                 state.reopenClosedTab();
             } else if (shortcutMatches(e, settings.nextTabShortcut || 'ctrl+tab')) {
@@ -310,7 +339,7 @@ export default function App() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen, isBlockMapOpen, isWorkspaceIssuesOpen, imageUploadParams, setImageUploadParams, closeSettings]);
+    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen, isBlockMapOpen, isWorkspaceIssuesOpen, imageUploadParams, setImageUploadParams, closeSettings, activeExplanationId]);
 
     const closeTab = (id: string, e?: React.SyntheticEvent) => {
         e?.stopPropagation();
@@ -569,11 +598,11 @@ export default function App() {
 
             <div className="flex flex-1 min-h-0 overflow-hidden">
                 <div className="flex-1 flex flex-col min-w-0 h-full">
-                <div role="tablist" aria-label="Open blocks" className="flex overflow-x-auto border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[42px] px-2 pt-2 gap-1">
+                <div role="tablist" aria-label="Open tabs" className="flex overflow-x-auto border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[42px] px-2 pt-2 gap-1">
                     {openTabs.map(id => {
                         const b = blocks.find(x => x.id === id);
                         if (!b) return null;
-                        const isActive = activeTab === id;
+                        const isActive = activeTab === id && !activeExplanationId;
                         return (
                             <div 
                                 key={id}
@@ -587,7 +616,7 @@ export default function App() {
                                 onDragOver={handleDragOver}
                                 onDrop={(e) => handleDrop(e, id)}
                                 onDragEnd={handleDragEnd}
-                                onClick={() => activateTab(id)}
+                                onClick={() => { setActiveExplanationId(null); activateTab(id); }}
                                 onKeyDown={(event) => handleTabKeyDown(event, id)}
                                 className={`flex items-center gap-2 px-3 py-1.5 rounded-t-lg min-w-[100px] max-w-[200px] cursor-pointer text-sm transition-colors border-t border-x ${isActive ? 'bg-base border-outline z-10 text-primary font-semibold' : 'bg-surface border-transparent text-secondary hover:bg-accent/10 hover:text-primary z-0 border-b-outline'}`}
                                 style={isActive ? { borderBottomColor: 'transparent', marginBottom: '-1px' } : { borderBottomWidth: '1px' }}
@@ -604,6 +633,26 @@ export default function App() {
                             </div>
                         );
                     })}
+                    {explanationTabs.map(tab => <div key={tab.id} role="tab" aria-selected={activeExplanationId === tab.id}
+                        aria-controls={`explanation-tab-panel-${tab.id}`} tabIndex={activeExplanationId === tab.id ? 0 : -1}
+                        onClick={() => setActiveExplanationId(tab.id)}
+                        onKeyDown={event => {
+                            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setActiveExplanationId(tab.id); }
+                            if (event.key === 'Delete' || event.key === 'Backspace') {
+                                event.preventDefault();
+                                setExplanationTabs(tabs => tabs.filter(item => item.id !== tab.id));
+                                if (activeExplanationId === tab.id) setActiveExplanationId(null);
+                            }
+                        }}
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-t-lg min-w-[100px] max-w-[220px] cursor-pointer text-sm border-t border-x ${activeExplanationId === tab.id ? 'bg-base border-outline text-primary font-semibold' : 'bg-surface border-transparent text-secondary hover:bg-accent/10'}`}>
+                        <span className="truncate flex-1 select-none">Explanation: {tab.math}</span>
+                        <button aria-label={`Close explanation for ${tab.math}`} tabIndex={-1} className="p-1 rounded hover:bg-red-500/20"
+                            onClick={event => {
+                                event.stopPropagation();
+                                setExplanationTabs(tabs => tabs.filter(item => item.id !== tab.id));
+                                if (activeExplanationId === tab.id) setActiveExplanationId(null);
+                            }}><X size={12} /></button>
+                    </div>)}
                 </div>
 
                 <div className="relative flex-1 min-h-0 bg-base">
@@ -612,8 +661,8 @@ export default function App() {
                             key={id}
                             id={`block-tab-panel-${id}`}
                             role="tabpanel"
-                            aria-hidden={activeTab !== id}
-                            className={`absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base ${activeTab === id ? 'visible pointer-events-auto' : 'invisible pointer-events-none'}`}
+                            aria-hidden={activeTab !== id || !!activeExplanationId}
+                            className={`absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base ${activeTab === id && !activeExplanationId ? 'visible pointer-events-auto' : 'invisible pointer-events-none'}`}
                             onMouseDownCapture={(e) => {
                                 const target = e.target;
                                 const content = e.button === 0 && target instanceof Element
@@ -651,7 +700,17 @@ export default function App() {
                             </div>
                         </div>
                     ))}
-                    {!activeTab && (
+                    {explanationTabs.map(tab => <div key={tab.id} id={`explanation-tab-panel-${tab.id}`}
+                        role="tabpanel" aria-hidden={activeExplanationId !== tab.id}
+                        className={`absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base ${activeExplanationId === tab.id ? 'visible pointer-events-auto' : 'invisible pointer-events-none'}`}>
+                        <div className="max-w-3xl mx-auto rounded-xl border border-outline bg-surface p-5">
+                            <div className="mb-4 text-sm text-secondary">Explanation for <span className="font-mono text-primary">{tab.math}</span></div>
+                            <CodeMirrorEditor content={tab.content} isReadOnly isFocused={false} macros={tab.macros}
+                                focusDirection={null} onBlur={() => undefined} parentLabel={tab.parentLabel}
+                                visitedLabels={tab.parentLabel ? [tab.parentLabel] : []} />
+                        </div>
+                    </div>)}
+                    {!activeTab && !activeExplanationId && (
                         <div className="absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base">
                           <div className="max-w-4xl mx-auto pb-64">
                             <div className="text-center text-secondary h-full flex flex-col items-center justify-center pt-24">

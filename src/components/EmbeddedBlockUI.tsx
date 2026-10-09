@@ -200,6 +200,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     }, [activeInsideMe, editorActivated, ifToggled, instanceKey, rendersBody]);
 
     if (visitedLabels.includes(fullLabel)) {
+        if (renderPart === "body") return null;
         return (
             <span className="text-red-400 bg-red-400/10 px-2 py-0.5 rounded mx-1 inline-flex items-center gap-1 border border-red-500/30" title="Circular embedding detected">
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-repeat"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
@@ -248,8 +249,10 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
         if (e.metaKey || e.ctrlKey) {
             useStore.getState().openBlockInTab(targetBlock!.id, true);
         } else {
-            useStore.getState().setActiveBlock(null);
-            view?.contentDOM.blur();
+            if (!isReadOnly) {
+                useStore.getState().setActiveBlock(null);
+                view?.contentDOM.blur();
+            }
             toggleOpen(e);
         }
     };
@@ -484,6 +487,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                     onImagePaste={backendMode === "viewer" ? undefined : (file, insertContent, assertInsertable) => useStore.getState().setImageUploadParams({ file, onInsert: insertContent, assertInsertable })}
                     onEsc={() => toggleOpen()}
                     onFocus={() => {
+                        if (isReadOnly) return;
                         promoteEmbeddedOccurrence(instanceKey);
                         if (!activeIsMe) {
                             useStore.getState().setActiveBlock(targetBlock.id, null, instancePath, pos, null, instanceKey);

@@ -1,6 +1,8 @@
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType, showTooltip, Tooltip } from "@codemirror/view";
 import { RangeSetBuilder, StateField, EditorState, Facet, StateEffect, Transaction } from "@codemirror/state";
 import katex from "katex";
+import { isTikzCdMath, renderTikzCd } from "./tikz-cd-renderer";
+import { maskMathExplanations, prepareExplainedMath } from "./math-tooltip-syntax";
 import "katex/dist/katex.min.css"; 
 
 export const livePreviewMacros = Facet.define<Record<string, string>, Record<string, string>>({
@@ -71,13 +73,14 @@ export function isDollarEscaped(doc: string, pos: number) {
 
 export function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number> = new Set()): ParsedRange[] {
     const ranges: ParsedRange[] = [];
+    const delimitersDoc = maskMathExplanations(doc);
 
     // Display math may span lines, so identify it before scanning individual
     // lines for inline math.
     let i = 0;
     while (i < doc.length) {
-        if (doc.startsWith("\\[", i)) {
-            let end = doc.indexOf("\\]", i + 2);
+        if (delimitersDoc.startsWith("\\[", i)) {
+            let end = delimitersDoc.indexOf("\\]", i + 2);
             if (end !== -1) {
                 const text = doc.slice(i + 2, end).trim();
                 // Empty pairs still establish math context for subsequent typing.
@@ -114,7 +117,7 @@ export function parseRanges(doc: string, autoClosingDollars: ReadonlySet<number>
                 pos = blockRange.to - 1;
                 continue;
             }
-            if (doc[pos] === "$" && (autoClosingDollars.has(pos) || !isDollarEscaped(doc, pos))) {
+            if (delimitersDoc[pos] === "$" && (autoClosingDollars.has(pos) || !isDollarEscaped(delimitersDoc, pos))) {
                 delimiters.push(pos);
             }
         }
@@ -422,6 +425,35 @@ function rememberBlockMathHeight(key: string, height: number) {
     }
 }
 
+function tikzCdImage(src: string, alt: string, onLoad?: () => void) {
+    const image = document.createElement('img');
+    image.alt = alt;
+    image.className = 'cm-tikzcd-image';
+    image.addEventListener('load', () => {
+        // TikZJax emits an SVG at TeX's small default point size. Match the
+        // surrounding 18px display math while preserving its aspect ratio.
+        if (image.naturalWidth > 0) image.style.width = `${Math.ceil(image.naturalWidth * 1.5)}px`;
+        onLoad?.();
+    }, { once: true });
+    image.src = src;
+    return image;
+}
+
+function renderExplainedKatex(text: string, dom: HTMLElement, displayMode: boolean, macros: Record<string, string>) {
+    const prepared = prepareExplainedMath(text);
+    const allowed = new Set(prepared.explanations.map(item => item.id));
+    katex.render(prepared.tex, dom, {
+        displayMode,
+        throwOnError: true,
+        macros: { ...macros },
+        trust: context => context.command === '\\htmlData' &&
+            Object.keys((context as { attributes?: Record<string, string> }).attributes || {}).length === 1 &&
+            allowed.has((context as { attributes?: Record<string, string> }).attributes?.['data-math-tooltip-id'] || ''),
+        strict: code => code === 'htmlExtension' ? 'ignore' : 'warn'
+    });
+    return prepared;
+}
+
 class MathWidget extends WidgetType {
     readonly heightEstimate: number;
 
@@ -473,6 +505,28 @@ class MathWidget extends WidgetType {
             view.focus();
         };
         const handleFocus = (e: Event) => focusSource(e, view.posAtDOM(span));
+        const explanationTargetAt = (event: Event) => {
+            const direct = event.target instanceof Element
+                ? event.target.closest<HTMLElement>('[data-math-tooltip-id]') : null;
+            if (direct) return direct;
+            // KaTeX's vlist for display operators can overlap a marked lower
+            // limit and receive its pointer events. Match the visible marker's
+            // rectangle so clicking the limit still opens its explanation.
+            const point = event instanceof TouchEvent ? event.touches[0]
+                : event instanceof MouseEvent ? event : null;
+            if (!point) return null;
+            return [...span.querySelectorAll<HTMLElement>('.katex-html [data-math-tooltip-id]')]
+                .filter(candidate => {
+                    const rect = candidate.getBoundingClientRect();
+                    return point.clientX >= rect.left && point.clientX <= rect.right &&
+                        point.clientY >= rect.top && point.clientY <= rect.bottom;
+                })
+                .sort((a, b) => {
+                    const first = a.getBoundingClientRect();
+                    const second = b.getBoundingClientRect();
+                    return first.width * first.height - second.width * second.height;
+                })[0] || null;
+        };
 
         if (!this.isLinked && !this.isReadOnly) {
             let lastPointerType = 'mouse';
@@ -481,6 +535,7 @@ class MathWidget extends WidgetType {
             // source only after a stationary touch ends. Listen on window
             // because CodeMirror may replace this widget during the gesture.
             span.addEventListener("touchstart", event => {
+                if (explanationTargetAt(event)) return;
                 lastPointerType = 'touch';
                 const touch = (event as TouchEvent).touches[0];
                 if (!touch) return;
@@ -506,21 +561,82 @@ class MathWidget extends WidgetType {
                 window.addEventListener('touchcancel', cleanup, { capture: true, once: true });
             }, { passive: true });
             span.addEventListener("mousedown", event => {
+                if (explanationTargetAt(event)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return;
+                }
                 if (lastPointerType === 'touch') return;
                 handleFocus(event);
             });
         }
 
-        try {
-            katex.render(this.text, span, {
-                displayMode: this.isBlock,
-                throwOnError: true,
-                macros: {...this.macros}
+        if (this.isBlock && isTikzCdMath(this.text)) {
+            span.textContent = 'Rendering diagram…';
+            span.classList.add('cm-tikzcd-loading');
+            void renderTikzCd(this.text).then(src => {
+                if (!span.isConnected) return;
+                const image = tikzCdImage(src, 'Commutative diagram');
+                span.replaceChildren(image);
+                span.classList.remove('cm-tikzcd-loading');
+            }).catch(error => {
+                if (!span.isConnected) return;
+                span.textContent = this.text;
+                span.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
+                span.title = error instanceof Error ? error.message : String(error);
             });
-        } catch (e: any) {
-            span.innerText = this.text;
-            span.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
-            span.title = e.message;
+        } else {
+            try {
+                const prepared = renderExplainedKatex(this.text, span, this.isBlock, this.macros);
+                if (prepared.explanations.length) {
+                    const byId = new Map(prepared.explanations.map(item => [item.id, item]));
+                    for (const target of span.querySelectorAll<HTMLElement>('.katex-html [data-math-tooltip-id]')) {
+                        const explanation = byId.get(target.dataset.mathTooltipId || '');
+                        if (!explanation) continue;
+                        target.classList.add('cm-math-explanation-trigger');
+                        // KaTeX puts relation/binary spacing inside \htmlData's
+                        // wrapper. Draw the outline on the visible atom instead
+                        // of surrounding its trailing invisible mspace.
+                        const children = [...target.children] as HTMLElement[];
+                        const visibleChildren = children.filter(child => !child.classList.contains('mspace'));
+                        const indicator = children.at(-1)?.classList.contains('mspace') && visibleChildren.length === 1
+                            ? visibleChildren[0] : target;
+                        indicator.classList.add('cm-math-explanation-indicator');
+                        target.setAttribute('role', 'button');
+                        target.tabIndex = 0;
+                        target.setAttribute('aria-label', `Explain ${explanation.math}`);
+                    }
+                    span.querySelector('.katex-html')?.setAttribute('aria-hidden', 'false');
+                    span.querySelector('.katex-mathml')?.setAttribute('aria-hidden', 'true');
+                    const openExplanation = (target: HTMLElement) => {
+                        const explanation = byId.get(target.dataset.mathTooltipId || '');
+                        if (!explanation) return;
+                        view.dom.dispatchEvent(new CustomEvent('math-explanation-open', {
+                            detail: { target, content: explanation.content, math: explanation.math }, bubbles: true
+                        }));
+                    };
+                    span.addEventListener('click', event => {
+                        const target = explanationTargetAt(event);
+                        if (!target) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openExplanation(target);
+                    });
+                    span.addEventListener('keydown', (event: KeyboardEvent) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        const target = event.target instanceof Element
+                            ? event.target.closest<HTMLElement>('[data-math-tooltip-id]') : null;
+                        if (!target) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openExplanation(target);
+                    });
+                }
+            } catch (e: any) {
+                span.innerText = this.text;
+                span.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
+                span.title = e.message;
+            }
         }
         if (this.isBlock) {
             const key = blockMathHeightKey(this.text, this.macros);
@@ -570,6 +686,7 @@ class MathWidget extends WidgetType {
 const previewControllers = new WeakMap<HTMLElement, ReturnType<typeof mathPreview>>();
 function mathPreview(dom: HTMLElement, view: EditorView, displayMode: boolean, baseClass: string) {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let diagramAbort: AbortController | undefined;
     let text: string | undefined;
     let macrosKey = "";
     let destroyed = false;
@@ -580,23 +697,48 @@ function mathPreview(dom: HTMLElement, view: EditorView, displayMode: boolean, b
             text = nextText;
             macrosKey = nextKey;
             clearTimeout(timer);
+            diagramAbort?.abort();
+            diagramAbort = undefined;
             const render = () => {
                 if (destroyed) return;
-                try {
-                    katex.render(nextText, dom, { displayMode, throwOnError: true, macros: { ...macros } });
-                    dom.className = baseClass;
-                } catch {
-                    dom.textContent = nextText;
-                    dom.className = `${baseClass} text-red-500 bg-red-500/10 font-mono text-sm`;
+                if (displayMode && isTikzCdMath(nextText)) {
+                    diagramAbort = new AbortController();
+                    const signal = diagramAbort.signal;
+                    dom.textContent = 'Rendering diagram…';
+                    dom.className = `${baseClass} cm-tikzcd-loading`;
+                    void renderTikzCd(nextText, signal).then(src => {
+                        if (destroyed || text !== nextText || !dom.isConnected) return;
+                        const image = tikzCdImage(src, 'Commutative diagram preview', () => {
+                            if (!destroyed && dom.isConnected) view.requestMeasure();
+                        });
+                        dom.replaceChildren(image);
+                        dom.className = baseClass;
+                        view.requestMeasure();
+                    }).catch(error => {
+                        if (signal.aborted || destroyed || text !== nextText || !dom.isConnected) return;
+                        dom.textContent = nextText;
+                        dom.className = `${baseClass} text-red-500 bg-red-500/10 font-mono text-sm`;
+                        dom.title = error instanceof Error ? error.message : String(error);
+                        view.requestMeasure();
+                    });
+                } else {
+                    try {
+                        renderExplainedKatex(nextText, dom, displayMode, macros);
+                        dom.className = baseClass;
+                    } catch {
+                        dom.textContent = nextText;
+                        dom.className = `${baseClass} text-red-500 bg-red-500/10 font-mono text-sm`;
+                    }
+                    view.requestMeasure();
                 }
-                view.requestMeasure();
             };
             if (immediate) render();
-            else timer = setTimeout(render, 70);
+            else timer = setTimeout(render, displayMode && isTikzCdMath(nextText) ? 550 : 70);
         },
         destroy() {
             destroyed = true;
             clearTimeout(timer);
+            diagramAbort?.abort();
         }
     };
 }

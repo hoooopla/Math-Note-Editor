@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditorState, StateEffect, Compartment, Transaction, Prec, EditorSelection } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, dropCursor } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
@@ -22,6 +22,8 @@ import { scheduleEmbeddedDescendantPrefetch } from "../lib/embedded-prefetch";
 import { useStore } from "../store";
 
 let isGlobalMousePressed = false;
+const MathExplanationPopover = lazy(() => import('./MathExplanationPopover').then(module => ({ default: module.MathExplanationPopover })));
+type OpenExplanation = import('./MathExplanationPopover').OpenMathExplanation;
 const editorStateCache = new Map<string, { doc: string; json: unknown; group?: string }>();
 const MAX_CACHED_EDITOR_STATES = 256;
 
@@ -76,6 +78,34 @@ export interface CodeMirrorEditorProps {
 
 export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, focusX, focusRequestKey, stateCacheKey, stateCacheGroup, isDormant = false, onFocus, parentLabel, visitedLabels, occurrencePath, onEsc, onImagePaste, onReady }: CodeMirrorEditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
+    const [openExplanation, setOpenExplanation] = useState<OpenExplanation | null>(null);
+    const openExplanationRef = useRef<OpenExplanation | null>(null);
+    const closeExplanation = useCallback((restoreFocus = false) => {
+        if (restoreFocus && openExplanationRef.current?.target.isConnected) openExplanationRef.current.target.focus();
+        openExplanationRef.current = null;
+        setOpenExplanation(null);
+    }, []);
+    useEffect(() => {
+        const host = containerRef.current;
+        if (!host) return;
+        const open = (event: Event) => {
+            event.stopPropagation();
+            const explanation = (event as CustomEvent<OpenExplanation>).detail;
+            if (openExplanationRef.current?.target === explanation.target) {
+                closeExplanation();
+                return;
+            }
+            openExplanationRef.current = explanation;
+            setOpenExplanation(explanation);
+        };
+        const dismiss = () => closeExplanation();
+        host.addEventListener('math-explanation-open', open);
+        window.addEventListener('math-explanation-dismiss', dismiss);
+        return () => {
+            host.removeEventListener('math-explanation-open', open);
+            window.removeEventListener('math-explanation-dismiss', dismiss);
+        };
+    }, [closeExplanation]);
     const viewRef = useRef<EditorView | null>(null);
     const isProgrammaticFocusRef = useRef(false);
     const onBlurRef = useRef(onBlur);
@@ -887,11 +917,20 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         }
     }, [parentLabel, visitedLabels, occurrencePath, macros]);
 
-    return <div
+    return <><div
         ref={containerRef}
         className="w-full"
         data-editor-dormant={isDormant ? "true" : "false"}
         data-editor-read-only={isReadOnly ? "true" : "false"}
         data-editor-wants-focus={isFocused ? "true" : "false"}
-    />;
+    />{openExplanation && <Suspense fallback={null}><MathExplanationPopover
+        {...openExplanation} macros={macros} parentLabel={parentLabel} visitedLabels={visitedLabels}
+        onClose={closeExplanation}
+        onOpenTab={() => {
+            window.dispatchEvent(new CustomEvent('math-explanation-open-tab', {
+                detail: { content: openExplanation.content, math: openExplanation.math, parentLabel, macros }
+            }));
+            closeExplanation();
+        }}
+    /></Suspense>}</>;
 }

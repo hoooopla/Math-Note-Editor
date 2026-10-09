@@ -4,7 +4,7 @@
   "description": "A local-first, block-based mathematical note editor.",
   "author": "Math Note Editor contributors",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

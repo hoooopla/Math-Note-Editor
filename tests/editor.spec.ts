@@ -6207,8 +6207,20 @@ test('shows the running build identity in General Settings', async ({ page }) =>
     await openEditor(page);
     await page.getByLabel('Open settings').click();
     const build = page.getByTestId('build-info');
-    await expect(build).toContainText('Version 1.0.0');
+    await expect(build).toContainText('Version 1.0.1');
     await expect(build).toContainText('Development server');
+    await expect(page.locator('h1').getByLabel('Version 1.0.1')).toHaveCount(0);
+});
+
+test('keeps the desktop app name without a version suffix', async ({ page }) => {
+    await page.route('**/api/runtime', async route => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...await response.json(), desktop: true } });
+    });
+    await openEditor(page);
+    await expect(page.locator('h1')).toContainText('Math Note Editor');
+    await expect(page.locator('h1')).not.toContainText('1.0.1');
+    await expect(page.locator('h1').getByLabel('Version 1.0.1')).toHaveCount(0);
 });
 
 test('validates settings and supports keyboard dialog navigation', async ({ page }) => {
