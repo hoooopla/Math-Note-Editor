@@ -6203,6 +6203,14 @@ test('reports a failed save and retries the latest content after another edit', 
     await expect(page.getByText(/Changes may not have been saved/)).toBeHidden();
 });
 
+test('shows the running build identity in General Settings', async ({ page }) => {
+    await openEditor(page);
+    await page.getByLabel('Open settings').click();
+    const build = page.getByTestId('build-info');
+    await expect(build).toContainText('Version 1.0.0');
+    await expect(build).toContainText('Development server');
+});
+
 test('validates settings and supports keyboard dialog navigation', async ({ page }) => {
     await openEditor(page);
     const settingsButton = page.getByLabel('Open settings');

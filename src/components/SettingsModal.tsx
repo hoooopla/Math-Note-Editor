@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { X, Plus, Trash2, ArrowUp, ArrowDown, ChevronDown, Image as ImageIcon } from 'lucide-react';
 import { BackupRecovery } from './BackupRecovery';
 import { ManageAssets } from './ManageAssets';
+import { buildInfo } from '../lib/build-info';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -754,6 +755,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     {manageAssetsOpen && <ManageAssets key={workspaceRevision} />}
                                 </details>
                                 <BackupRecovery />
+                                <div className="rounded-lg border border-outline bg-base/40 p-4" data-testid="build-info">
+                                    <h4 className="text-sm font-semibold text-primary">About this build</h4>
+                                    <p className="mt-2 text-xs text-secondary">
+                                        Version {buildInfo.version}
+                                        {buildInfo.commit ? <> · <a className="font-mono text-accent hover:underline" href={`https://github.com/hoooopla/Math-Note-Editor/commit/${buildInfo.commit}`} target="_blank" rel="noopener noreferrer" aria-label={`View commit ${buildInfo.commit} on GitHub`}>{buildInfo.commit}</a></> : null}
+                                    </p>
+                                    {buildInfo.builtAt ? (
+                                        <p className="mt-1 text-xs text-secondary">Built <time dateTime={buildInfo.builtAt} title={buildInfo.builtAt}>{new Date(buildInfo.builtAt).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}</time></p>
+                                    ) : <p className="mt-1 text-xs text-secondary">Development server</p>}
+                                </div>
                             </div>
                         )}
 

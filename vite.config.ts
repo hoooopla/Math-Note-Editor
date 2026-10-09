@@ -1,12 +1,23 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'path';
 import {defineConfig, loadEnv, type Plugin} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { visualizer } from 'rollup-plugin-visualizer';
 
 const CODEMIRROR_RENDER_AHEAD_SCREENS = 3;
+const appVersion = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version as string;
+
+function buildCommit() {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA.slice(0, 7);
+  try {
+    return execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { encoding: 'utf8' }).trim();
+  } catch {
+    return '';
+  }
+}
 
 /**
  * CodeMirror intentionally keeps its DOM viewport small and does not expose
@@ -94,8 +105,14 @@ function codeMirrorRenderAheadEsbuildPlugin() {
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', 'VITE_');
   const base = env.VITE_BASE_PATH || '/';
+  const isProductionBuild = mode === 'production';
   return {
     base,
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+      __BUILD_COMMIT__: JSON.stringify(isProductionBuild ? buildCommit() : ''),
+      __BUILD_TIME__: JSON.stringify(isProductionBuild ? new Date().toISOString() : '')
+    },
     plugins: [
       codeMirrorRenderAheadPlugin(),
       react(), 
