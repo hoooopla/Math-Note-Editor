@@ -33,6 +33,19 @@ body {
   background-color: var(--color-base);
 }
 
+/* Keep the full toolbar reachable by swiping on iPhone and iPad. */
+.mobile-toolbar {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  scrollbar-width: none;
+}
+
+.mobile-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
 ::selection {
   background-color: rgba(100, 150, 255, 0.4);
 }

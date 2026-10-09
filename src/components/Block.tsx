@@ -1,7 +1,8 @@
-import React, { useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { findNearestExistingParentId, getOrderedBlocks, useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle, Link2 } from "lucide-react";
+import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle, Link2, Pencil } from "lucide-react";
 import { MathTitle } from "./MathTitle";
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from "../lib/label-policy";
 import { BacklinksPopover } from "./BacklinksPopover";
@@ -86,6 +87,8 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     const activeTabId = useStore(state => state.activeTab);
     const isLocked = hasDuplicateLabel || (isViewOnlyState ?? (backendMode === "viewer"));
     const [mobileEditMode, setMobileEditMode] = useState(false);
+    const blockRootRef = useRef<HTMLDivElement>(null);
+    const mobileEditButtonRef = useRef<HTMLButtonElement>(null);
     const isTouchReading = isIOSDevice && !mobileEditMode;
     const isViewOnly = isLocked || isTouchReading;
     const hasViewerDrafts = useStore(state => Object.keys(state.viewerDraftBlockIds).length > 0);
@@ -105,6 +108,41 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     useEffect(() => {
         if (activeTabId !== block.id || isLocked) setMobileEditMode(false);
     }, [activeTabId, block.id, isLocked]);
+
+    useLayoutEffect(() => {
+        if (!isIOSDevice || activeTabId !== block.id || isLocked) return;
+        let layoutWidth = window.innerWidth;
+        let layoutHeight = window.innerHeight;
+        const updatePosition = () => {
+            if (window.innerWidth !== layoutWidth) {
+                layoutWidth = window.innerWidth;
+                layoutHeight = window.innerHeight;
+            } else {
+                // Some mobile browsers shrink innerHeight with the keyboard.
+                // Keep the pre-keyboard layout height until orientation changes.
+                layoutHeight = Math.max(layoutHeight, window.innerHeight);
+            }
+            const viewport = window.visualViewport;
+            const coveredBottom = viewport
+                ? Math.max(0, layoutHeight - viewport.height - viewport.offsetTop)
+                : 0;
+            const button = mobileEditButtonRef.current;
+            button?.style.setProperty('--keyboard-inset', `${Math.round(coveredBottom)}px`);
+            const noteRight = blockRootRef.current?.getBoundingClientRect().right;
+            if (button && noteRight !== undefined) {
+                button.style.setProperty('--note-right', `${Math.round(Math.max(16, window.innerWidth - noteRight + 12))}px`);
+            }
+        };
+        updatePosition();
+        window.addEventListener('resize', updatePosition);
+        window.visualViewport?.addEventListener('resize', updatePosition);
+        window.visualViewport?.addEventListener('scroll', updatePosition);
+        return () => {
+            window.removeEventListener('resize', updatePosition);
+            window.visualViewport?.removeEventListener('resize', updatePosition);
+            window.visualViewport?.removeEventListener('scroll', updatePosition);
+        };
+    }, [isIOSDevice, activeTabId, block.id, isLocked]);
 
     const beginMetaEdit = useCallback(() => {
         if (isViewOnly) return;
@@ -194,6 +232,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
 
     return (
         <div 
+            ref={blockRootRef}
             data-block-root
             className={`group relative border rounded-[8px] mb-6 transition-colors bg-surface border-outline ${isFocused ? 'z-30' : 'z-0'}`}
         >
@@ -351,21 +390,31 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                 )}
             </div>
 
-            {isIOSDevice && !isLocked && (
-                <div className="flex items-center justify-between gap-3 border-b border-outline px-4 py-2 text-sm text-secondary" data-testid="mobile-reading-controls">
-                    <span>{isTouchReading ? 'Reading' : 'Editing'}</span>
-                    <button type="button" className="min-h-11 rounded-lg bg-accent/15 px-4 font-semibold text-accent" onClick={() => {
+            {isIOSDevice && activeTabId === block.id && !isLocked && createPortal(
+                <button
+                    ref={mobileEditButtonRef}
+                    type="button"
+                    data-testid="mobile-edit-toggle"
+                    data-mode={isTouchReading ? 'reading' : 'editing'}
+                    aria-label={isTouchReading ? 'Enable editing' : 'Finish editing and read'}
+                    aria-pressed={!isTouchReading}
+                    title={isTouchReading ? 'Edit note' : 'Finish editing'}
+                    className={`fixed z-40 flex h-14 w-14 items-center justify-center rounded-full border-2 shadow-lg shadow-black/40 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isTouchReading ? 'border-accent bg-surface text-accent' : 'border-white/60 bg-accent text-white'}`}
+                    style={{ right: 'calc(var(--note-right, 16px) + env(safe-area-inset-right))', bottom: 'calc(16px + env(safe-area-inset-bottom) + var(--keyboard-inset, 0px))' }}
+                    onClick={() => {
                         if (mobileEditMode) {
                             setMobileEditMode(false);
                             setActive(null);
                             if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
                         } else {
                             setMobileEditMode(true);
-                            setActive(block.id, 'start', [block.label]);
-                            setFocusRequestKey(key => key + 1);
                         }
-                    }}>{isTouchReading ? 'Edit' : 'Done'}</button>
-                </div>
+                    }}
+                >
+                    <Pencil size={23} strokeWidth={2.4} aria-hidden="true" />
+                    <span className={`absolute -right-0.5 -top-0.5 h-3.5 w-3.5 rounded-full border-2 border-surface ${isTouchReading ? 'bg-secondary' : 'bg-emerald-300'}`} aria-hidden="true" />
+                </button>,
+                document.body
             )}
             {backendMode === "viewer" && !isViewOnly && (
                 <div className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200" role="status" data-testid="viewer-draft-banner">

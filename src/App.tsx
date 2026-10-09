@@ -9,6 +9,7 @@ import { getOrderedBlocks, useStore } from "./store";
 import { preloadGoogleSignIn } from "./lib/google-drive-workspace";
 import { BlockContainer } from "./components/Block";
 import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut } from "lucide-react";
+import { isIPhoneOrIPad } from "./lib/ios-device";
 import "./index.css";
 
 const enableGoogleDrive = import.meta.env.VITE_ENABLE_GOOGLE_DRIVE === 'true';
@@ -85,6 +86,7 @@ export default function App() {
     const editorDragRef = useRef<{ x: number; y: number; content: HTMLElement; moved: boolean } | null>(null);
     const lastFocusedEditorRef = useRef<EditorView | null>(null);
     const [imageInsertError, setImageInsertError] = useState('');
+    const isMobileIOS = isIPhoneOrIPad();
 
     useEffect(() => {
         const rememberEditor = (event: FocusEvent) => {
@@ -394,8 +396,8 @@ export default function App() {
                 "--math-block-padding-y": `${settings.mathBlockPaddingY ?? 4}px`
             } as React.CSSProperties}
         >
-            <div className="flex h-12 bg-surface border-b border-outline items-center px-4 justify-between shrink-0">
-                <div className="flex items-center gap-4">
+            <div className={`flex h-12 bg-surface border-b border-outline items-center px-4 shrink-0 ${isMobileIOS ? 'mobile-toolbar gap-4' : 'justify-between'}`} data-testid="app-toolbar">
+                <div className={`flex items-center gap-4 ${isMobileIOS ? 'shrink-0' : ''}`}>
                     <h1 className="text-[16px] font-bold tracking-tight text-primary flex items-center gap-2 whitespace-nowrap">
                         <Command className="text-accent" size={20} />
                         {isTestMode && (
@@ -416,7 +418,7 @@ export default function App() {
                     </h1>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className={`flex items-center gap-2 ${isMobileIOS ? 'shrink-0' : ''}`}>
                     {backendMode === 'google' && (
                         <div className="mr-2 flex items-center gap-1 rounded-lg border border-outline bg-base px-2 py-1 text-xs text-secondary" title="The connected Google Drive folder">
                             <Cloud size={14} className="text-accent" />

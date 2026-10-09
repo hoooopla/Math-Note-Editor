@@ -31,13 +31,19 @@ test.describe('iPhone reading', () => {
         const { root, child, source, panel } = await openReadingFixture(page, request);
         const editor = panel.locator('.cm-editor').first();
         const content = editor.locator(':scope > .cm-scroller > .cm-content');
-        const controls = panel.getByTestId('mobile-reading-controls');
-        await expect(controls).toContainText('Reading');
+        const toggle = page.getByTestId('mobile-edit-toggle');
+        await expect(toggle).toHaveAttribute('data-mode', 'reading');
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
         await expect(content).toHaveAttribute('contenteditable', 'false');
+        const toolbar = page.getByTestId('app-toolbar');
+        const toolbarWidths = await toolbar.evaluate(element => ({ visible: element.clientWidth, total: element.scrollWidth }));
+        expect(toolbarWidths.total).toBeGreaterThan(toolbarWidths.visible);
         const searchButton = page.getByRole('button', { name: 'Search', exact: true });
         const searchBounds = await searchButton.boundingBox();
         expect(searchBounds).not.toBeNull();
         expect(searchBounds!.x + searchBounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+        await toolbar.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+        await expect(page.getByLabel('Open settings')).toBeInViewport();
 
         await panel.getByText('Tap this text and', { exact: false }).first().tap();
         await editor.locator('.cm-math-inline').tap();
@@ -50,16 +56,31 @@ test.describe('iPhone reading', () => {
         await expect(childHost.locator('.cm-content')).toHaveAttribute('contenteditable', 'false');
         expect(await (await request.get(`/api/blocks/${root.id}/raw`)).text()).toBe(source);
 
-        await controls.getByRole('button', { name: 'Edit' }).tap();
+        const scrollBeforeEdit = await panel.evaluate(element => element.scrollTop);
+        await toggle.tap();
         await expect(content).toHaveAttribute('contenteditable', 'true');
-        await expect(controls).toContainText('Editing');
+        await expect(toggle).toHaveAttribute('data-mode', 'editing');
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        expect(await panel.evaluate(element => element.scrollTop)).toBe(scrollBeforeEdit);
+        await expect(content).not.toBeFocused();
+
+        const normalBottom = await toggle.evaluate(element => parseFloat(getComputedStyle(element).bottom));
+        await page.evaluate(() => {
+            const viewport = window.visualViewport!;
+            Object.defineProperty(viewport, 'height', { configurable: true, value: viewport.height - 240 });
+            viewport.dispatchEvent(new Event('resize'));
+        });
+        await expect.poll(() => toggle.evaluate(element => parseFloat(getComputedStyle(element).bottom)))
+            .toBeGreaterThan(normalBottom + 200);
+
         await editor.locator('.cm-math-inline').tap();
         await expect(content).toContainText('$x^2$');
         await content.tap();
         await page.keyboard.insertText('X');
         await expect(content).toContainText('X');
-        await controls.getByRole('button', { name: 'Done' }).tap();
+        await toggle.tap();
         await expect(content).toHaveAttribute('contenteditable', 'false');
+        await expect(toggle).toHaveAttribute('data-mode', 'reading');
         await expect(content).not.toBeFocused();
     });
 });
@@ -69,8 +90,16 @@ test.describe('iPad reading', () => {
 
     test('opens in reading state on a tablet', async ({ page, request }) => {
         const { panel } = await openReadingFixture(page, request);
-        await expect(panel.getByTestId('mobile-reading-controls').getByRole('button', { name: 'Edit' })).toBeVisible();
+        const toggle = page.getByTestId('mobile-edit-toggle');
+        await expect(toggle).toHaveAttribute('data-mode', 'reading');
         await expect(panel.locator('.cm-content').first()).toHaveAttribute('contenteditable', 'false');
+        await page.setViewportSize({ width: 1194, height: 834 });
+        const noteRight = await panel.locator('[data-block-root]').boundingBox();
+        const toggleBounds = await toggle.boundingBox();
+        expect(noteRight).not.toBeNull();
+        expect(toggleBounds).not.toBeNull();
+        expect(toggleBounds!.x + toggleBounds!.width).toBeLessThanOrEqual(noteRight!.x + noteRight!.width);
+        expect(toggleBounds!.x).toBeGreaterThan(noteRight!.x + noteRight!.width - 100);
     });
 });
 
@@ -79,7 +108,7 @@ test.describe('narrow desktop', () => {
 
     test('keeps desktop editing when the browser window is narrow', async ({ page, request }) => {
         const { panel } = await openReadingFixture(page, request);
-        await expect(panel.getByTestId('mobile-reading-controls')).toHaveCount(0);
+        await expect(page.getByTestId('mobile-edit-toggle')).toHaveCount(0);
         await expect(panel.locator('.cm-content').first()).toHaveAttribute('contenteditable', 'true');
     });
 });
