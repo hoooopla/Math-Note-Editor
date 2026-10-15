@@ -1,11 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditorState, StateEffect, Compartment, Transaction, Prec, EditorSelection } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, dropCursor } from "@codemirror/view";
+import { search } from "@codemirror/search";
 import { markdown } from "@codemirror/lang-markdown";
 import { mathMarkdownExtension } from "../lib/editor/math-markdown-extension";
+import { headingPlugin, removeHeadingPrefix } from "../lib/editor/heading-plugin";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { history, historyField, defaultKeymap, historyKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, blockMathDecorationField, mathTooltipField, autoClosingDollarField, updateAutoClosingDollar, isDollarEscaped } from "../lib/editor/katex-plugin";
+import { findHighlightField } from "../lib/editor/find-highlight";
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, completionStatus, closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { latexCompletion } from "../lib/editor/latex-autocomplete";
 import { linkCompletion } from "../lib/editor/link-autocomplete";
@@ -74,9 +77,10 @@ export interface CodeMirrorEditorProps {
     onEsc?: () => void;
     onImagePaste?: (file: File, insertContent: (text: string) => void, assertInsertable: () => void) => void;
     onReady?: (view: EditorView) => void;
+    findRoot?: boolean;
 }
 
-export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, focusX, focusRequestKey, stateCacheKey, stateCacheGroup, isDormant = false, onFocus, parentLabel, visitedLabels, occurrencePath, onEsc, onImagePaste, onReady }: CodeMirrorEditorProps) {
+export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, focusX, focusRequestKey, stateCacheKey, stateCacheGroup, isDormant = false, onFocus, parentLabel, visitedLabels, occurrencePath, onEsc, onImagePaste, onReady, findRoot = false }: CodeMirrorEditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [openExplanation, setOpenExplanation] = useState<OpenExplanation | null>(null);
     const openExplanationRef = useRef<OpenExplanation | null>(null);
@@ -333,7 +337,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
             },
             {
                 key: "Backspace",
-                run: view => runEmbeddedKey(view, "Backspace")
+                run: view => runEmbeddedKey(view, "Backspace") || removeHeadingPrefix(view)
             },
             {
                 key: "Delete",
@@ -513,6 +517,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 }]),
                 keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),
                 markdown({ addKeymap: false, extensions: [mathMarkdownExtension] }),
+                headingPlugin,
                 EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["(", "[", "{", "'", '"', "$"] } }]),
                 macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
                 parentLabelCompartmentRef.current.of(parentLabelFacet.of(parentLabelRef.current || "")),
@@ -531,6 +536,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     EditorView.editable.of(!isReadOnly)
                 ]),
                 editorFocusField,
+                findHighlightField,
                 autoClosingDollarField,
                 parsedRangesField,
                 blockMathDecorationField,
@@ -737,7 +743,8 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                     ".cm-scroller": {
                         overflow: "visible !important"
                     }
-                })
+                }),
+                search({ top: false })
             ];
         const cachedState = stateCacheKey ? editorStateCache.get(stateCacheKey) : undefined;
         let state: EditorState;
@@ -923,6 +930,8 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         data-editor-dormant={isDormant ? "true" : "false"}
         data-editor-read-only={isReadOnly ? "true" : "false"}
         data-editor-wants-focus={isFocused ? "true" : "false"}
+        data-find-label={parentLabel || ''}
+        data-find-root={findRoot ? 'true' : undefined}
     />{openExplanation && <Suspense fallback={null}><MathExplanationPopover
         {...openExplanation} macros={macros} parentLabel={parentLabel} visitedLabels={visitedLabels}
         onClose={closeExplanation}

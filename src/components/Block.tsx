@@ -310,8 +310,8 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                         </div>
                     ) : (
                         <div className="flex items-center gap-3 font-sans text-[11px] text-secondary transition-colors">
-                            <MathTitle text={block.title} className="font-sans text-[16px] font-bold text-primary transition-colors" />
-                            <span className="font-sans text-[11px] bg-transparent border border-outline px-1.5 py-0.5 rounded text-secondary tracking-widest">
+                            <span data-find-visible-title="true"><MathTitle text={block.title} className="font-sans text-[16px] font-bold text-primary transition-colors" /></span>
+                            <span data-find-visible-label="true" className="font-sans text-[11px] bg-transparent border border-outline px-1.5 py-0.5 rounded text-secondary tracking-widest">
                                 {block.label || 'label'}
                             </span>
                             {hasDuplicateLabel && <span className="flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300" title="This label is used by more than one block"><AlertTriangle size={11}/> Duplicate label</span>}
@@ -435,6 +435,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                     focusRequestKey={focusRequestKey}
                     onFocus={handleFocus}
                     parentLabel={block.label}
+                    findRoot
                     visitedLabels={[block.label]}
                     onImagePaste={backendMode === "viewer" ? undefined : (file, insertContent, assertInsertable) => setImageUploadParams({ file, onInsert: insertContent, assertInsertable })}
                 />

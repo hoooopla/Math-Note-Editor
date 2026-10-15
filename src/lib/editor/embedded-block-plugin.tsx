@@ -2,6 +2,7 @@ import { Decoration, DecorationSet, EditorView, WidgetType, showTooltip, Tooltip
 import { EditorSelection, RangeSetBuilder, StateEffect, StateField, Facet } from "@codemirror/state";
 import { completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { editorFocusField, parsedRangesField, setEditorFocus } from "./katex-plugin";
+import { findHighlightOverlaps, setFindHighlight } from "./find-highlight";
 import { Root, createRoot } from "react-dom/client";
 import { EmbeddedBlockUI } from "../../components/EmbeddedBlockUI";
 import React from "react";
@@ -496,6 +497,7 @@ export function scheduleEmbeddedNavigationReveal(origin: EditorView) {
 }
 
 function isRawEmbeddedSourceVisible(state: import("@codemirror/state").EditorState, link: ParsedLink) {
+    if (findHighlightOverlaps(state, link.from, link.to)) return true;
     if (!state.field(editorFocusField, false)) return false;
     const selection = state.selection.main;
     const cursorInside = selection.empty && selection.head > link.from && selection.head < link.to;
@@ -1138,7 +1140,7 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
     const decos: {from: number, to: number, deco: Decoration}[] = [];
 
     for (const link of links) {
-        const showRawSource = !state.readOnly && isRawEmbeddedSourceVisible(state, link);
+        const showRawSource = isRawEmbeddedSourceVisible(state, link) && (!state.readOnly || findHighlightOverlaps(state, link.from, link.to));
         const effectiveOpen = transientOpen?.get(link.from) ?? link.open;
         const effectiveText = effectiveOpen === link.open ? link.text : setEmbeddedOpen(link.text, effectiveOpen);
         const isKeyboardSelected = isFocused && selection.empty &&
@@ -1233,7 +1235,7 @@ export const embeddedBlockPlugin = StateField.define<DecorationSet>({
         return buildEmbeddedDecorations(state);
     },
     update(decorations, tr) {
-        if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(setEditorFocus) || e.is(setEmbeddedObjectSelection) || e.is(setTransientEmbeddedOpen) || e.is(clearTransientEmbeddedOpen))) {
+        if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(setEditorFocus) || e.is(setFindHighlight) || e.is(setEmbeddedObjectSelection) || e.is(setTransientEmbeddedOpen) || e.is(clearTransientEmbeddedOpen))) {
             return buildEmbeddedDecorations(tr.state);
         }
         return decorations;

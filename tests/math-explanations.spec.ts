@@ -105,6 +105,28 @@ test('keeps a short explanation compact and outside the symbol', async ({ page }
     expect(cardRect!.y).toBeGreaterThanOrEqual(targetRect!.y + targetRect!.height);
 });
 
+test('gives display math more room while keeping very long equations scrollable', async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await page.goto('/');
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await editor.fill(`$a \\tooltip{=}{A longer equation: \\[${'a+b+c+d+e+f+g+h+i+j+k+l+m+n+o+p+q+r+s+t+u+v+w+x+y+z+'.repeat(3)}0\\]} b$`);
+    await page.getByLabel('Open settings').click();
+    await page.keyboard.press('Escape');
+    await page.locator('.cm-math-explanation-trigger').first().click();
+    const card = page.locator('.math-explanation-popover');
+    await expect(card.locator('.cm-math-block')).toBeVisible();
+    const dimensions = await card.evaluate(element => ({
+        width: element.getBoundingClientRect().width,
+        equationScrollWidth: element.querySelector('.cm-math-block')?.scrollWidth ?? 0,
+        equationClientWidth: element.querySelector('.cm-math-block')?.clientWidth ?? 0
+    }));
+    expect(dimensions.width).toBeGreaterThan(440);
+    expect(dimensions.width).toBeLessThanOrEqual(900);
+    expect(dimensions.equationScrollWidth).toBeGreaterThan(dimensions.equationClientWidth);
+    await page.setViewportSize({ width: 390, height: 800 });
+    await expect.poll(() => card.evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(366);
+});
+
 test('draws relation outlines on the glyph rather than KaTeX trailing spacing', async ({ page }) => {
     await page.goto('/');
     const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();

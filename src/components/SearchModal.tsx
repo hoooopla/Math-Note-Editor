@@ -19,7 +19,10 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
     const [creationError, setCreationError] = useState<string | null>(null);
+    const [pendingCreate, setPendingCreate] = useState<{ title: string; label: string } | null>(null);
+    const [isCreating, setIsCreating] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
+    const confirmRef = useRef<HTMLButtonElement>(null);
     const parentRef = useRef<HTMLDivElement>(null);
 
     const searchResults = useMemo(() => {
@@ -47,7 +50,9 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
             setSearchQuery('');
             setSelectedIndex(0);
             setCreationError(null);
-            setTimeout(() => inputRef.current?.focus(), 50);
+            setPendingCreate(null);
+            setIsCreating(false);
+            inputRef.current?.focus();
         }
     }, [isOpen]);
 
@@ -55,6 +60,10 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
         setSelectedIndex(0);
         setCreationError(null);
     }, [searchQuery]);
+
+    useEffect(() => {
+        if (pendingCreate) confirmRef.current?.focus();
+    }, [pendingCreate]);
 
     useEffect(() => {
         if (searchResults.length > 0) {
@@ -71,14 +80,29 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                 setCreationError(createValidationError);
                 return;
             }
-            const newBlock = await addBlock({ title: createTitle, label: createLabel });
-            if (newBlock) {
-                activateRootBlock(newBlock.id, 'start');
-                onClose();
-            } else {
-                setCreationError(useStore.getState().persistenceError || 'Block could not be created');
-            }
+            setPendingCreate({ title: createTitle, label: createLabel });
         }
+    };
+
+    const cancelCreate = () => {
+        if (isCreating) return;
+        setPendingCreate(null);
+        inputRef.current?.focus();
+    };
+
+    const confirmCreate = async () => {
+        if (!pendingCreate || isCreating) return;
+        setIsCreating(true);
+        const newBlock = await addBlock(pendingCreate);
+        if (newBlock) {
+            activateRootBlock(newBlock.id, 'start');
+            onClose();
+        } else {
+            setCreationError(useStore.getState().persistenceError || 'Block could not be created');
+            setPendingCreate(null);
+            inputRef.current?.focus();
+        }
+        setIsCreating(false);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -105,7 +129,7 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
     return (
         <div className="fixed inset-0 bg-black/50 flex justify-center items-start pt-[20vh] z-[200] p-4" onClick={onClose}>
             <div 
-                className="bg-surface border border-outline rounded-xl shadow-2xl w-full max-w-xl overflow-hidden flex flex-col" 
+                className="relative bg-surface border border-outline rounded-xl shadow-2xl w-full max-w-xl overflow-hidden flex flex-col"
                 onClick={e => e.stopPropagation()}
             >
                 <div className="p-3 border-b border-outline flex items-center gap-3 relative">
@@ -177,6 +201,25 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                         <span><kbd className="font-mono bg-outline/50 px-1 rounded">Esc</kbd> to close</span>
                     </div>
                 </div>
+                {pendingCreate && <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/45 p-4" onClick={cancelCreate}>
+                    <div role="dialog" aria-modal="true" aria-labelledby="search-create-title" className="w-full max-w-sm rounded-lg border border-outline bg-surface p-4 shadow-2xl" onClick={event => event.stopPropagation()}
+                        onKeyDown={event => {
+                            if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelCreate(); }
+                            if (event.key === 'Tab') {
+                                const cancel = event.currentTarget.querySelector('[data-create-cancel]') as HTMLButtonElement | null;
+                                if (!cancel) return;
+                                event.preventDefault();
+                                (document.activeElement === confirmRef.current ? cancel : confirmRef.current)?.focus();
+                            }
+                        }}>
+                        <h2 id="search-create-title" className="text-sm font-semibold text-primary">Create new block?</h2>
+                        <p className="mt-2 break-words text-sm text-secondary">Create “{pendingCreate.title}” with label “{pendingCreate.label}”?</p>
+                        <div className="mt-4 flex justify-end gap-2">
+                            <button type="button" data-create-cancel onClick={cancelCreate} disabled={isCreating} className="rounded border border-outline px-3 py-1.5 text-sm text-primary hover:bg-outline disabled:opacity-50">Cancel</button>
+                            <button ref={confirmRef} type="button" onClick={() => void confirmCreate()} disabled={isCreating} className="rounded bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">{isCreating ? 'Creating…' : 'Create block'}</button>
+                        </div>
+                    </div>
+                </div>}
             </div>
         </div>
     );

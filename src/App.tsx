@@ -9,7 +9,7 @@ import { getOrderedBlocks, useStore } from "./store";
 import { preloadGoogleSignIn } from "./lib/google-drive-workspace";
 import { BlockContainer } from "./components/Block";
 import { CodeMirrorEditor } from "./components/CodeMirrorEditor";
-import { Search, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut } from "lucide-react";
+import { Search, ScanText, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut } from "lucide-react";
 import { isIPhoneOrIPad } from "./lib/ios-device";
 import "./index.css";
 
@@ -19,6 +19,7 @@ type ExplanationTab = { id: string; math: string; content: string; parentLabel?:
 const SettingsModal = React.lazy(() => import("./components/SettingsModal").then(module => ({ default: module.SettingsModal })));
 const ImageUploadModal = React.lazy(() => import("./components/ImageUploadModal").then(module => ({ default: module.ImageUploadModal })));
 const SearchModal = React.lazy(() => import("./components/SearchModal").then(module => ({ default: module.SearchModal })));
+const FindPanel = React.lazy(() => import("./components/FindPanel").then(module => ({ default: module.FindPanel })));
 const WorkspaceIssuesModal = React.lazy(() => import("./components/WorkspaceIssuesModal").then(module => ({ default: module.WorkspaceIssuesModal })));
 const GraphModal = React.lazy(() =>
     import("./components/GraphModal").then(module => ({ default: module.GraphModal }))
@@ -77,6 +78,7 @@ export default function App() {
     const flushPendingSaves = useStore(state => state.flushPendingSaves);
     const [isMacroModalOpen, setIsMacroModalOpen] = useState(false);
     const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
+    const [isFindOpen, setIsFindOpen] = useState(false);
     const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
     const [isBlockMapOpen, setIsBlockMapOpen] = useState(false);
     const [isTestMode, setIsTestMode] = useState(false);
@@ -285,6 +287,7 @@ export default function App() {
             if (e.key === 'Escape') {
                 if (isMacroModalOpen) closeSettings();
                 else if (isSearchModalOpen) setIsSearchModalOpen(false);
+                else if (isFindOpen) setIsFindOpen(false);
                 else if (isGraphModalOpen) setIsGraphModalOpen(false);
                 else if (isBlockMapOpen) setIsBlockMapOpen(false);
                 else if (isWorkspaceIssuesOpen) setIsWorkspaceIssuesOpen(false);
@@ -293,8 +296,15 @@ export default function App() {
                 e.preventDefault();
                 return;
             }
+            if (shortcutMatches(e, 'mod+f')) {
+                e.preventDefault();
+                if (isFindOpen) document.querySelector<HTMLInputElement>('[aria-label="Find in content"]')?.focus();
+                else { setIsSearchModalOpen(false); setIsFindOpen(true); }
+                return;
+            }
             if (shortcutMatches(e, settings.searchShortcut || 'mod+k')) {
                 e.preventDefault();
+                setIsFindOpen(false);
                 setIsSearchModalOpen(true);
                 return;
             }
@@ -339,7 +349,7 @@ export default function App() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isGraphModalOpen, isBlockMapOpen, isWorkspaceIssuesOpen, imageUploadParams, setImageUploadParams, closeSettings, activeExplanationId]);
+    }, [settings.searchShortcut, settings.editMetadataShortcut, settings.goToParentShortcut, settings.closeTabShortcut, settings.reopenClosedTabShortcut, settings.nextTabShortcut, settings.previousTabShortcut, isMacroModalOpen, isSearchModalOpen, isFindOpen, isGraphModalOpen, isBlockMapOpen, isWorkspaceIssuesOpen, imageUploadParams, setImageUploadParams, closeSettings, activeExplanationId]);
 
     const closeTab = (id: string, e?: React.SyntheticEvent) => {
         e?.stopPropagation();
@@ -425,7 +435,7 @@ export default function App() {
                 "--math-block-padding-y": `${settings.mathBlockPaddingY ?? 4}px`
             } as React.CSSProperties}
         >
-            <div className={`flex h-12 bg-surface border-b border-outline items-center px-4 shrink-0 ${isMobileIOS ? 'mobile-toolbar gap-4' : 'justify-between'}`} data-testid="app-toolbar">
+            <div className={`flex h-12 bg-surface border-b border-outline items-center justify-between px-4 shrink-0 ${isMobileIOS ? 'mobile-toolbar gap-4' : ''}`} data-testid="app-toolbar">
                 <div className={`flex items-center gap-4 ${isMobileIOS ? 'shrink-0' : ''}`}>
                     <h1 className="text-[16px] font-bold tracking-tight text-primary flex items-center gap-2 whitespace-nowrap">
                         <Command className="text-accent" size={20} />
@@ -508,6 +518,11 @@ export default function App() {
                         aria-label="Search"
                     >
                         <Search size={18} />
+                    </button>
+                    <button type="button" onClick={() => setIsFindOpen(true)}
+                        className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
+                        title="Find in content (Cmd/Ctrl+F)" aria-label="Find in content">
+                        <ScanText size={18} />
                     </button>
                     <button 
                         onClick={() => setIsGraphModalOpen(true)}
@@ -774,6 +789,7 @@ export default function App() {
             </div>
             
             {isSearchModalOpen && <React.Suspense fallback={<ModalLoading label="Loading search"/>}><SearchModal isOpen onClose={() => setIsSearchModalOpen(false)} /></React.Suspense>}
+            {isFindOpen && <React.Suspense fallback={null}><FindPanel onClose={() => setIsFindOpen(false)} /></React.Suspense>}
             {isGraphModalOpen && (
                 <React.Suspense fallback={
                     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" role="status" aria-label="Loading graph view">

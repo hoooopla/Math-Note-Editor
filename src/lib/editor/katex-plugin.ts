@@ -4,6 +4,7 @@ import katex from "katex";
 import { isTikzCdMath, renderTikzCd } from "./tikz-cd-renderer";
 import { maskMathExplanations, prepareExplainedMath } from "./math-tooltip-syntax";
 import "katex/dist/katex.min.css"; 
+import { findHighlightField, findHighlightOverlaps, setFindHighlight } from "./find-highlight";
 
 export const livePreviewMacros = Facet.define<Record<string, string>, Record<string, string>>({
     combine: values => values[0] || {}
@@ -857,7 +858,8 @@ function buildBlockMathDecorations(state: EditorState) {
     const decos: DecorationEntry[] = [];
 
     for (const range of state.field(parsedRangesField).filter(range => range.type === "blockMath")) {
-        const overlapping = !state.readOnly && isFocused !== false && selection.from <= range.to && selection.to >= range.from;
+        const findHit = findHighlightOverlaps(state, range.from, range.to);
+        const overlapping = findHit || (!state.readOnly && isFocused !== false && selection.from <= range.to && selection.to >= range.from);
         if (overlapping || !range.text) {
             decos.push({
                 from: range.from,
@@ -865,7 +867,7 @@ function buildBlockMathDecorations(state: EditorState) {
                 deco: Decoration.mark({ class: "cm-math-editing", inclusive: true })
             });
             appendMathSyntaxDecorations(doc, range, decos);
-            if (range.text) decos.push({
+            if (range.text && !findHit) decos.push({
                 from: range.to,
                 to: range.to,
                 deco: Decoration.widget({
@@ -898,6 +900,7 @@ export const blockMathDecorationField = StateField.define<DecorationSet>({
             before.field(parsedRangesField) === after.field(parsedRangesField) &&
             before.selection.eq(after.selection) &&
             before.field(editorFocusField) === after.field(editorFocusField) &&
+            before.field(findHighlightField, false) === after.field(findHighlightField, false) &&
             before.readOnly === after.readOnly &&
             before.facet(livePreviewMacros) === after.facet(livePreviewMacros)) return value;
         return buildBlockMathDecorations(after);
@@ -925,7 +928,9 @@ function buildLiveDecorations(view: EditorView) {
         if (!isVisible && !containsSelection) continue;
 
         let overlapping = false;
-        if (!state.readOnly && isFocused !== false) {
+        if (findHighlightOverlaps(state, r.from, r.to)) {
+            overlapping = true;
+        } else if (!state.readOnly && isFocused !== false) {
             if (r.type === "quote") {
                 overlapping = selection.from <= r.from + 2 && selection.to >= r.from;
             } else {
@@ -1013,7 +1018,7 @@ export const mathPlugin = ViewPlugin.fromClass(class {
 
     update(update: ViewUpdate) {
         const macrosChanged = update.state.facet(livePreviewMacros) !== update.startState.facet(livePreviewMacros);
-        const focusChanged = update.transactions.some(transaction => transaction.effects.some(effect => effect.is(setEditorFocus)));
+        const focusChanged = update.transactions.some(transaction => transaction.effects.some(effect => effect.is(setEditorFocus) || effect.is(setFindHighlight)));
         if (update.docChanged || update.selectionSet || update.viewportChanged || macrosChanged || focusChanged ||
             update.startState.readOnly !== update.state.readOnly) {
             this.decorations = buildLiveDecorations(update.view);

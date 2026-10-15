@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from 'playwright/test';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from '../src/lib/block-metadata';
 import { encodeEmbeddedLabel, findActiveEmbeddedTarget, parseEmbeddedLinks, resolveEmbeddedLabel } from '../src/lib/embedded-link-syntax';
@@ -17,6 +18,8 @@ import {
     initialEmbeddedEditorPhase,
     resetEmbeddedEditorLifecycle
 } from '../src/lib/embedded-editor-lifecycle';
+
+const appVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
 
 test.beforeEach(async ({ request }) => {
     const response = await request.post('/api/test/reset');
@@ -587,6 +590,16 @@ test('creates an exact safe search label and focuses the new root editor', async
     await expect(page.getByText(`Create "${label}"`, { exact: true })).toBeVisible();
     await search.press('Enter');
 
+    const confirmation = page.getByRole('dialog', { name: 'Create new block?' });
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation).toContainText(label);
+    await expect(confirmation.getByRole('button', { name: 'Create block' })).toBeFocused();
+    await expect.poll(async () => {
+        const metadata = await (await page.request.get('/api/blocks?metaOnly=true')).json();
+        return metadata.some((block: { label: string }) => block.label === label);
+    }).toBe(false);
+    await confirmation.getByRole('button', { name: 'Create block' }).click();
+
     await expect(search).not.toBeVisible();
     await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first()).toBeFocused();
     await expect(page.locator('[role="tabpanel"][aria-hidden="false"] [data-testid^="block-metadata-header-"]')).toContainText(label);
@@ -594,6 +607,27 @@ test('creates an exact safe search label and focuses the new root editor', async
         const metadata = await (await page.request.get('/api/blocks?metaOnly=true')).json();
         return metadata.some((block: { label: string }) => block.label === label);
     }).toBe(true);
+});
+
+test('cancels block creation from search without closing the search', async ({ page }) => {
+    const label = `Cancel Search Creation ${Date.now()}`;
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(label);
+    await page.getByText(`Create "${label}"`, { exact: true }).click();
+    const confirmation = page.getByRole('dialog', { name: 'Create new block?' });
+    await expect(confirmation).toBeVisible();
+    await confirmation.getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirmation).not.toBeVisible();
+    await expect(search).toBeFocused();
+    await search.press('Enter');
+    await expect(confirmation).toBeVisible();
+    await confirmation.getByRole('button', { name: 'Create block' }).press('Escape');
+    await expect(confirmation).not.toBeVisible();
+    await expect(search).toBeFocused();
+    const metadata = await (await page.request.get('/api/blocks?metaOnly=true')).json();
+    expect(metadata.some((block: { label: string }) => block.label === label)).toBe(false);
 });
 
 test('keeps invalid search creation open and does not create a block', async ({ page }) => {
@@ -6207,9 +6241,9 @@ test('shows the running build identity in General Settings', async ({ page }) =>
     await openEditor(page);
     await page.getByLabel('Open settings').click();
     const build = page.getByTestId('build-info');
-    await expect(build).toContainText('Version 1.0.1');
+    await expect(build).toContainText(`Version ${appVersion}`);
     await expect(build).toContainText('Development server');
-    await expect(page.locator('h1').getByLabel('Version 1.0.1')).toHaveCount(0);
+    await expect(page.locator('h1').getByLabel(`Version ${appVersion}`)).toHaveCount(0);
 });
 
 test('keeps the desktop app name without a version suffix', async ({ page }) => {
@@ -6219,8 +6253,8 @@ test('keeps the desktop app name without a version suffix', async ({ page }) => 
     });
     await openEditor(page);
     await expect(page.locator('h1')).toContainText('Math Note Editor');
-    await expect(page.locator('h1')).not.toContainText('1.0.1');
-    await expect(page.locator('h1').getByLabel('Version 1.0.1')).toHaveCount(0);
+    await expect(page.locator('h1')).not.toContainText(appVersion);
+    await expect(page.locator('h1').getByLabel(`Version ${appVersion}`)).toHaveCount(0);
 });
 
 test('validates settings and supports keyboard dialog navigation', async ({ page }) => {

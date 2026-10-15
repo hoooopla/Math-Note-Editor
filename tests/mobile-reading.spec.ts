@@ -94,6 +94,11 @@ test.describe('iPad reading', () => {
         await expect(toggle).toHaveAttribute('data-mode', 'reading');
         await expect(panel.locator('.cm-content').first()).toHaveAttribute('contenteditable', 'false');
         await page.setViewportSize({ width: 1194, height: 834 });
+        const toolbar = page.getByTestId('app-toolbar');
+        await expect.poll(() => toolbar.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+        const createBounds = await page.getByRole('button', { name: 'Create new block' }).boundingBox();
+        expect(createBounds).not.toBeNull();
+        expect(createBounds!.x + createBounds!.width).toBeGreaterThan(1194 - 70);
         const noteRight = await panel.locator('[data-block-root]').boundingBox();
         const toggleBounds = await toggle.boundingBox();
         expect(noteRight).not.toBeNull();
