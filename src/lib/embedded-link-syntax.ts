@@ -215,7 +215,7 @@ export function targetBounds(rawText: string): { start: number; end: number } {
 export function findActiveEmbeddedTarget(
     documentText: string,
     position: number,
-    options: { allowUnclosed?: boolean } = {}
+    options: { allowUnclosed?: boolean; allowInsideMath?: boolean } = {}
 ): ActiveEmbeddedTarget | null {
     const lineStart = documentText.lastIndexOf("\n", Math.max(0, position - 1)) + 1;
     const nextNewline = documentText.indexOf("\n", position);
@@ -237,6 +237,34 @@ export function findActiveEmbeddedTarget(
             relative: parsed.relative,
             standout: link.standout
         };
+    }
+
+    // Rendering intentionally ignores [[...]] inside math. An explanation
+    // argument in \tooltip{symbol}{explanation}, however, is prose that just
+    // happens to live inside the surrounding formula source. Its editor can
+    // opt into this cursor-local fallback without making the link render as an
+    // embedded block in the formula itself.
+    if (options.allowInsideMath) {
+        for (let opener = line.lastIndexOf("[[", localPosition); opener >= 0; opener = opener === 0 ? -1 : line.lastIndexOf("[[", opener - 1)) {
+            if (isEscaped(line, opener)) continue;
+            const close = line.indexOf("]]", opener + 2);
+            if (close === -1 || localPosition < opener + 2 || localPosition > close) continue;
+            if (isEscaped(line, close)) continue;
+
+            const rawText = line.slice(opener + 2, close);
+            const bounds = targetBounds(rawText);
+            const targetFrom = opener + 2 + bounds.start;
+            const targetTo = opener + 2 + bounds.end;
+            if (localPosition > targetTo) return null;
+            const parsed = parseEmbeddedText(rawText.slice(bounds.start, bounds.end));
+            return {
+                from: lineStart + targetFrom,
+                to: lineStart + targetTo,
+                label: parsed.label,
+                relative: parsed.relative,
+                standout: rawText.startsWith("@")
+            };
+        }
     }
 
     if (options.allowUnclosed === false) return null;

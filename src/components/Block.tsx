@@ -2,12 +2,13 @@ import React, { useState, useCallback, useEffect, useLayoutEffect, useMemo, useR
 import { createPortal } from "react-dom";
 import { findNearestExistingParentId, getOrderedBlocks, useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle, Link2, Pencil } from "lucide-react";
+import { Trash2, FileText, Check, X, Lock, Unlock, CornerLeftUp, AlertTriangle, Link2, Pencil, MoreHorizontal } from "lucide-react";
 import { MathTitle } from "./MathTitle";
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from "../lib/label-policy";
 import { BacklinksPopover } from "./BacklinksPopover";
 import { buildBacklinkIndex } from "../lib/backlinks";
 import { isIPhoneOrIPad } from "../lib/ios-device";
+import { effectiveMathMacros } from "../lib/math-render-settings";
 
 const SafeRelabelModal = React.lazy(() => import("./SafeRelabelModal").then(module => ({ default: module.SafeRelabelModal })));
 
@@ -18,7 +19,8 @@ export const BlockContainer: React.FC<{ id: string }> = ({ id }) => {
     const activeFocusX = useStore(state => state.activeFocusX);
     const isFocused = activeBlockId === id && (!activePath || (activePath.length === 1 && activePath[0] === block?.label));
     const focusDirection = useStore(state => state.focusDirection);
-    const macros = useStore(state => state.settings?.macros) || {};
+    const settings = useStore(state => state.settings);
+    const macros = useMemo(() => effectiveMathMacros(settings), [settings.macros, settings.emptySetStyle]);
 
     const setActiveBlock = useStore(state => state.setActiveBlock);
     const updateBlock = useStore(state => state.updateBlock);
@@ -69,6 +71,81 @@ interface BlockProps {
     updateBlock: (id: string, data: any) => void;
     flushBlock: (id: string) => Promise<void>;
     deleteBlock: (id: string) => void;
+}
+
+function fitLabelTail(label: string, width: number, source: HTMLElement) {
+    if (!label || width <= 0 || typeof document === 'undefined') return label;
+    const computed = getComputedStyle(source);
+    const measurer = document.createElement('span');
+    Object.assign(measurer.style, {
+        position: 'fixed',
+        left: '-10000px',
+        top: '0',
+        visibility: 'hidden',
+        pointerEvents: 'none',
+        whiteSpace: 'nowrap',
+        fontFamily: computed.fontFamily,
+        fontSize: computed.fontSize,
+        fontStyle: computed.fontStyle,
+        fontWeight: computed.fontWeight,
+        fontStretch: computed.fontStretch,
+        fontFeatureSettings: computed.fontFeatureSettings,
+        letterSpacing: computed.letterSpacing
+    });
+    document.body.appendChild(measurer);
+    try {
+        const fits = (value: string) => {
+            measurer.textContent = value;
+            return measurer.getBoundingClientRect().width <= Math.max(0, width - 2);
+        };
+        if (fits(label)) return label;
+
+        const characters = Array.from(label);
+        let low = 0;
+        let high = characters.length;
+        while (low < high) {
+            const count = Math.ceil((low + high) / 2);
+            if (fits(`…${characters.slice(-count).join('')}`)) low = count;
+            else high = count - 1;
+        }
+        return `…${characters.slice(-low).join('')}`;
+    } finally {
+        measurer.remove();
+    }
+}
+
+function ResponsiveBlockLabel({ id, label }: { id: string; label: string }) {
+    const containerRef = useRef<HTMLSpanElement>(null);
+    const [displayLabel, setDisplayLabel] = useState(label);
+
+    useLayoutEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+        const update = () => {
+            setDisplayLabel(fitLabelTail(label, container.clientWidth, container));
+        };
+        update();
+        const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+        observer?.observe(container);
+        window.addEventListener('resize', update);
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener('resize', update);
+        };
+    }, [label]);
+
+    return (
+        <span
+            ref={containerRef}
+            data-find-visible-label="true"
+            data-testid={`block-visible-label-${id}`}
+            data-label-clamped={displayLabel === label ? "false" : "true"}
+            className="block min-w-0 flex-1 overflow-hidden whitespace-nowrap text-left font-mono text-[11px] leading-4 text-secondary/80"
+            title={label}
+        >
+            {displayLabel}
+        </span>
+    );
 }
 
 export function Block({ block, isFocused, focusDirection, focusX, macros, setActive, updateBlock, flushBlock, deleteBlock }: BlockProps) {
@@ -240,7 +317,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
 
             <div 
                 data-testid={`block-metadata-header-${block.id}`}
-                className={`flex items-center justify-between px-4 py-2 bg-transparent border-b border-outline text-sm text-secondary cursor-text select-none rounded-t-[8px] relative ${showBacklinks ? 'z-40' : 'z-10'}`}
+                className={`flex items-start gap-3 px-4 py-2.5 bg-transparent border-b border-outline text-sm text-secondary cursor-text select-none rounded-t-[8px] relative ${showBacklinks ? 'z-40' : 'z-10'}`}
                 onClick={(e) => {
                     e.stopPropagation();
                     if (!isEditingMeta) {
@@ -253,32 +330,49 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                     beginMetaEdit();
                 }}
             >
-                <div className="flex-1">
+                <div className="min-w-0 flex-1">
                     {isEditingMeta ? (
                         <div 
-                            className="flex space-x-2 items-center"
+                            className="flex min-w-0 flex-col gap-2"
                             onBlur={(e) => {
                                 if (!e.currentTarget.contains(e.relatedTarget)) {
                                     cancelMeta();
                                 }
                             }}
                         >
-                            <input 
-                                autoFocus
-                                aria-label="Block title"
-                                maxLength={512}
-                                className="bg-base text-primary px-2 py-1 rounded outline-none border border-outline text-[16px] font-sans font-semibold max-w-[200px] focus:border-accent"
-                                value={titleInput}
-                                onChange={e => setTitleInput(e.target.value)}
-                                onKeyDown={handleMetaKeyDown}
-                                placeholder="Title"
-                            />
-                            <div className="relative flex items-center gap-2">
-                                <input 
+                            <div className="flex min-w-0 items-center gap-2">
+                                <input
+                                    autoFocus
+                                    aria-label="Block title"
+                                    maxLength={512}
+                                    className="min-w-0 flex-1 rounded border border-outline bg-base px-2 py-1 font-sans text-[16px] font-semibold text-primary outline-none focus:border-accent"
+                                    value={titleInput}
+                                    onChange={e => setTitleInput(e.target.value)}
+                                    onKeyDown={handleMetaKeyDown}
+                                    placeholder="Title"
+                                />
+                                <button 
+                                    aria-label="Save block metadata"
+                                    onMouseDown={e => { e.preventDefault(); void submitMeta(); }}
+                                    disabled={isRepairingLabel}
+                                    className="shrink-0 rounded p-1.5 text-emerald-500 transition-colors hover:bg-surface/50 disabled:opacity-50"
+                                >
+                                    <Check size={16} />
+                                </button>
+                                <button 
+                                    aria-label="Cancel block metadata editing"
+                                    onMouseDown={e => { e.preventDefault(); cancelMeta(); }}
+                                    className="shrink-0 rounded p-1.5 text-secondary transition-colors hover:bg-surface/50"
+                                >
+                                    <X size={16} />
+                                </button>
+                            </div>
+                            <div className="min-w-0">
+                                <input
                                     aria-label="Block label"
                                     disabled={backendMode === "viewer"}
                                     maxLength={512}
-                                    className={`bg-base text-secondary px-2 py-1 rounded outline-none border ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} text-xs tracking-widest font-sans max-w-[150px] disabled:cursor-not-allowed disabled:opacity-60`}
+                                    className={`w-full min-w-0 rounded border bg-base px-2 py-1 font-mono text-xs text-secondary outline-none ${error ? 'border-red-500 focus:border-red-500' : 'border-outline focus:border-accent'} disabled:cursor-not-allowed disabled:opacity-60`}
                                     value={labelInput}
                                     onChange={e => {
                                         setError(null);
@@ -287,44 +381,32 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                                     onKeyDown={handleMetaKeyDown}
                                     placeholder="Label"
                                 />
-                                <button 
-                                    aria-label="Save block metadata"
-                                    onMouseDown={e => { e.preventDefault(); void submitMeta(); }}
-                                    disabled={isRepairingLabel}
-                                    className="p-1 hover:bg-surface/50 text-emerald-500 rounded transition-colors disabled:opacity-50"
-                                >
-                                    <Check size={16} />
-                                </button>
-                                <button 
-                                    onMouseDown={e => { e.preventDefault(); cancelMeta(); }}
-                                    className="p-1 hover:bg-surface/50 text-secondary rounded transition-colors"
-                                >
-                                    <X size={16} />
-                                </button>
                                 {error && (
-                                    <span className="absolute left-full ml-2 whitespace-nowrap text-xs text-red-500 font-sans">
+                                    <span className="mt-1 block break-words font-sans text-xs text-red-500">
                                         {error}
                                     </span>
                                 )}
                             </div>
                         </div>
                     ) : (
-                        <div className="flex items-center gap-3 font-sans text-[11px] text-secondary transition-colors">
-                            <span data-find-visible-title="true"><MathTitle text={block.title} className="font-sans text-[16px] font-bold text-primary transition-colors" /></span>
-                            <span data-find-visible-label="true" className="font-sans text-[11px] bg-transparent border border-outline px-1.5 py-0.5 rounded text-secondary tracking-widest">
-                                {block.label || 'label'}
+                        <div className="min-w-0 font-sans text-secondary transition-colors">
+                            <span data-find-visible-title="true" className="block min-w-0 truncate whitespace-nowrap" title={block.title}>
+                                <MathTitle text={block.title} className="font-sans text-[16px] font-bold text-primary transition-colors" />
                             </span>
-                            {hasDuplicateLabel && <span className="flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300" title="This label is used by more than one block"><AlertTriangle size={11}/> Duplicate label</span>}
+                            <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                                <ResponsiveBlockLabel id={block.id} label={block.label || 'label'} />
+                                {hasDuplicateLabel && <span className="flex shrink-0 items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300" title="This label is used by more than one block"><AlertTriangle size={11}/> Duplicate label</span>}
+                            </div>
                         </div>
                     )}
                 </div>
                 
-                {(isFocused || isIOSDevice) && (
-                    <div className="relative flex items-center gap-2">
+                {(isFocused || isIOSDevice) && !isEditingMeta && (
+                    <div className="relative flex shrink-0 items-center gap-2 pt-0.5">
                         {nearestParentId && nearestParentLabel && (
                             <button
                                 onClick={(e) => { e.stopPropagation(); useStore.getState().goToNearestParent(); }}
-                                className="text-secondary hover:text-accent transition-colors opacity-0 group-hover:opacity-100 flex items-center"
+                                className="flex items-center text-secondary/70 opacity-0 transition-colors hover:text-accent group-hover:opacity-100 focus-visible:opacity-100"
                                 title={`Go to parent: ${nearestParentLabel}`}
                                 aria-label={`Go to nearest parent block ${nearestParentLabel}`}
                             >
@@ -336,7 +418,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                             data-testid="backlinks-button"
                             onPointerDown={(e) => e.stopPropagation()}
                             onClick={(e) => { e.stopPropagation(); setShowBacklinks(open => !open); }}
-                            className={`flex items-center gap-0.5 transition-colors ${showBacklinks ? 'text-accent opacity-100' : 'text-secondary hover:text-accent opacity-0 group-hover:opacity-100'}`}
+                            className={`flex items-center gap-0.5 transition-colors ${showBacklinks ? 'text-accent' : 'text-secondary/70 hover:text-accent'}`}
                             title={`${backlinkSourceIds.length} backlinks`}
                             aria-label={`Show ${backlinkSourceIds.length} backlinks`}
                             aria-expanded={showBacklinks}
@@ -351,41 +433,56 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                                 onClose={() => setShowBacklinks(false)}
                             />
                         )}
-                        {backendMode === "server" && (
-                            <a 
-                                href={`/api/blocks/${block.id}/raw`} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="text-secondary hover:text-accent transition-colors opacity-0 group-hover:opacity-100 flex items-center"
-                                title="View Raw Markdown"
-                                onClick={e => e.stopPropagation()}
-                            >
-                                <FileText size={16} />
-                            </a>
-                        )}
                         <button
                             onClick={(e) => { e.stopPropagation(); useStore.getState().toggleViewOnly(block.id); }}
-                            className={`text-secondary hover:text-accent transition-colors flex items-center ${isLocked || isIOSDevice ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                            className={`flex items-center transition-colors ${isLocked ? 'text-accent' : 'text-secondary/70 hover:text-accent'}`}
                             disabled={hasDuplicateLabel}
                             title={hasDuplicateLabel ? "Rename the duplicate label before editing" : isLocked ? "Unlock for editing" : "Lock for view-only"}
                         >
                             {isLocked ? <Lock size={16} /> : <Unlock size={16} />}
                         </button>
-                        {backendMode !== "viewer" && !isViewOnly && (isConfirmingDelete ? (
-                            <div className="flex items-center gap-1 opacity-100 bg-red-500/10 text-red-500 rounded px-2 py-0.5" onClick={e => e.stopPropagation()}>
-                                <span className="text-xs font-sans mr-1">Delete?</span>
-                                <button onClick={() => deleteBlock(block.id)} className="hover:text-red-400 p-0.5"><Check size={14} /></button>
-                                <button onClick={() => setIsConfirmingDelete(false)} className="hover:text-secondary p-0.5"><X size={14} /></button>
-                            </div>
-                        ) : (
-                            <button 
-                                 onClick={(e) => { e.stopPropagation(); setIsConfirmingDelete(true); }}
-                                 className="text-secondary hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
-                                 title="Delete Block"
-                            >
-                                <Trash2 size={16} />
-                            </button>
-                        ))}
+                        {(backendMode === "server" || (backendMode !== "viewer" && !isViewOnly)) && (
+                            <details className="group/actions-menu relative" onClick={e => e.stopPropagation()}>
+                                <summary
+                                    role="button"
+                                    className="flex cursor-pointer list-none items-center rounded p-0.5 text-secondary/70 transition-colors hover:bg-base/60 hover:text-primary [&::-webkit-details-marker]:hidden"
+                                    title="More block actions"
+                                    aria-label="More block actions"
+                                >
+                                    <MoreHorizontal size={17} />
+                                </summary>
+                                <div className="absolute right-0 top-full z-50 mt-1 min-w-44 overflow-hidden rounded-lg border border-outline bg-base py-1 font-sans text-xs text-primary shadow-xl shadow-black/30">
+                                    {backendMode === "server" && (
+                                        <a
+                                            href={`/api/blocks/${block.id}/raw`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="flex items-center gap-2 px-3 py-2 transition-colors hover:bg-surface"
+                                            title="View Raw Markdown"
+                                        >
+                                            <FileText size={15} />
+                                            <span>View raw Markdown</span>
+                                        </a>
+                                    )}
+                                    {!isViewOnly && (isConfirmingDelete ? (
+                                        <div className="flex items-center gap-2 px-3 py-2 text-red-400" onClick={e => e.stopPropagation()}>
+                                            <span className="mr-auto">Delete note?</span>
+                                            <button aria-label="Confirm delete block" onClick={() => deleteBlock(block.id)} className="rounded p-0.5 hover:bg-red-400/10"><Check size={15} /></button>
+                                            <button aria-label="Cancel delete block" onClick={() => setIsConfirmingDelete(false)} className="rounded p-0.5 text-secondary hover:bg-surface"><X size={15} /></button>
+                                        </div>
+                                    ) : (
+                                        <button
+                                            onClick={() => setIsConfirmingDelete(true)}
+                                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-400 transition-colors hover:bg-red-400/10"
+                                            title="Delete Block"
+                                        >
+                                            <Trash2 size={15} />
+                                            <span>Delete note…</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </details>
+                        )}
                     </div>
                 )}
             </div>

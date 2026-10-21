@@ -430,13 +430,38 @@ export function clearEmbeddedVisualMove(view: EditorView) {
     lastVisualMoves.delete(view);
 }
 
+function mathRangesForEmbeddedLinks(state: import("@codemirror/state").EditorState) {
+    return state.field(parsedRangesField, false)?.filter(range =>
+        range.type === "inlineMath" || range.type === "blockMath"
+    ) ?? [];
+}
+
+function isEmbeddedLinkInsideMath(
+    link: ParsedLink,
+    mathRanges: ReturnType<typeof mathRangesForEmbeddedLinks>
+) {
+    let low = 0;
+    let high = mathRanges.length - 1;
+    while (low <= high) {
+        const middle = (low + high) >> 1;
+        if (mathRanges[middle].from <= link.from) low = middle + 1;
+        else high = middle - 1;
+    }
+    return high >= 0 && link.to <= mathRanges[high].to;
+}
+
+function interactiveEmbeddedLinks(state: import("@codemirror/state").EditorState) {
+    const mathRanges = mathRangesForEmbeddedLinks(state);
+    return state.field(parsedLinksField).filter(link => !isEmbeddedLinkInsideMath(link, mathRanges));
+}
+
 function getEmbeddedObjectSelection(state: import("@codemirror/state").EditorState): EmbeddedObjectSelection | null {
     if (!state.field(editorFocusField, false)) return null;
 
     const selection = state.selection.main;
     if (!selection.empty) return null;
 
-    for (const link of state.field(parsedLinksField)) {
+    for (const link of interactiveEmbeddedLinks(state)) {
         if (selection.head === link.from) {
             return { from: link.from, to: link.to, edge: "before" };
         }
@@ -468,7 +493,8 @@ export const embeddedObjectSelectionField = StateField.define<EmbeddedObjectSele
     update(value, tr) {
         const explicitSelection = tr.effects.find(effect => effect.is(setEmbeddedObjectSelection));
         if (explicitSelection) return explicitSelection.value;
-        if (tr.docChanged || tr.selection) {
+        if (tr.docChanged || tr.selection ||
+            tr.startState.field(parsedRangesField, false) !== tr.state.field(parsedRangesField, false)) {
             return getEmbeddedObjectSelection(tr.state);
         }
         if (tr.effects.some(effect => effect.is(setEditorFocus))) {
@@ -490,7 +516,7 @@ export function scheduleEmbeddedNavigationReveal(origin: EditorView) {
         const head = view.state.selection.main.head;
         return {
             title,
-            atInlineSuffix: !title && view.state.field(parsedLinksField).some(link =>
+            atInlineSuffix: !title && interactiveEmbeddedLinks(view.state).some(link =>
                 link.open && link.to === head && view.state.doc.lineAt(link.to).to > link.to)
         };
     });
@@ -511,7 +537,7 @@ function isRawEmbeddedSourceVisible(state: import("@codemirror/state").EditorSta
  */
 export const embeddedAtomicRanges = EditorView.atomicRanges.of(view => {
     const builder = new RangeSetBuilder<Decoration>();
-    for (const link of view.state.field(parsedLinksField)) {
+    for (const link of interactiveEmbeddedLinks(view.state)) {
         if (!isRawEmbeddedSourceVisible(view.state, link)) {
             builder.add(link.from, link.to, Decoration.mark({}));
         }
@@ -817,6 +843,7 @@ class EmbeddedBlockWidget extends WidgetType {
         public occurrencePath: string[],
         public from: number, 
         public to: number,
+        public parentReadOnly: boolean,
         public isAtEndOfLine: boolean = false,
         public isAtStartOfLine: boolean = false,
         public isKeyboardSelected: boolean = false,
@@ -838,6 +865,7 @@ class EmbeddedBlockWidget extends WidgetType {
                JSON.stringify(this.occurrencePath) === JSON.stringify(other.occurrencePath) &&
                this.from === other.from &&
                this.to === other.to &&
+               this.parentReadOnly === other.parentReadOnly &&
                this.isAtEndOfLine === other.isAtEndOfLine &&
                this.isAtStartOfLine === other.isAtStartOfLine &&
                this.isKeyboardSelected === other.isKeyboardSelected &&
@@ -898,6 +926,7 @@ class EmbeddedBlockWidget extends WidgetType {
                 parentLabel={this.parentLabel}
                 visitedLabels={this.visitedLabels}
                 occurrencePath={this.occurrencePath}
+                parentReadOnly={this.parentReadOnly}
                 view={view}
                 stateRef={this.stateRef}
                 isAtEndOfLine={this.isAtEndOfLine}
@@ -986,6 +1015,7 @@ class EmbeddedBlockWidget extends WidgetType {
                     parentLabel={this.parentLabel}
                     visitedLabels={this.visitedLabels}
                     occurrencePath={this.occurrencePath}
+                    parentReadOnly={this.parentReadOnly}
                     view={view}
                     stateRef={this.stateRef}
                     isAtEndOfLine={this.isAtEndOfLine}
@@ -1130,6 +1160,7 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
     const builder = new RangeSetBuilder<Decoration>();
     const isFocused = state.field(editorFocusField, false);
     const links = state.field(parsedLinksField);
+    const mathRanges = mathRangesForEmbeddedLinks(state);
     const parentLabel = state.facet(parentLabelFacet);
     const visitedLabels = state.facet(visitedLabelsFacet);
     const occurrencePath = state.facet(occurrencePathFacet);
@@ -1140,6 +1171,13 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
     const decos: {from: number, to: number, deco: Decoration}[] = [];
 
     for (const link of links) {
+        // Embedded-link syntax inside a formula belongs to the formula's raw
+        // source. In particular, a [[label]] inside \tooltip{...}{...} must
+        // stay literal while the surrounding math is edited. The explanation
+        // popover parses its extracted content in a separate editor, where the
+        // same link is no longer inside a math range and renders normally.
+        if (isEmbeddedLinkInsideMath(link, mathRanges)) continue;
+
         const showRawSource = isRawEmbeddedSourceVisible(state, link) && (!state.readOnly || findHighlightOverlaps(state, link.from, link.to));
         const effectiveOpen = transientOpen?.get(link.from) ?? link.open;
         const effectiveText = effectiveOpen === link.open ? link.text : setEmbeddedOpen(link.text, effectiveOpen);
@@ -1166,6 +1204,7 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
                 occurrencePath,
                 link.from,
                 link.to,
+                state.readOnly,
                 isAtEndOfLine,
                 isAtStartOfLine,
                 isKeyboardSelected,
@@ -1235,7 +1274,9 @@ export const embeddedBlockPlugin = StateField.define<DecorationSet>({
         return buildEmbeddedDecorations(state);
     },
     update(decorations, tr) {
-        if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(setEditorFocus) || e.is(setFindHighlight) || e.is(setEmbeddedObjectSelection) || e.is(setTransientEmbeddedOpen) || e.is(clearTransientEmbeddedOpen))) {
+        if (tr.docChanged || tr.selection || tr.startState.readOnly !== tr.state.readOnly ||
+            tr.startState.field(parsedRangesField, false) !== tr.state.field(parsedRangesField, false) ||
+            tr.effects.some(e => e.is(setEditorFocus) || e.is(setFindHighlight) || e.is(setEmbeddedObjectSelection) || e.is(setTransientEmbeddedOpen) || e.is(clearTransientEmbeddedOpen))) {
             return buildEmbeddedDecorations(tr.state);
         }
         return decorations;
@@ -1247,7 +1288,7 @@ function getEmbedTooltip(state: import("@codemirror/state").EditorState): Toolti
     const isFocused = state.field(editorFocusField, false);
     if (!isFocused) return null;
 
-    const links = state.field(parsedLinksField);
+    const links = interactiveEmbeddedLinks(state);
     const selection = state.selection.main;
     const parentLabel = state.facet(parentLabelFacet);
 
@@ -1282,7 +1323,7 @@ function getEmbedTooltip(state: import("@codemirror/state").EditorState): Toolti
 }
 
 export const embedTooltipField = showTooltip.compute(
-    ["doc", "selection", editorFocusField, parsedLinksField],
+    ["doc", "selection", editorFocusField, parsedLinksField, parsedRangesField],
     (state) => getEmbedTooltip(state)
 );
 
@@ -1331,7 +1372,7 @@ function hasVisibleInlineSuffix(view: EditorView, link: ParsedLink) {
 function openInlineLinkAtSuffixStart(view: EditorView) {
     const selection = view.state.selection.main;
     if (!selection.empty) return undefined;
-    return view.state.field(parsedLinksField).find(link =>
+    return interactiveEmbeddedLinks(view.state).find(link =>
         link.to === selection.head && hasVisibleInlineSuffix(view, link)
     );
 }
@@ -1353,7 +1394,7 @@ function selectOpenTitleEnd(view: EditorView, link: ParsedLink) {
 }
 
 function selectInlineSuffixStart(view: EditorView, link: ParsedLink) {
-    const nextTitle = view.state.field(parsedLinksField).find(candidate => candidate.from === link.to);
+    const nextTitle = interactiveEmbeddedLinks(view.state).find(candidate => candidate.from === link.to);
     view.dispatch({
         selection: EditorSelection.cursor(link.to, 1),
         effects: [
@@ -1377,7 +1418,7 @@ function movePastClosedStandoutTitle(
 ) {
     const forward = direction === "down";
     const line = view.state.doc.lineAt(forward ? link.to : link.from);
-    const sameLineLinks = view.state.field(parsedLinksField)
+    const sameLineLinks = interactiveEmbeddedLinks(view.state)
         .filter(candidate => view.state.doc.lineAt(candidate.from).number === line.number)
         .sort((a, b) => a.from - b.from);
     const linkIndex = sameLineLinks.findIndex(candidate => candidate.from === link.from && candidate.to === link.to);
@@ -1459,7 +1500,7 @@ function findAdjacentVisualTextPosition(
     currentBottom: number
 ): AdjacentVisualTextPosition | null {
     const forward = direction === "down";
-    const links = view.state.field(parsedLinksField);
+    const links = interactiveEmbeddedLinks(view.state);
     const maximumProbeDistance = Math.max(120, view.defaultLineHeight * 5);
     const contentLeft = view.contentDOM.getBoundingClientRect().left + 1;
     const seen = new Set<string>();
@@ -1519,7 +1560,7 @@ function moveUpFromStandaloneTitleLogically(
     if (prefix.trim().length > 0 || suffix.trim().length > 0 || line.number <= 1) return false;
 
     const previousLine = doc.line(line.number - 1);
-    const links = view.state.field(parsedLinksField);
+    const links = interactiveEmbeddedLinks(view.state);
     const previousLineLinks = links.filter(candidate =>
         candidate.from >= previousLine.from && candidate.to <= previousLine.to
     );
@@ -1596,7 +1637,7 @@ function moveDownFromStandaloneTitleLogically(
     if (prefix.trim().length > 0 || suffix.trim().length > 0 || line.number >= doc.lines) return false;
 
     const nextLine = doc.line(line.number + 1);
-    const links = view.state.field(parsedLinksField);
+    const links = interactiveEmbeddedLinks(view.state);
     const nextLineLinks = links.filter(candidate =>
         candidate.from >= nextLine.from && candidate.to <= nextLine.to
     );
@@ -1654,12 +1695,12 @@ function moveFromSelectedTitleToAdjacentRow(
         const sameLineHasAnotherVisualRow = sameLineEdge && (forward
             ? sameLineEdge.top > titleRect.bottom + 2
             : sameLineEdge.bottom < titleRect.top - 2);
-        const interveningLink = view.state.field(parsedLinksField).some(candidate =>
+        const interveningLink = interactiveEmbeddedLinks(view.state).some(candidate =>
             candidate.from >= titleLine.from && candidate.to <= titleLine.to &&
             (forward ? candidate.from > link.from : candidate.to < link.to)
         );
         const adjacentLine = doc.line(adjacentNumber);
-        const adjacentHasLink = view.state.field(parsedLinksField).some(candidate =>
+        const adjacentHasLink = interactiveEmbeddedLinks(view.state).some(candidate =>
             candidate.from >= adjacentLine.from && candidate.to <= adjacentLine.to
         );
         const adjacentIsDisplayMath = view.state.field(parsedRangesField).some(range =>
@@ -1725,7 +1766,7 @@ function moveFromSelectedTitleToAdjacentRow(
             // rendered-row move.
             const probeY = forward ? rect.top + 1 : rect.bottom - 1;
             const anchor = view.posAtCoords({ x: probeX, y: probeY }, false);
-            if (anchor === null || view.state.field(parsedLinksField).some(candidate =>
+            if (anchor === null || interactiveEmbeddedLinks(view.state).some(candidate =>
                 anchor >= candidate.from && anchor <= candidate.to && !isRawEmbeddedSourceVisible(view.state, candidate)
             )) continue;
             const coords = view.coordsAtPos(anchor, forward ? 1 : -1);
@@ -1746,7 +1787,7 @@ function moveFromSelectedTitleToAdjacentRow(
     // A plain cursor here would otherwise skip the embed or enter its source.
     const adjacentCoords = view.coordsAtPos(adjacent.anchor, adjacent.assoc);
     if (!adjacentCoords) return false;
-    const links = view.state.field(parsedLinksField);
+    const links = interactiveEmbeddedLinks(view.state);
     const interveningPortal = ownedWrappers.some(wrapper => {
         const from = Number(wrapper.dataset.embedFrom);
         const to = Number(wrapper.dataset.embedTo);
@@ -1786,7 +1827,7 @@ function runVisualEmbeddedNavigation(view: EditorView, direction: "up" | "down")
     if (!view.hasFocus || !view.state.selection.main.empty) return false;
 
     const selection = view.state.selection.main;
-    const links = view.state.field(parsedLinksField);
+    const links = interactiveEmbeddedLinks(view.state);
     if (links.length === 0) return false;
 
     const previousMove = lastVisualMoves.get(view);
@@ -1968,6 +2009,57 @@ function runVisualEmbeddedNavigation(view: EditorView, direction: "up" | "down")
                 link.from >= previousLine.from && link.to <= previousLine.to
             );
             const lastPreviousLink = previousLineLinks.at(-1);
+            if (lastPreviousLink && !lastPreviousLink.open &&
+                !isRawEmbeddedSourceVisible(view.state, lastPreviousLink) &&
+                view.state.doc.sliceString(lastPreviousLink.to, previousLine.to).trim().length === 0) {
+                const previousWrapper = ownedWrappers.find(wrapper =>
+                    Number(wrapper.dataset.embedFrom) === lastPreviousLink.from &&
+                    Number(wrapper.dataset.embedTo) === lastPreviousLink.to
+                );
+                const titleRect = previousWrapper
+                    ? directEmbedElement(previousWrapper, "[data-embed-nav-title]")?.getBoundingClientRect()
+                    : null;
+                const precedingLink = previousLineLinks.at(-2);
+                const prefixFrom = precedingLink?.to ?? previousLine.from;
+                const prefix = view.state.doc.sliceString(prefixFrom, lastPreviousLink.from);
+                if (titleRect && currentX < titleRect.left - 2 && prefix.trim().length > 0) {
+                    let nearest: { anchor: number; assoc: -1 | 1; distance: number } | null = null;
+                    // posAtCoords can assign the whole prefix/title boundary
+                    // to the replacement widget. Compare the actual caret
+                    // positions in the ordinary-text span instead. The span is
+                    // bounded to keep a pathological long source line cheap.
+                    const scanFrom = Math.max(prefixFrom, lastPreviousLink.from - 4096);
+                    for (let anchor = scanFrom; anchor <= lastPreviousLink.from; anchor++) {
+                        const assoc: -1 | 1 = anchor === lastPreviousLink.from ? -1 : 1;
+                        if (links.some(candidate =>
+                            anchor > candidate.from && anchor < candidate.to &&
+                            !isRawEmbeddedSourceVisible(view.state, candidate)
+                        )) continue;
+                        const coords = view.coordsAtPos(anchor, assoc);
+                        if (!coords || coords.top >= titleRect.bottom - 2 || coords.bottom <= titleRect.top + 2) continue;
+                        const distance = Math.abs(coords.left - currentX);
+                        if (!nearest || distance < nearest.distance) nearest = { anchor, assoc, distance };
+                    }
+                    if (nearest) {
+                        const destination = EditorSelection.cursor(
+                            nearest.anchor,
+                            nearest.assoc,
+                            undefined,
+                            goalColumn
+                        );
+                        view.dispatch({
+                            selection: EditorSelection.create([destination]),
+                            effects: [setEditorFocus.of(true), setEmbeddedObjectSelection.of(null)],
+                            scrollIntoView: false
+                        });
+                        rememberVisualMove(view, direction, selection, destination, {
+                            x: currentX,
+                            y: currentCoordinate
+                        }, objectSelection);
+                        return true;
+                    }
+                }
+            }
             // An inline embed can leave visible text after its title (and,
             // when open, after its body). That text still belongs to the
             // preceding source line. Native movement can map the shared
@@ -1981,26 +2073,58 @@ function runVisualEmbeddedNavigation(view: EditorView, direction: "up" | "down")
                 if (suffixEnd && suffixEnd.bottom <= currentTop + 2) {
                     const rowY = (suffixEnd.top + suffixEnd.bottom) / 2;
                     const mapped = view.posAtCoords({ x: currentX, y: rowY }, false);
-                    const anchor = Math.max(
-                        lastPreviousLink.to,
-                        Math.min(previousLine.to, mapped ?? previousLine.to)
+                    const previousWrapper = ownedWrappers.find(wrapper =>
+                        Number(wrapper.dataset.embedFrom) === lastPreviousLink.from &&
+                        Number(wrapper.dataset.embedTo) === lastPreviousLink.to
                     );
-                    const destination = EditorSelection.cursor(
-                        anchor,
-                        anchor === previousLine.to ? -1 : 1,
-                        undefined,
-                        goalColumn
+                    const titleRect = previousWrapper
+                        ? directEmbedElement(previousWrapper, "[data-embed-nav-title]")?.getBoundingClientRect()
+                        : null;
+                    const suffixSharesTitleRow = !!titleRect &&
+                        suffixEnd.top < titleRect.bottom - 2 && suffixEnd.bottom > titleRect.top + 2;
+                    const followsOpenBody = previousLineLinks.some(candidate =>
+                        candidate.open && candidate.to <= lastPreviousLink.from
                     );
-                    view.dispatch({
-                        selection: EditorSelection.create([destination]),
-                        effects: [setEditorFocus.of(true), setEmbeddedObjectSelection.of(null)],
-                        scrollIntoView: false
-                    });
-                    rememberVisualMove(view, direction, selection, destination, {
-                        x: currentX,
-                        y: currentCoordinate
-                    }, objectSelection);
-                    return true;
+                    // A closed inline title may have prefix and suffix text on
+                    // the same rendered row. At the prefix's x-coordinate,
+                    // clamping to link.to would jump past the title instead of
+                    // moving up to the visible prefix. Open embeds and wrapped
+                    // suffixes still keep their separate suffix-row route.
+                    const prefix = view.state.doc.sliceString(previousLine.from, lastPreviousLink.from);
+                    const targetsPrefix = suffixSharesTitleRow && !followsOpenBody &&
+                        currentX < titleRect.left - 2 && prefix.trim().length > 0;
+                    const prefixAnchor = targetsPrefix
+                        ? Math.max(previousLine.from, Math.min(lastPreviousLink.from, mapped ?? lastPreviousLink.from))
+                        : null;
+                    const prefixCoords = prefixAnchor !== null
+                        ? view.coordsAtPos(prefixAnchor, prefixAnchor === lastPreviousLink.from ? -1 : 1)
+                        : null;
+                    const prefixIsOnThisRow = prefixAnchor !== null && prefixCoords &&
+                        !links.some(candidate => prefixAnchor >= candidate.from && prefixAnchor <= candidate.to &&
+                            !isRawEmbeddedSourceVisible(view.state, candidate)) &&
+                        prefixCoords.top < suffixEnd.bottom - 2 && prefixCoords.bottom > suffixEnd.top + 2;
+                    const useSuffix = followsOpenBody || !suffixSharesTitleRow || currentX >= titleRect.right - 2;
+                    if (prefixIsOnThisRow || useSuffix) {
+                        const anchor = prefixIsOnThisRow
+                            ? prefixAnchor!
+                            : Math.max(lastPreviousLink.to, Math.min(previousLine.to, mapped ?? previousLine.to));
+                        const destination = EditorSelection.cursor(
+                            anchor,
+                            anchor === previousLine.to || anchor === lastPreviousLink.from ? -1 : 1,
+                            undefined,
+                            goalColumn
+                        );
+                        view.dispatch({
+                            selection: EditorSelection.create([destination]),
+                            effects: [setEditorFocus.of(true), setEmbeddedObjectSelection.of(null)],
+                            scrollIntoView: false
+                        });
+                        rememberVisualMove(view, direction, selection, destination, {
+                            x: currentX,
+                            y: currentCoordinate
+                        }, objectSelection);
+                        return true;
+                    }
                 }
             }
             const previousOpenLink = [...links].reverse().find(link =>
@@ -2026,6 +2150,82 @@ function runVisualEmbeddedNavigation(view: EditorView, direction: "up" | "down")
                         occurrenceKey
                     );
                     view.contentDOM.blur();
+                    return true;
+                }
+            }
+        }
+    }
+
+    if (direction === "down" && !objectSelection) {
+        const currentLine = view.state.doc.lineAt(selection.head);
+        const lineEndCoords = view.coordsAtPos(currentLine.to, -1);
+        const isLastVisualRow = !lineEndCoords || currentBottom >= lineEndCoords.bottom - 2;
+        if (isLastVisualRow && currentLine.number < view.state.doc.lines) {
+            const nextLine = view.state.doc.line(currentLine.number + 1);
+            const nextLineLinks = links.filter(link =>
+                link.from >= nextLine.from && link.to <= nextLine.to
+            );
+            // An open body adds its own visual rows and must retain the common
+            // portal ordering. This direct text mapping is only for closed
+            // inline titles whose surrounding prose shares one row.
+            if (nextLineLinks.length > 0 && nextLineLinks.every(link => !link.open)) {
+                let nearest: { anchor: number; assoc: -1 | 1; distance: number } | null = null;
+                for (let index = 0; index < nextLineLinks.length; index++) {
+                    const link = nextLineLinks[index];
+                    if (isRawEmbeddedSourceVisible(view.state, link)) continue;
+                    const wrapper = ownedWrappers.find(candidate =>
+                        Number(candidate.dataset.embedFrom) === link.from &&
+                        Number(candidate.dataset.embedTo) === link.to
+                    );
+                    const titleRect = wrapper
+                        ? directEmbedElement(wrapper, "[data-embed-nav-title]")?.getBoundingClientRect()
+                        : null;
+                    if (!titleRect || titleRect.top < currentBottom - 2) continue;
+
+                    const targetsPrefix = currentX < titleRect.left - 2;
+                    const targetsSuffix = currentX > titleRect.right + 2;
+                    if (!targetsPrefix && !targetsSuffix) continue;
+                    const spanFrom = targetsPrefix
+                        ? (nextLineLinks[index - 1]?.to ?? nextLine.from)
+                        : link.to;
+                    const spanTo = targetsPrefix
+                        ? link.from
+                        : (nextLineLinks[index + 1]?.from ?? nextLine.to);
+                    if (view.state.doc.sliceString(spanFrom, spanTo).trim().length === 0) continue;
+                    if (view.state.field(parsedRangesField).some(range =>
+                        range.from < spanTo && range.to > spanFrom
+                    )) continue;
+
+                    const scanFrom = targetsPrefix ? Math.max(spanFrom, spanTo - 4096) : spanFrom;
+                    const scanTo = targetsPrefix ? spanTo : Math.min(spanTo, spanFrom + 4096);
+                    for (let anchor = scanFrom; anchor <= scanTo; anchor++) {
+                        const assoc: -1 | 1 = anchor === spanTo ? -1 : 1;
+                        if (links.some(candidate =>
+                            anchor > candidate.from && anchor < candidate.to &&
+                            !isRawEmbeddedSourceVisible(view.state, candidate)
+                        )) continue;
+                        const coords = view.coordsAtPos(anchor, assoc);
+                        if (!coords || coords.top >= titleRect.bottom - 2 || coords.bottom <= titleRect.top + 2) continue;
+                        const distance = Math.abs(coords.left - currentX);
+                        if (!nearest || distance < nearest.distance) nearest = { anchor, assoc, distance };
+                    }
+                }
+                if (nearest) {
+                    const destination = EditorSelection.cursor(
+                        nearest.anchor,
+                        nearest.assoc,
+                        undefined,
+                        goalColumn
+                    );
+                    view.dispatch({
+                        selection: EditorSelection.create([destination]),
+                        effects: [setEditorFocus.of(true), setEmbeddedObjectSelection.of(null)],
+                        scrollIntoView: false
+                    });
+                    rememberVisualMove(view, direction, selection, destination, {
+                        x: currentX,
+                        y: currentCoordinate
+                    }, objectSelection);
                     return true;
                 }
             }
@@ -2146,6 +2346,42 @@ function runVisualEmbeddedNavigation(view: EditorView, direction: "up" | "down")
     const probedSourceLine = probedTextMove
         ? view.state.doc.lineAt(probedTextMove.anchor)
         : null;
+    const portalTitleRect = portal?.kind === "title"
+        ? portal.element.getBoundingClientRect()
+        : null;
+    const probedCoords = probedTextMove
+        ? view.coordsAtPos(probedTextMove.anchor, probedTextMove.assoc)
+        : null;
+    const probedTextBesideClosedTitle = !!portal && portal.kind === "title" &&
+        !portal.link.open && !!portalTitleRect && !!probedTextMove && !!probedCoords &&
+        probedSourceLine?.number === view.state.doc.lineAt(portal.link.from).number &&
+        probedCoords.top < portalTitleRect.bottom - 2 && probedCoords.bottom > portalTitleRect.top + 2 && (
+            (currentX < portalTitleRect.left - 2 && probedTextMove.anchor <= portal.link.from) ||
+            (currentX > portalTitleRect.right + 2 && probedTextMove.anchor >= portal.link.to)
+        );
+    // A closed inline title and ordinary text can occupy the same rendered
+    // row. When the saved horizontal goal points into that text, the text is
+    // the true Up/Down destination even if CodeMirror maps the replacement
+    // boundary to the title. This keeps prefix/suffix navigation visual while
+    // retaining object selection when the goal actually intersects the title.
+    if (probedTextBesideClosedTitle) {
+        const destination = EditorSelection.cursor(
+            probedTextMove.anchor,
+            probedTextMove.assoc,
+            undefined,
+            goalColumn
+        );
+        view.dispatch({
+            selection: EditorSelection.create([destination]),
+            effects: [setEditorFocus.of(true), setEmbeddedObjectSelection.of(null)],
+            scrollIntoView: false
+        });
+        rememberVisualMove(view, direction, selection, destination, {
+            x: currentX,
+            y: (currentTop + currentBottom) / 2
+        }, objectSelection);
+        return true;
+    }
     const hasInterveningWrap = !!portal && !!probedTextMove &&
         probedSourceLine?.number === currentSourceLine.number &&
         probedTextMove.distance < portal.distance - 2;
@@ -2311,7 +2547,7 @@ export function runEmbeddedGroupNavigation(view: EditorView, forward: boolean): 
         }
     }
     if (!objectSelection) return false;
-    const link = view.state.field(parsedLinksField).find(candidate =>
+    const link = interactiveEmbeddedLinks(view.state).find(candidate =>
         candidate.from === objectSelection.from && candidate.to === objectSelection.to
     );
     if (!link) return false;
@@ -2356,7 +2592,7 @@ export const embedKeymap: KeyBinding[] = [
 
             const objectSelection = view.state.field(embeddedObjectSelectionField, false);
             if (objectSelection?.edge === "after") {
-                const link = view.state.field(parsedLinksField).find(candidate =>
+                const link = interactiveEmbeddedLinks(view.state).find(candidate =>
                     candidate.from === objectSelection.from && candidate.to === objectSelection.to
                 );
                 if (link && hasVisibleInlineSuffix(view, link)) {
@@ -2365,7 +2601,7 @@ export const embedKeymap: KeyBinding[] = [
                 }
             }
 
-            const rawLinkEnd = view.state.field(parsedLinksField).find(link =>
+            const rawLinkEnd = interactiveEmbeddedLinks(view.state).find(link =>
                 link.to - 1 === view.state.selection.main.head &&
                 hasVisibleInlineSuffix(view, link) && isRawEmbeddedSourceVisible(view.state, link)
             );
@@ -2375,7 +2611,7 @@ export const embedKeymap: KeyBinding[] = [
             }
 
             const head = view.state.selection.main.head;
-            const touchedLink = view.state.field(parsedLinksField).find(link => link.from === head);
+            const touchedLink = interactiveEmbeddedLinks(view.state).find(link => link.from === head);
             if (!touchedLink) return false;
 
             view.dispatch({
@@ -2404,7 +2640,7 @@ export const embedKeymap: KeyBinding[] = [
             }
 
             const head = view.state.selection.main.head;
-            const touchedLink = view.state.field(parsedLinksField).find(link => link.to === head);
+            const touchedLink = interactiveEmbeddedLinks(view.state).find(link => link.to === head);
             if (!touchedLink) return false;
 
             view.dispatch({
@@ -2443,7 +2679,7 @@ export const embedKeymap: KeyBinding[] = [
             if (!view.hasFocus || !view.state.selection.main.empty || completionStatus(view.state) === "active") return false;
             const objectSelection = view.state.field(embeddedObjectSelectionField, false);
             if (objectSelection?.edge !== "after") return false;
-            const link = view.state.field(parsedLinksField).find(candidate =>
+            const link = interactiveEmbeddedLinks(view.state).find(candidate =>
                 candidate.from === objectSelection.from && candidate.to === objectSelection.to
             );
             if (!link || !hasVisibleInlineSuffix(view, link)) return false;
@@ -2461,7 +2697,7 @@ export const embedKeymap: KeyBinding[] = [
                 return false;
             }
             
-            const links = view.state.field(parsedLinksField);
+            const links = interactiveEmbeddedLinks(view.state);
             const selection = view.state.selection.main;
             const parentLabel = view.state.facet(parentLabelFacet);
             
@@ -2534,7 +2770,7 @@ export function openEmbeddedTargetInTab(view: EditorView): boolean {
     if (!view.hasFocus || !view.state.selection.main.empty || completionStatus(view.state) === "active") return false;
     const selection = view.state.selection.main;
     const parentLabel = view.state.facet(parentLabelFacet);
-    const link = view.state.field(parsedLinksField).find(candidate =>
+    const link = interactiveEmbeddedLinks(view.state).find(candidate =>
         selection.head >= candidate.from + 2 && selection.head <= candidate.to - 2
     );
     if (!link) return false;
@@ -2555,7 +2791,7 @@ export function openEmbeddedTargetInTab(view: EditorView): boolean {
  */
 export function enterOpenEmbeddedAtEnd(view: EditorView, x?: number): boolean {
     const doc = view.state.doc;
-    const links = view.state.field(parsedLinksField);
+    const links = interactiveEmbeddedLinks(view.state);
     const link = links[links.length - 1];
     if (!link?.open) return false;
 

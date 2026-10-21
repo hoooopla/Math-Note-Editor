@@ -7,11 +7,11 @@ test.beforeEach(async ({ request }) => {
     expect((await request.post('/api/test/reset')).ok()).toBeTruthy();
 });
 
-async function openReadingFixture(page: import('playwright/test').Page, request: import('playwright/test').APIRequestContext) {
+async function openReadingFixture(page: import('playwright/test').Page, request: import('playwright/test').APIRequestContext, openChild = false) {
     const child = await (await request.post('/api/blocks', { data: {
         title: 'Touch child', label: 'touch:child', content: 'Child text'
     } })).json();
-    const source = 'Tap this text and $x^2$ to read.\n\n[[touch:child]]';
+    const source = `Tap this text and $x^2$ to read.\n\n[[touch:child${openChild ? '∨' : ''}]]`;
     const root = await (await request.post('/api/blocks', { data: {
         title: 'Touch root', label: 'touch:root', content: source
     } })).json();
@@ -24,8 +24,76 @@ async function openReadingFixture(page: import('playwright/test').Page, request:
     return { root, child, source, panel };
 }
 
+async function expectEmbeddedEditorReentry(page: import('playwright/test').Page, request: import('playwright/test').APIRequestContext) {
+    const { root, child, source, panel } = await openReadingFixture(page, request, true);
+    const toggle = page.getByTestId('mobile-edit-toggle');
+    const childContent = panel.getByTestId(`embedded-editor-host-${child.id}`).locator('.cm-content');
+    await expect(childContent).toHaveAttribute('contenteditable', 'false');
+
+    await toggle.tap();
+    await expect(childContent).toHaveAttribute('contenteditable', 'true');
+    await childContent.tap();
+    await expect(childContent).toBeFocused();
+    await page.keyboard.insertText('!');
+
+    await toggle.tap();
+    await expect(childContent).toHaveAttribute('contenteditable', 'false');
+    await expect(childContent).not.toBeFocused();
+
+    await toggle.tap();
+    // No root-editor tap should be needed to refresh an already-open child.
+    await expect(childContent).toHaveAttribute('contenteditable', 'true');
+    await expect(childContent).not.toBeFocused();
+    await childContent.tap();
+    await expect(childContent).toBeFocused();
+    await page.keyboard.insertText('2');
+    await expect(childContent).toContainText('!');
+    await expect(childContent).toContainText('2');
+
+    await toggle.tap();
+    await expect.poll(async () => (await request.get(`/api/blocks/${child.id}/raw`)).text()).toContain('!');
+    await expect.poll(async () => (await request.get(`/api/blocks/${child.id}/raw`)).text()).toContain('2');
+    expect(await (await request.get(`/api/blocks/${root.id}/raw`)).text()).toBe(source);
+}
+
 test.describe('iPhone reading', () => {
     test.use(iPhone);
+
+    test('re-enters an open embedded editor after two pencil-toggle cycles', async ({ page, request }) => {
+        await expectEmbeddedEditorReentry(page, request);
+    });
+
+    test('refreshes a nested embedded editor after returning from reading mode', async ({ page, request }) => {
+        const leaf = await (await request.post('/api/blocks', { data: {
+            title: 'Touch leaf', label: 'touch:leaf', content: 'Leaf text'
+        } })).json();
+        const child = await (await request.post('/api/blocks', { data: {
+            title: 'Touch child', label: 'touch:child', content: 'Child text\n[[touch:leaf∨]]'
+        } })).json();
+        const root = await (await request.post('/api/blocks', { data: {
+            title: 'Touch root', label: 'touch:root', content: 'Root text\n[[touch:child∨]]'
+        } })).json();
+        expect((await request.post('/api/workspace/session', { data: {
+            openTabs: [root.id], activeTab: root.id, persistForTest: true
+        } })).ok()).toBeTruthy();
+        await page.goto('/');
+
+        const panel = page.locator(`[role="tabpanel"]#block-tab-panel-${root.id}`);
+        const leafContent = panel.getByTestId(`embedded-editor-host-${leaf.id}`).locator('.cm-content');
+        const toggle = page.getByTestId('mobile-edit-toggle');
+        await expect(leafContent).toHaveAttribute('contenteditable', 'false');
+        await toggle.tap();
+        await expect(leafContent).toHaveAttribute('contenteditable', 'true');
+        await leafContent.tap();
+        await expect(leafContent).toBeFocused();
+        await toggle.tap();
+        await expect(leafContent).toHaveAttribute('contenteditable', 'false');
+        await toggle.tap();
+        await expect(leafContent).toHaveAttribute('contenteditable', 'true');
+        await leafContent.tap();
+        await expect(leafContent).toBeFocused();
+        expect(await (await request.get(`/api/blocks/${child.id}/raw`)).text()).toBe('Child text\n[[touch:leaf∨]]');
+    });
 
     test('requires Edit for caret placement and keeps reading taps rendered', async ({ page, request }) => {
         const { root, child, source, panel } = await openReadingFixture(page, request);
@@ -87,6 +155,10 @@ test.describe('iPhone reading', () => {
 
 test.describe('iPad reading', () => {
     test.use(iPad);
+
+    test('re-enters an open embedded editor after two pencil-toggle cycles', async ({ page, request }) => {
+        await expectEmbeddedEditorReentry(page, request);
+    });
 
     test('opens in reading state on a tablet', async ({ page, request }) => {
         const { panel } = await openReadingFixture(page, request);

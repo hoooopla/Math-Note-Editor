@@ -34,24 +34,21 @@ export function MathExplanationPopover({ target, content, math, macros, parentLa
     }, [popoverId]);
 
     useLayoutEffect(() => {
-        const anchorElement = target.closest<HTMLElement>('.cm-math-block, .cm-line') || target;
-        // Make room below a target near the viewport edge. The card stays
-        // below the equation even when its contents later expand.
-        if (window.innerHeight - anchorElement.getBoundingClientRect().bottom < 220) {
-            anchorElement.scrollIntoView({ block: 'center', inline: 'nearest' });
+        // Make room below the selected symbol near the viewport edge. Display
+        // explanations intentionally anchor to the symbol rather than the
+        // bottom of the whole equation, even when that overlays later rows.
+        if (window.innerHeight - target.getBoundingClientRect().bottom < 220) {
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
         }
         const update = () => {
             const card = cardRef.current;
             if (!card || !target.isConnected) { if (!target.isConnected) onClose(); return; }
-            // Keep the equation (or the whole inline line) visible above the card,
-            // including when a referenced block makes the explanation taller.
-            const anchor = anchorElement.getBoundingClientRect();
             const symbol = target.getBoundingClientRect();
             const width = card.offsetWidth;
             const margin = 12;
             const left = Math.max(margin, Math.min(window.innerWidth - width - margin,
                 symbol.left + symbol.width / 2 - width / 2));
-            const top = Math.max(margin, anchor.bottom + 8);
+            const top = Math.max(margin, symbol.bottom + 8);
             const maxHeight = Math.max(80, Math.min(620, window.innerHeight - top - margin));
             setPosition(previous => previous.left === left && previous.top === top && previous.maxHeight === maxHeight && previous.ready
                 ? previous : { left, top, maxHeight, ready: true });
@@ -71,7 +68,14 @@ export function MathExplanationPopover({ target, content, math, macros, parentLa
     useLayoutEffect(() => {
         const outside = (event: PointerEvent) => {
             const path = event.composedPath();
-            if (path.includes(target) || path.some(item => item instanceof Element && item.matches('.math-explanation-popover'))) return;
+            const targetRect = target.getBoundingClientRect();
+            // KaTeX's multiline vlists can sit transparently above a marked
+            // symbol. Treat the symbol's visible rectangle as part of the
+            // target even when that layout layer owns the pointer event.
+            const insideTargetRect = event.clientX >= targetRect.left && event.clientX <= targetRect.right &&
+                event.clientY >= targetRect.top && event.clientY <= targetRect.bottom;
+            if (path.includes(target) || insideTargetRect ||
+                path.some(item => item instanceof Element && item.matches('.math-explanation-popover'))) return;
             onClose();
         };
         const escape = (event: KeyboardEvent) => {

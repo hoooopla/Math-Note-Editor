@@ -46,6 +46,30 @@ function rememberEditorState(key: string, state: EditorState, group?: string) {
     editorStateCache.set(key, { doc: state.doc.toString(), json: state.toJSON({ history: historyField }), group });
     trimEditorStateCache();
 }
+
+const mathPrimeInputHandler = Prec.highest(EditorView.inputHandler.of((view, _from, _to, text) => {
+    if (text !== "'" || view.state.readOnly) return false;
+    const mathRanges = view.state.field(parsedRangesField, false)?.filter(range =>
+        range.type === "inlineMath" || range.type === "blockMath"
+    ) || [];
+    const insideMath = view.state.selection.ranges.every(selection => mathRanges.some(range => {
+        const delimiterLength = range.type === "blockMath" ? 2 : 1;
+        return selection.from >= range.from + delimiterLength &&
+            selection.to <= range.to - delimiterLength;
+    }));
+    if (!insideMath) return false;
+
+    const changes = view.state.changeByRange(range => ({
+        changes: { from: range.from, to: range.to, insert: "'" },
+        range: EditorSelection.cursor(range.from + 1)
+    }));
+    view.dispatch(view.state.update(changes, {
+        scrollIntoView: true,
+        userEvent: "input.type"
+    }));
+    return true;
+}));
+
 if (typeof window !== "undefined") {
     window.addEventListener("mousedown", () => { isGlobalMousePressed = true; }, true);
     window.addEventListener("mouseup", () => { isGlobalMousePressed = false; }, true);
@@ -559,6 +583,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 urlPlugin,
                 autoReplaceFilter,
                 EditorView.contentAttributes.of({ spellcheck: "true" }),
+                mathPrimeInputHandler,
                 closeBrackets(),
                 keymap.of([{ 
                     key: "Tab", 
@@ -658,6 +683,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                         return false;
                     },
                     mousedown: (e, view) => {
+                        if (e.button !== 0) return false;
                         clearEmbeddedVisualMove(view);
                         const a = (e.target as Element)?.closest('a');
                         if (a && a.href) {

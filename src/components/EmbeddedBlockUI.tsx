@@ -12,6 +12,8 @@ import { handOffEditorBoundary } from "../lib/editor/editor-boundary-registry";
 import { startCompletion } from "@codemirror/autocomplete";
 import { findActiveEmbeddedTarget } from "../lib/embedded-link-syntax";
 import { EMBEDDED_PREFETCH_AHEAD_SCREENS, scheduleEmbeddedBlockPrefetch, scheduleEmbeddedDescendantPrefetch } from "../lib/embedded-prefetch";
+import { effectiveMathMacros } from "../lib/math-render-settings";
+import { standoutDisplayTitle } from "../lib/title-display";
 import {
     demoteEmbeddedOccurrence,
     initialEmbeddedEditorPhase,
@@ -42,6 +44,7 @@ export interface EmbeddedBlockUIProps {
     occurrencePath?: string[];
     toggleOpen: (e?: React.MouseEvent) => void;
     view?: EditorView;
+    parentReadOnly: boolean;
     stateRef?: { pos: number, length: number };
     
     isAtEndOfLine?: boolean;
@@ -52,7 +55,7 @@ export interface EmbeddedBlockUIProps {
     onRendererReady?: () => void;
 }
 
-export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurrencePath = [], toggleOpen, view, stateRef, isAtEndOfLine = false, isAtStartOfLine = false, isKeyboardSelected = false, keyboardSelectionEdge, renderPart = "full", onRendererReady }: EmbeddedBlockUIProps) {
+export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurrencePath = [], toggleOpen, view, parentReadOnly, stateRef, isAtEndOfLine = false, isAtStartOfLine = false, isKeyboardSelected = false, keyboardSelectionEdge, renderPart = "full", onRendererReady }: EmbeddedBlockUIProps) {
     const pos = stateRef?.pos;
     const length = stateRef?.length;
     const parsedEmbed = parseEmbeddedText(text);
@@ -85,6 +88,9 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     const activeFocusX = useStore(state => state.activeFocusX);
     const loadBlockContent = useStore(state => state.loadBlockContent);
     const settings = useStore(state => state.settings);
+    // This component can change from a missing/closed embed to an open one
+    // without remounting. Keep hooks above every conditional return.
+    const macros = useMemo(() => effectiveMathMacros(settings), [settings.macros, settings.emptySetStyle]);
 
     let displayTitle: string | null = parsedEmbed.alias;
     const fullLabel = resolveEmbeddedLabel(parsedEmbed, parentLabel);
@@ -106,7 +112,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     // The root lock belongs to this tab. A target locked in another root tab
     // must not leak into this occurrence, while duplicate-label safety remains
     // global because editing that target would be ambiguous.
-    const isReadOnly = rootViewOnly || targetHasDuplicateLabel || !!view?.state.readOnly;
+    const isReadOnly = rootViewOnly || targetHasDuplicateLabel || parentReadOnly;
 
     const instancePath = useMemo(() => [...visitedLabels, fullLabel], [fullLabel, visitedLabels.join("\u0000")]);
     const occurrenceSegment = `${targetBlock?.id || fullLabel}@${pos ?? "unknown"}`;
@@ -212,6 +218,14 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     if (isLabelExisted && displayTitle === null) {
         displayTitle = targetBlock!.title;
     }
+
+    // Standout embeds act as visual section titles, while the same stored
+    // title remains sentence-friendly in inline embeds, search, and editing.
+    // This transform is display-only and intentionally does not skip over a
+    // leading math delimiter, punctuation mark, number, or whitespace.
+    const renderedTitle = displayStyle === "standout"
+        ? standoutDisplayTitle(displayTitle)
+        : displayTitle;
 
     if (!isLabelExisted) {
         // An open link has separate title and body widgets. A missing target
@@ -323,7 +337,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                                 style={{ color, fontSize: `${fontSize}px`, ...keyboardSelectionStyle }}
                             >
                                 <ChevronRight size={fontSize * 0.8} className="shrink-0 opacity-70" />
-                                <MathTitle text={displayTitle} className="font-semibold" />
+                                <MathTitle text={renderedTitle} className="font-semibold" />
                                 {keyboardCaret}
                             </div>
                             <span data-testid={`standout-label-${targetBlock.id}`} className="standout-label-tail min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50 opacity-0 group-hover/embed:opacity-100 transition-opacity" title={fullLabel} aria-label={`Label ${fullLabel}`}>{fullLabel}</span>
@@ -351,7 +365,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
-                    <MathTitle text={displayTitle} />
+                    <MathTitle text={renderedTitle} />
                     {keyboardCaret}
                 </span>
             );
@@ -359,8 +373,6 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     }
 
     // if_toggled = open
-    const macros = useStore.getState().settings?.macros || {};
-
     const activateParentEditor = (x?: number) => {
         const store = useStore.getState();
         const parentBlockId = store.blockIdByLabel[parentLabel];
@@ -593,7 +605,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                             className="relative min-w-0 max-w-full [&>span]:break-words"
                             style={{ color, fontSize: `${fontSize}px`, ...keyboardSelectionStyle }}
                         >
-                            <MathTitle text={displayTitle} className="font-semibold" />
+                            <MathTitle text={renderedTitle} className="font-semibold" />
                             {keyboardCaret}
                         </span>
                     </span>
@@ -663,7 +675,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                     onClick={handleClick}
                     title={`Close ${displayTitle}`}
                 >
-                    <MathTitle text={displayTitle} />
+                    <MathTitle text={renderedTitle} />
                     {keyboardCaret}
             </span>
         );

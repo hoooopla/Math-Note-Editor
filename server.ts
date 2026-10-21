@@ -328,6 +328,17 @@ async function writeRelabelTransaction(updatedBlocks: BlockData[]) {
     }
 }
 
+async function pathsReferToSameFile(leftPath: string, rightPath: string) {
+    if (path.resolve(leftPath) === path.resolve(rightPath)) return true;
+    try {
+        const [left, right] = await Promise.all([fs.stat(leftPath), fs.stat(rightPath)]);
+        return left.dev === right.dev && left.ino === right.ino;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+    }
+}
+
 async function writeBlockToFileUnlocked(block: BlockData) {
     if (isTestMode) return;
     
@@ -344,6 +355,7 @@ async function writeBlockToFileUnlocked(block: BlockData) {
         newFilename = baseDir ? path.join(baseDir, readableFilename) : readableFilename;
     }
 
+    const oldFilePath = oldFilename ? path.join(BLOCKS_DIR, oldFilename) : null;
     const filePath = path.join(BLOCKS_DIR, newFilename);
     const fileContent = stringifyFrontmatter({
         id: block.id,
@@ -354,11 +366,25 @@ async function writeBlockToFileUnlocked(block: BlockData) {
     if (baseDir) {
         await ensureDir(path.join(BLOCKS_DIR, baseDir));
     }
-    if (oldFilename && oldFilename !== newFilename) {
-        await backupWorkspaceFile(path.join(BLOCKS_DIR, oldFilename));
+    if (oldFilename && oldFilename !== newFilename && oldFilePath) {
+        await backupWorkspaceFile(oldFilePath);
+        // APFS and common Windows filesystems are case-insensitive by default.
+        // A title-only capitalization change can therefore make two distinct
+        // path strings resolve to the same file. Writing the "new" path and
+        // then unlinking the "old" one would delete the note we just saved.
+        // Keep the existing filename spelling and update that entry in place.
+        if (await pathsReferToSameFile(oldFilePath, filePath)) {
+            await writeWorkspaceFile(oldFilePath, fileContent);
+            blockIdToFileMap.set(block.id, oldFilename);
+            return;
+        }
     }
     await writeWorkspaceFile(filePath, fileContent);
 
+    // Publish the replacement mapping before removing the old entry so the
+    // filesystem watcher cannot mistake our own rename for an external block
+    // deletion during the unlink notification.
+    blockIdToFileMap.set(block.id, newFilename);
     if (oldFilename && oldFilename !== newFilename) {
         try {
             await fs.unlink(path.join(BLOCKS_DIR, oldFilename));
@@ -366,7 +392,6 @@ async function writeBlockToFileUnlocked(block: BlockData) {
             console.warn(`Could not delete old file ${oldFilename}:`, e);
         }
     }
-    blockIdToFileMap.set(block.id, newFilename);
 }
 
 async function writeBlockToFile(block: BlockData) {

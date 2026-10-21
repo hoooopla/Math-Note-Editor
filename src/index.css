@@ -206,8 +206,10 @@ body {
   outline-offset: 2px;
 }
 .cm-math-explanation-trigger:hover .cm-math-explanation-indicator,
+.cm-math-explanation-trigger.cm-math-explanation-logical-hover .cm-math-explanation-indicator,
 .cm-math-explanation-trigger:focus-visible .cm-math-explanation-indicator,
 .cm-math-explanation-trigger.cm-math-explanation-indicator:hover,
+.cm-math-explanation-trigger.cm-math-explanation-indicator.cm-math-explanation-logical-hover,
 .cm-math-explanation-trigger.cm-math-explanation-indicator:focus-visible {
   background: color-mix(in srgb, var(--color-accent) 7%, transparent);
   outline-style: solid;
@@ -253,6 +255,16 @@ body {
 .math-explanation-body { overflow: auto; min-width: 0; padding: 10px 13px 12px; }
 .math-explanation-body .cm-editor { min-width: 0; }
 .math-explanation-body .cm-content { white-space: pre-wrap; }
+/* Open embeds normally add a page-level surface to separate their bodies from
+   the note behind them. The explanation card is already an elevated surface;
+   repeating that fill for every nested embed creates stacked dark slabs.
+   Keep the indentation and hierarchy rail, but let the card provide the
+   continuous background. This is deliberately scoped to explanation cards. */
+.math-explanation-body [data-embed-nav-body="true"] {
+  background: transparent;
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
 
 .cm-math-editing {
   color: var(--math-highlight-color, #d19a66) !important;

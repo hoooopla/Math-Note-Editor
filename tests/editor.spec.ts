@@ -18,12 +18,24 @@ import {
     initialEmbeddedEditorPhase,
     resetEmbeddedEditorLifecycle
 } from '../src/lib/embedded-editor-lifecycle';
+import { standoutDisplayTitle } from '../src/lib/title-display';
 
 const appVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
 
 test.beforeEach(async ({ request }) => {
     const response = await request.post('/api/test/reset');
     expect(response.ok()).toBeTruthy();
+});
+
+test('capitalizes only a leading lowercase letter for standout presentation', () => {
+    expect(standoutDisplayTitle('countable subadditivity')).toBe('Countable subadditivity');
+    expect(standoutDisplayTitle('énergie estimate')).toBe('Énergie estimate');
+    expect(standoutDisplayTitle('ODE estimate')).toBe('ODE estimate');
+    expect(standoutDisplayTitle('$f$ is smooth')).toBe('$f$ is smooth');
+    expect(standoutDisplayTitle('\\[f\\] is smooth')).toBe('\\[f\\] is smooth');
+    expect(standoutDisplayTitle('(local) estimate')).toBe('(local) estimate');
+    expect(standoutDisplayTitle('2-dimensional estimate')).toBe('2-dimensional estimate');
+    expect(standoutDisplayTitle(' leading space')).toBe(' leading space');
 });
 
 test('preserves safe image names with spaces and encodes portable references', () => {
@@ -385,6 +397,21 @@ test('round-trips special-character labels with math-aware embed syntax', () => 
 
     const cursor = source.indexOf('x||$') + 1;
     expect(findActiveEmbeddedTarget(source, cursor)?.label).toBe('Norm/$||x||$');
+
+    const tooltipSource = String.raw`Thus $x \tooltip{=}{See [[proof:inside-math]].} y$`;
+    const tooltipCursor = tooltipSource.indexOf('inside-math') + 4;
+    expect(findActiveEmbeddedTarget(tooltipSource, tooltipCursor, { allowUnclosed: false })).toBeNull();
+    expect(findActiveEmbeddedTarget(tooltipSource, tooltipCursor, { allowInsideMath: true })).toMatchObject({
+        label: 'proof:inside-math',
+        relative: false,
+        standout: false
+    });
+    // The fallback scans earlier [[ tokens. At column zero it must terminate
+    // rather than searching from -1, which String.lastIndexOf clamps to zero.
+    expect(findActiveEmbeddedTarget('[[target]] suffix', 17, {
+        allowUnclosed: false,
+        allowInsideMath: true
+    })).toBeNull();
 });
 
 test('round-trips YAML metadata and creates bounded readable filenames', () => {
@@ -688,6 +715,77 @@ test('validates header metadata and accepts brackets and math in labels', async 
     }).toMatchObject({ title: validTitle, label: validLabel });
 });
 
+test('keeps root metadata readable with a long label and compact secondary actions', async ({ page }) => {
+    const suffix = Date.now();
+    const title = 'countable subadditivity';
+    const label = `Unsorted Notes/Analysis I/Lebesgue measure in $\\mathbb{R}^n$/countable subadditivity-${suffix}`;
+    const block = await (await page.request.post('/api/blocks', {
+        data: { title, label, content: 'Header layout content' }
+    })).json();
+
+    await page.setViewportSize({ width: 760, height: 900 });
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByPlaceholder('Search blocks or create new...').fill(label);
+    await page.getByPlaceholder('Search blocks or create new...').press('Enter');
+
+    const header = page.getByTestId(`block-metadata-header-${block.id}`);
+    const visibleTitle = header.locator('[data-find-visible-title="true"]');
+    const visibleLabel = page.getByTestId(`block-visible-label-${block.id}`);
+    await expect(visibleTitle).toHaveText(title);
+    await expect(visibleLabel).toHaveAttribute('title', label);
+    await expect(visibleLabel).toHaveAttribute('data-label-clamped', 'true');
+    await expect(visibleLabel).toContainText(/^…/);
+    const geometry = await header.evaluate(element => {
+        const titleElement = element.querySelector<HTMLElement>('[data-find-visible-title="true"]')!;
+        const labelElement = element.querySelector<HTMLElement>('[data-find-visible-label="true"]')!;
+        const titleRect = titleElement.getBoundingClientRect();
+        const labelRect = labelElement.getBoundingClientRect();
+        return {
+            headerFits: element.scrollWidth <= element.clientWidth + 1,
+            titleHeight: titleRect.height,
+            titleLineHeight: parseFloat(getComputedStyle(titleElement).lineHeight),
+            labelBelowTitle: labelRect.top >= titleRect.bottom - 1,
+            labelTextAlign: getComputedStyle(labelElement).textAlign,
+            labelStartsAtLeft: Math.abs(labelElement.getBoundingClientRect().left - labelElement.parentElement!.getBoundingClientRect().left) < 2
+        };
+    });
+    expect(geometry.headerFits).toBe(true);
+    expect(geometry.titleHeight).toBeLessThanOrEqual(geometry.titleLineHeight * 1.2);
+    expect(geometry.labelBelowTitle).toBe(true);
+    expect(geometry.labelTextAlign).toBe('left');
+    expect(geometry.labelStartsAtLeft).toBe(true);
+
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await expect(visibleLabel).toHaveAttribute('data-label-clamped', 'false');
+    await expect(visibleLabel).toHaveText(label);
+    await page.setViewportSize({ width: 760, height: 900 });
+    await expect(visibleLabel).toHaveAttribute('data-label-clamped', 'true');
+
+    await header.getByRole('button', { name: 'More block actions' }).click();
+    await expect(header.getByText('View raw Markdown', { exact: true })).toBeVisible();
+    await expect(header.getByText('Delete note…', { exact: true })).toBeVisible();
+    await header.getByRole('button', { name: 'More block actions' }).click();
+
+    await visibleTitle.dblclick();
+    const titleInput = page.getByLabel('Block title');
+    const labelInput = page.getByLabel('Block label');
+    await expect(titleInput).toHaveValue(title);
+    await expect(labelInput).toHaveValue(label);
+    const editingGeometry = await header.evaluate(element => {
+        const titleElement = element.querySelector<HTMLElement>('[aria-label="Block title"]')!;
+        const labelElement = element.querySelector<HTMLElement>('[aria-label="Block label"]')!;
+        const titleRect = titleElement.getBoundingClientRect();
+        const labelRect = labelElement.getBoundingClientRect();
+        return {
+            headerFits: element.scrollWidth <= element.clientWidth + 1,
+            labelBelowTitle: labelRect.top >= titleRect.bottom - 1
+        };
+    });
+    expect(editingGeometry).toEqual({ headerFits: true, labelBelowTitle: true });
+    await page.getByLabel('Cancel block metadata editing').click();
+});
+
 test('edits active block metadata with F2 and a customized shortcut', async ({ page }) => {
     await openEditor(page);
 
@@ -765,6 +863,55 @@ test('keeps a standout title readable while abbreviating a long label from the l
     expect(boxes[0]).not.toBeNull();
     expect(boxes[1]).not.toBeNull();
     expect(boxes[0]!.x + boxes[0]!.width).toBeLessThanOrEqual(boxes[1]!.x + 1);
+});
+
+test('capitalizes only letter-leading standout titles without changing inline titles or stored data', async ({ page }) => {
+    const suffix = Date.now();
+    const lowercaseLabel = `standout-lowercase-${suffix}`;
+    const mathLabel = `standout-math-leading-${suffix}`;
+    const punctuationLabel = `standout-punctuation-leading-${suffix}`;
+    const lowercase = await (await page.request.post('/api/blocks', {
+        data: { title: 'countable subadditivity', label: lowercaseLabel, content: 'Lowercase target content' }
+    })).json();
+    const math = await (await page.request.post('/api/blocks', {
+        data: { title: '$f$ remains lowercase', label: mathLabel, content: 'Math target content' }
+    })).json();
+    await page.request.post('/api/blocks', {
+        data: { title: '(local) estimate', label: punctuationLabel, content: 'Punctuation target content' }
+    });
+    const sourceLabel = `standout-capitalization-source-${suffix}`;
+    const sourceContent = `[[@${lowercaseLabel}]]\n[[${lowercaseLabel}]]\n[[@${mathLabel}]]\n[[@${punctuationLabel}]]`;
+    const source = await (await page.request.post('/api/blocks', {
+        data: { title: 'Standout capitalization source', label: sourceLabel, content: sourceContent }
+    })).json();
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByPlaceholder('Search blocks or create new...').fill(sourceLabel);
+    await page.getByPlaceholder('Search blocks or create new...').press('Enter');
+
+    const standoutTitle = page.getByText('Countable subadditivity', { exact: true });
+    await expect(standoutTitle).toHaveCount(1);
+    await expect(page.getByText('countable subadditivity', { exact: true })).toHaveCount(1);
+    const mathLeadingTitle = page.locator('[data-embed-nav-title="true"]')
+        .filter({ has: page.locator('.katex') })
+        .filter({ hasText: 'remains lowercase' });
+    await expect(mathLeadingTitle).toHaveCount(1);
+    expect(await mathLeadingTitle.textContent()).toContain('remains lowercase');
+    expect(await mathLeadingTitle.textContent()).not.toContain('Remains lowercase');
+    await expect(page.getByText('(local) estimate', { exact: true })).toHaveCount(1);
+
+    await standoutTitle.click();
+    await expect(page.getByText('Lowercase target content', { exact: true })).toBeVisible();
+    await expect(page.getByText('Countable subadditivity', { exact: true })).toHaveCount(1);
+    await expect(page.getByText('countable subadditivity', { exact: true })).toHaveCount(1);
+
+    await expect.poll(async () => (await (await page.request.get(`/api/blocks/${lowercase.id}`)).json()).title)
+        .toBe('countable subadditivity');
+    await expect.poll(async () => (await (await page.request.get(`/api/blocks/${math.id}`)).json()).title)
+        .toBe('$f$ remains lowercase');
+    await expect.poll(async () => (await (await page.request.get(`/api/blocks/${source.id}`)).json()).content)
+        .toBe(sourceContent);
 });
 
 test('renders autocomplete with an opaque surface inside an open standout block', async ({ page }) => {
@@ -966,6 +1113,31 @@ test('only opens label autocomplete inside a closed embed', async ({ page }) => 
     await page.keyboard.press('ArrowLeft');
     await page.keyboard.press('Control+Space');
     await expect(createOption).toBeVisible();
+});
+
+test('opens label autocomplete inside an inline-math tooltip explanation', async ({ page }) => {
+    const editor = await openEditor(page);
+    const label = `test:tooltip-autocomplete-${Date.now()}`;
+    const source = String.raw`Thus $x \tooltip{=}{See [[]].} y$`;
+
+    await replaceEditorText(page, editor, source);
+    const stepsFromEnd = source.length - (source.indexOf('[[') + 2);
+    for (let index = 0; index < stepsFromEnd; index++) await page.keyboard.press('ArrowLeft');
+    await page.keyboard.insertText(label);
+
+    await expect(page.getByText(`Create new block: "${label}"`, { exact: true })).toBeVisible();
+    await expect(page.locator('.cm-tooltip-autocomplete')).toBeVisible();
+    await expect(editor).toContainText(String.raw`\tooltip{=}{See [[${label}]].}`);
+
+    // A bracket pair in ordinary TeX remains literal and must not start the
+    // note-link completion path.
+    await page.keyboard.press('Escape');
+    const ordinaryMath = `$x + [[${label}]]$`;
+    await replaceEditorText(page, editor, ordinaryMath);
+    const ordinaryStepsFromEnd = ordinaryMath.length - (ordinaryMath.indexOf(label) + label.length);
+    for (let index = 0; index < ordinaryStepsFromEnd; index++) await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('Control+Space');
+    await expect(page.getByText(`Create new block: "${label}"`, { exact: true })).toBeHidden();
 });
 
 test('opens and preserves label autocomplete when entering a broken embed', async ({ page }) => {
@@ -1949,7 +2121,7 @@ test('moves by word across a selected embedded title without moving the viewport
 
     const panel = page.locator('[role="tabpanel"][aria-hidden="false"]');
     const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
-    await expect(selectedTitle).toContainText('proof');
+    await expect(selectedTitle).toContainText('Proof');
     await expect(selectedTitle.getByTestId('embedded-title-caret')).toHaveCSS('right', '-3px');
     const scrollTop = await panel.evaluate(element => element.scrollTop);
 
@@ -2017,6 +2189,37 @@ test('shows one editable broken chip for an open missing embed', async ({ page }
     await chip.click();
     await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-embedded-editing')).toBeVisible();
     await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content:focus').first()).toBeVisible();
+});
+
+test('resolves an open missing embed when its target is created without crashing', async ({ page }) => {
+    const suffix = Date.now();
+    const missingLabel = `test:late-embed-${suffix}`;
+    const sourceLabel = `test:late-source-${suffix}`;
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await page.request.post('/api/blocks', {
+        data: { title: 'Late embed source', label: sourceLabel, content: `Before [[${missingLabel}∨]] after` }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const sourceTab = page.getByRole('tab', { name: 'Late embed source' });
+    await expect(page.getByText(`[[${missingLabel}∨]]`, { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: /Search/ }).click();
+    await search.fill(missingLabel);
+    await search.press('Enter');
+    await page.getByRole('dialog', { name: 'Create new block?' })
+        .getByRole('button', { name: 'Create block' }).click();
+    await sourceTab.click();
+
+    await expect(page.getByText(`[[${missingLabel}∨]]`, { exact: true })).toHaveCount(0);
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] [data-embed-nav-title]')
+        .filter({ hasText: missingLabel })).toBeVisible();
+    expect(pageErrors).toEqual([]);
 });
 
 test('shows a retryable error when a top-level note fails to load', async ({ page }) => {
@@ -2529,7 +2732,7 @@ test('selects an expanded title below the caret without scrolling its hidden sou
     await page.keyboard.press('ArrowDown');
 
     const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
-    await expect(selectedTitle).toContainText('proof');
+    await expect(selectedTitle).toContainText('Proof');
     await panel.evaluate(() => new Promise<void>(resolve =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
     ));
@@ -2920,6 +3123,113 @@ test('moves up into the visible suffix before an open embedded body', async ({ p
     await expect(page.getByTestId(`embedded-editor-host-${child.id}`).locator('.cm-focused')).toHaveCount(0);
     await page.keyboard.press('ArrowDown');
     await expectCaretToOverlapRow(caret, nextRow);
+});
+
+test('moves up to visible prefix text beside a closed inline title', async ({ page }) => {
+    const stamp = Date.now();
+    const targetLabel = `test:up-closed-inline-target-${stamp}`;
+    const sourceLabel = `test:up-closed-inline-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Subadditivity', label: targetLabel, content: 'Referenced result' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Closed inline source',
+            label: sourceLabel,
+            content: `efefefe [[${targetLabel}||subadditivity]]\nfefefef`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const title = rootEditor.getByText('subadditivity', { exact: true });
+    const nextRow = rootEditor.getByText('fefefef', { exact: true });
+    await expect(title).toBeVisible();
+    await nextRow.click();
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowUp');
+
+    const caret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary');
+    await expectCaretToOverlapRow(caret, title);
+    const [caretRect, titleRect] = await Promise.all([
+        caret.evaluate(element => element.getBoundingClientRect().toJSON()),
+        title.evaluate(element => element.getBoundingClientRect().toJSON())
+    ]);
+    expect(caretRect.right).toBeLessThan(titleRect.left - 2);
+    await page.keyboard.press('ArrowDown');
+    await expectCaretToOverlapRow(caret, nextRow);
+
+    // A horizontal goal near the end of the prefix can map to the title's
+    // replacement boundary. It must still stay on the visible prefix side.
+    await nextRow.click({ position: { x: 55, y: 8 } });
+    await page.keyboard.press('ArrowUp');
+    await expectCaretToOverlapRow(caret, title);
+    const boundaryCaretRect = await caret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(boundaryCaretRect.right).toBeLessThan(titleRect.left - 2);
+    await expect(title.locator('[data-testid="embedded-title-caret"]')).toHaveCount(0);
+});
+
+test('moves down to visible suffix text beside a closed inline title', async ({ page }) => {
+    const stamp = Date.now();
+    const targetLabel = `test:down-closed-inline-target-${stamp}`;
+    const sourceLabel = `test:down-closed-inline-source-${stamp}`;
+    await page.request.post('/api/blocks', {
+        data: { title: '0.1 Inline Editing', label: targetLabel, content: 'Referenced result' }
+    });
+    await page.request.post('/api/blocks', {
+        data: {
+            title: 'Closed inline source',
+            label: sourceLabel,
+            content: `Try clicking on the chip below, or moving your cursor inside it\nefefefe [[${targetLabel}]] fefefe\nfefefef`
+        }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const rootEditor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    const title = rootEditor.getByText('0.1 Inline Editing', { exact: true });
+    const firstRow = rootEditor.getByText('Try clicking on the chip below, or moving your cursor inside it', { exact: true });
+    await expect(title).toBeVisible();
+    const suffixRect = await rootEditor.locator('.cm-line').filter({ hasText: 'fefefe' }).first()
+        .evaluate(element => {
+            const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            let node: Node | null;
+            let result: DOMRect | null = null;
+            while ((node = walker.nextNode())) {
+                const value = node.nodeValue || '';
+                const index = value.lastIndexOf('fefefe');
+                if (index < 0) continue;
+                const range = document.createRange();
+                range.setStart(node, index);
+                range.setEnd(node, index + 'fefefe'.length);
+                result = range.getBoundingClientRect();
+            }
+            if (result) return result.toJSON();
+            throw new Error('Could not find suffix text');
+        });
+    const firstRect = await firstRow.evaluate(element => element.getBoundingClientRect().toJSON());
+    await page.mouse.click((suffixRect.left + suffixRect.right) / 2, (firstRect.top + firstRect.bottom) / 2);
+    const titleRect = await title.evaluate(element => element.getBoundingClientRect().toJSON());
+    const startingCaretRect = await rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary')
+        .evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(startingCaretRect.left).toBeGreaterThan(titleRect.right + 2);
+    await page.keyboard.press('ArrowDown');
+
+    const caret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary');
+    const caretRect = await caret.evaluate(element => element.getBoundingClientRect().toJSON());
+    expect(caretRect.top).toBeLessThan(suffixRect.bottom);
+    expect(caretRect.bottom).toBeGreaterThan(suffixRect.top);
+    expect(caretRect.left).toBeGreaterThan(titleRect.right + 2);
+    await expect(title.locator('[data-testid="embedded-title-caret"]')).toHaveCount(0);
 });
 
 test('moves up from display math into the preceding open embed suffix', async ({ page }) => {
@@ -3432,13 +3742,13 @@ test('moves through wrapped rows beside an expanded title without jumping to a l
     });
     await page.keyboard.press('End');
     await page.keyboard.press('ArrowDown');
-    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toContainText('proof');
+    await expect(page.locator('[data-embed-keyboard-selected="true"]')).toContainText('Proof');
 
     // Up from the proof title reaches the immediately preceding rendered wrap.
     await page.keyboard.press('ArrowUp');
     await expect(page.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
     await expect(nativeCaret).toBeVisible();
-    const proofTitleRect = await page.getByText('proof', { exact: true }).evaluate(element => element.getBoundingClientRect().toJSON());
+    const proofTitleRect = await page.getByText('Proof', { exact: true }).evaluate(element => element.getBoundingClientRect().toJSON());
     const lowerWrapRect = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
     const editorLineHeight = await rootEditor.evaluate(element => Number.parseFloat(getComputedStyle(element).fontSize) * 1.6);
     expect(proofTitleRect.top - lowerWrapRect.bottom).toBeLessThan(editorLineHeight * 3);
@@ -3458,7 +3768,7 @@ test('moves through wrapped rows beside an expanded title without jumping to a l
 
     await page.keyboard.press('ArrowDown');
     const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
-    await expect(selectedTitle).toContainText('proof');
+    await expect(selectedTitle).toContainText('Proof');
     await expect(selectedTitle).not.toContainText('Application to Laplace and Poisson equations on unit disk');
     await expect(selectedTitle.getByTestId('embedded-title-caret')).toBeVisible();
     await expect(nativeCaret).toBeHidden();
@@ -3667,6 +3977,25 @@ test('renders inline math and continues Markdown markers with Enter', async ({ p
         expect((await saveRequest).postDataJSON().content).toBe(expected);
         await page.keyboard.press('Escape');
     }
+});
+
+test('right-clicking a Markdown link does not open it', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, '[Example](https://example.com)');
+    await page.getByLabel('Open settings').click();
+    await page.keyboard.press('Escape');
+
+    await page.evaluate(() => {
+        (window as any).__openedLinks = [];
+        window.open = ((url: string) => {
+            (window as any).__openedLinks.push(url);
+            return null;
+        }) as typeof window.open;
+    });
+    const link = editor.locator('.cm-markdown-link');
+    await expect(link).toBeVisible();
+    await link.click({ button: 'right' });
+    expect(await page.evaluate(() => (window as any).__openedLinks)).toEqual([]);
 });
 
 test('loads note bodies on demand while keeping the block index metadata-only', async ({ page }) => {
@@ -4161,9 +4490,13 @@ test('reuses inline preview DOM while typing and moving the cursor', async ({ pa
     await page.keyboard.press('ArrowRight');
     const preview = page.locator('.cm-math-preview');
     await expect(preview.locator('.katex')).toBeVisible();
+    await expect(preview).toHaveClass(/cm-tooltip/);
+    const initialBackground = await preview.evaluate(dom => getComputedStyle(dom).backgroundColor);
     await preview.evaluate(dom => { (window as any).__mathPreview = dom; });
     await page.keyboard.insertText('y');
     await expect(preview.locator('annotation')).toHaveText('yx');
+    await expect(preview).toHaveClass(/cm-tooltip/);
+    expect(await preview.evaluate(dom => getComputedStyle(dom).backgroundColor)).toBe(initialBackground);
     await page.keyboard.press('ArrowRight');
     expect(await preview.evaluate(dom => dom === (window as any).__mathPreview)).toBe(true);
     await page.keyboard.insertText('^2');
@@ -4171,6 +4504,51 @@ test('reuses inline preview DOM while typing and moving the cursor', async ({ pa
     await page.getByLabel('Open settings').click();
     await expect(preview).toHaveCount(0);
     await expect(page.locator('.cm-math-inline .katex')).toBeVisible();
+});
+
+test('inserts one prime per apostrophe keystroke inside inline math', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, '$f$');
+    await page.keyboard.press('ControlOrMeta+Home');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+
+    await page.keyboard.press("'");
+    await expect(editor).toContainText("$f'$");
+    await page.keyboard.press("'");
+    await expect(editor).toContainText("$f''$");
+    await page.keyboard.press("'");
+    await expect(editor).toContainText("$f'''$");
+
+    await replaceEditorText(page, editor, '');
+    await page.keyboard.press("'");
+    await expect(editor).toContainText("''");
+});
+
+test('changes empty-set appearance without rewriting the LaTeX source', async ({ page }) => {
+    const editor = await openEditor(page);
+    await replaceEditorText(page, editor, String.raw`Inline $\emptyset$ and display \[\emptyset\]`);
+    await page.getByLabel('Open settings').click();
+    await page.keyboard.press('Escape');
+
+    await expect(page.locator('.cm-math-inline')).toBeVisible();
+    await expect(page.locator('.cm-math-block')).toBeVisible();
+    await expect(page.locator('.cm-math-inline .amsrm, .cm-math-block .amsrm')).toHaveCount(0);
+
+    await page.getByLabel('Open settings').click();
+    await page.getByRole('tab', { name: 'Math Visual' }).click();
+    const style = page.getByLabel('Empty Set Appearance');
+    await expect(style).toHaveValue('standard');
+    await style.selectOption('slanted');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+
+    await expect(page.locator('.cm-math-inline .amsrm')).toBeVisible();
+    await expect(page.locator('.cm-math-block .amsrm')).toBeVisible();
+    await page.locator('.cm-math-inline').click();
+    await expect(editor).toContainText(String.raw`\emptyset`);
+
+    const saved = await (await page.request.get('/api/settings')).json();
+    expect(saved.emptySetStyle).toBe('slanted');
 });
 
 test('updates display previews in place and preserves surrounding formulas', async ({ page }) => {

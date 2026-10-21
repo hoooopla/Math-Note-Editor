@@ -9,6 +9,7 @@ import { parentLabelFacet } from "./embedded-block-plugin";
 import { encodeEmbeddedLabel, findActiveEmbeddedTarget } from "../embedded-link-syntax";
 import { normalizeBlockLabel, validateBlockMetadata } from "../label-policy";
 import { splitPath } from "../utils/path";
+import { parseMathExplanations } from "./math-tooltip-syntax";
 
 function distinguishingPath(label: string, suffixCounts: Map<string, number>): string {
     const segments = splitPath(label);
@@ -47,7 +48,17 @@ function completionPreview(fullLabel: string, title: string, insertedText: strin
 }
 
 export function linkCompletion(context: CompletionContext): CompletionResult | null {
-    const activeTarget = findActiveEmbeddedTarget(context.state.doc.toString(), context.pos, { allowUnclosed: false });
+    const documentText = context.state.doc.toString();
+    let activeTarget = findActiveEmbeddedTarget(documentText, context.pos, { allowUnclosed: false });
+    if (!activeTarget) {
+        const mathTarget = findActiveEmbeddedTarget(documentText, context.pos, {
+            allowUnclosed: false,
+            allowInsideMath: true
+        });
+        if (mathTarget && parseMathExplanations(documentText).some(explanation =>
+            context.pos >= explanation.contentFrom && context.pos <= explanation.contentTo
+        )) activeTarget = mathTarget;
+    }
     if (!activeTarget) return null;
 
     const queryLabel = activeTarget.label;

@@ -115,6 +115,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localStandoutBgOpacityOpen, setLocalStandoutBgOpacityOpen] = useState<number>(80);
     const [localStandoutBgOpacityOpenHover, setLocalStandoutBgOpacityOpenHover] = useState<number>(90);
     const [localMathBlockPaddingY, setLocalMathBlockPaddingY] = useState<number>(4);
+    const [localEmptySetStyle, setLocalEmptySetStyle] = useState<'standard' | 'slanted'>('standard');
     const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const [localMathColors, setLocalMathColors] = useState<Record<string, string>>({
         command: "#61afef",
@@ -173,6 +174,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalStandoutBgOpacityOpen(settings.standoutBlockBgOpacityOpen ?? 80);
             setLocalStandoutBgOpacityOpenHover(settings.standoutBlockBgOpacityOpenHover ?? 90);
             setLocalMathBlockPaddingY(settings.mathBlockPaddingY ?? 4);
+            setLocalEmptySetStyle(settings.emptySetStyle ?? 'standard');
             setLocalMathHighlightColor(settings.mathHighlightColor || '#d19a66');
             if (settings.mathColors) {
                 setLocalMathColors({ ...settings.mathColors });
@@ -370,6 +372,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             standoutBlockBgOpacityOpen: localStandoutBgOpacityOpen,
             standoutBlockBgOpacityOpenHover: localStandoutBgOpacityOpenHover,
             mathBlockPaddingY: localMathBlockPaddingY,
+            emptySetStyle: localEmptySetStyle,
             mathHighlightColor: localMathHighlightColor.trim(),
             mathColors: { ...localMathColors } as any
         });
@@ -1098,7 +1101,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         {activeTab === 'colors' && (
                             <div className="max-w-2xl">
                                 <h3 className="text-base font-semibold text-primary mb-1">Math Visual</h3>
-                                <p className="text-sm text-secondary mb-6">Configure raw LaTeX syntax colors and the spacing around displayed equations.</p>
+                                <p className="text-sm text-secondary mb-6">Configure raw LaTeX syntax colors, symbol appearance, and the spacing around displayed equations.</p>
                                 
                                 <div className="space-y-4">
                                     <div className="flex flex-col gap-2">
@@ -1134,6 +1137,20 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 </div>
                                             ))}
                                         </div>
+                                    </div>
+
+                                    <div className="flex flex-col gap-2 border-t border-outline pt-4">
+                                        <label htmlFor="settings-empty-set-style" className="text-sm font-medium text-primary">Empty Set Appearance</label>
+                                        <select
+                                            id="settings-empty-set-style"
+                                            value={localEmptySetStyle}
+                                            onChange={event => setLocalEmptySetStyle(event.target.value as 'standard' | 'slanted')}
+                                            className="w-full max-w-xs bg-base border border-outline rounded px-3 py-2 text-sm text-primary focus:outline-none focus:border-accent"
+                                        >
+                                            <option value="standard">Standard (\\emptyset)</option>
+                                            <option value="slanted">Slanted (\\varnothing)</option>
+                                        </select>
+                                        <p className="text-xs text-secondary">Changes how <span className="font-mono">\\emptyset</span> is rendered without rewriting the note.</p>
                                     </div>
 
                                     <div className="flex flex-col gap-2 border-t border-outline pt-4">

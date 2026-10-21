@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
+const { editorContextMenuTemplate } = require('./editor-context-menu.cjs');
 
 let mainWindow = null;
 let serverProcess = null;
@@ -306,6 +307,10 @@ async function createWindow() {
     }
   });
   installMenu();
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const template = editorContextMenuTemplate(params, mainWindow.webContents);
+    if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow });
+  });
   await mainWindow.loadURL(`http://127.0.0.1:${port}`);
   const appOrigin = `http://127.0.0.1:${port}`;
   const openExternal = url => {

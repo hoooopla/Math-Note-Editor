@@ -11,6 +11,7 @@ import { parseRanges, parsedRangesField } from '../lib/editor/katex-plugin';
 import { parsedLinksField } from '../lib/editor/embedded-block-plugin';
 import { parseEmbeddedLinks, resolveEmbeddedLabel } from '../lib/embedded-link-syntax';
 import { useStore } from '../store';
+import { effectiveMathMacros } from '../lib/math-render-settings';
 
 type Scope = 'visible' | 'tabs' | 'all';
 type EmbedStep = { from: number; to: number; blockId: string };
@@ -217,7 +218,7 @@ export function FindPanel({ onClose }: { onClose: () => void }) {
         if (!effectiveQuery || queryIsSettling) return [] as Result[];
         if (scope === 'tabs') {
             const found: Result[] = [];
-            const macros = useStore.getState().settings?.macros || {};
+            const macros = effectiveMathMacros(useStore.getState().settings);
             const byLabel = useStore.getState().blockIdByLabel;
             const visit = (tabId: string, blockId: string, embedPath: EmbedStep[], ancestors: Set<string>) => {
                 if (ancestors.has(blockId)) return;

@@ -616,6 +616,17 @@ class MathWidget extends WidgetType {
                             detail: { target, content: explanation.content, math: explanation.math }, bubbles: true
                         }));
                     };
+                    let hoveredTarget: HTMLElement | null = null;
+                    const setHoveredTarget = (target: HTMLElement | null) => {
+                        if (hoveredTarget === target) return;
+                        hoveredTarget?.classList.remove('cm-math-explanation-logical-hover');
+                        hoveredTarget = target;
+                        hoveredTarget?.classList.add('cm-math-explanation-logical-hover');
+                    };
+                    span.addEventListener('pointermove', event => {
+                        setHoveredTarget(explanationTargetAt(event));
+                    });
+                    span.addEventListener('pointerleave', () => setHoveredTarget(null));
                     span.addEventListener('click', event => {
                         const target = explanationTargetAt(event);
                         if (!target) return;
@@ -691,6 +702,14 @@ function mathPreview(dom: HTMLElement, view: EditorView, displayMode: boolean, b
     let text: string | undefined;
     let macrosKey = "";
     let destroyed = false;
+    dom.className = baseClass;
+    const setRenderStatus = (status: "ready" | "loading" | "error") => {
+        // CodeMirror adds cm-tooltip after creating the inline preview. Keep
+        // that host-owned class when a later render changes our status classes.
+        dom.classList.remove("cm-tikzcd-loading", "text-red-500", "bg-red-500/10", "font-mono", "text-sm");
+        if (status === "loading") dom.classList.add("cm-tikzcd-loading");
+        if (status === "error") dom.classList.add("text-red-500", "bg-red-500/10", "font-mono", "text-sm");
+    };
     return {
         update(nextText: string, macros: Record<string, string>, immediate = false) {
             const nextKey = JSON.stringify(macros);
@@ -706,29 +725,29 @@ function mathPreview(dom: HTMLElement, view: EditorView, displayMode: boolean, b
                     diagramAbort = new AbortController();
                     const signal = diagramAbort.signal;
                     dom.textContent = 'Rendering diagram…';
-                    dom.className = `${baseClass} cm-tikzcd-loading`;
+                    setRenderStatus("loading");
                     void renderTikzCd(nextText, signal).then(src => {
                         if (destroyed || text !== nextText || !dom.isConnected) return;
                         const image = tikzCdImage(src, 'Commutative diagram preview', () => {
                             if (!destroyed && dom.isConnected) view.requestMeasure();
                         });
                         dom.replaceChildren(image);
-                        dom.className = baseClass;
+                        setRenderStatus("ready");
                         view.requestMeasure();
                     }).catch(error => {
                         if (signal.aborted || destroyed || text !== nextText || !dom.isConnected) return;
                         dom.textContent = nextText;
-                        dom.className = `${baseClass} text-red-500 bg-red-500/10 font-mono text-sm`;
+                        setRenderStatus("error");
                         dom.title = error instanceof Error ? error.message : String(error);
                         view.requestMeasure();
                     });
                 } else {
                     try {
                         renderExplainedKatex(nextText, dom, displayMode, macros);
-                        dom.className = baseClass;
+                        setRenderStatus("ready");
                     } catch {
                         dom.textContent = nextText;
-                        dom.className = `${baseClass} text-red-500 bg-red-500/10 font-mono text-sm`;
+                        setRenderStatus("error");
                     }
                     view.requestMeasure();
                 }

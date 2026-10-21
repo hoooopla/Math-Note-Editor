@@ -2,9 +2,11 @@ import React from 'react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { useStore } from '../store';
+import { effectiveMathMacros } from '../lib/math-render-settings';
 
 export function MathTitle({ text, className }: { text?: string | null; className?: string }) {
-    const macros = useStore(state => state.settings?.macros) || {};
+    const settings = useStore(state => state.settings);
+    const macros = React.useMemo(() => effectiveMathMacros(settings), [settings.macros, settings.emptySetStyle]);
 
     if (!text) {
         return <span className={className}>Untitled</span>;

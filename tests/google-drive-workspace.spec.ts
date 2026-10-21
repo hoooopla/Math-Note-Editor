@@ -76,7 +76,8 @@ async function installGoogleDriveMock(
         }
         if (url.pathname === '/upload/drive/v3/files/file-1' && request.method() === 'PATCH') {
             patched += 1;
-            return route.fulfill({ json: { id: 'file-1', name: 'Drive Note.md', version: String(patched + 1) } });
+            remoteVersion = String(patched + 1);
+            return route.fulfill({ json: { id: 'file-1', name: 'Drive Note.md', version: remoteVersion } });
         }
         if (url.pathname === '/upload/drive/v3/files' && request.method() === 'POST') {
             if (withAssets && request.postData()?.includes('"name":"new.gif"')) {
@@ -128,6 +129,11 @@ test('signs in, picks a folder, loads a note, and saves edits to Drive', async (
     await editor.fill('Edited in the browser');
     await editor.blur();
     await expect.poll(drive.patched).toBeGreaterThan(0);
+
+    await editor.fill('Edited a second time');
+    await editor.blur();
+    await expect.poll(drive.patched).toBe(2);
+    await expect(page.getByRole('alert')).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Disconnect Google Drive' }).click();
     await expect(page.getByRole('button', { name: 'Choose Google Drive Folder' })).toBeVisible();

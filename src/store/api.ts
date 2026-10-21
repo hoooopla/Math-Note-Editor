@@ -60,6 +60,7 @@ export interface EditorSettings {
         escaped: string;
     };
     mathBlockPaddingY?: number;
+    emptySetStyle?: "standard" | "slanted";
     workspaceSession?: WorkspaceSession;
 }
 
@@ -115,6 +116,7 @@ export function createDefaultEditorSettings(macros: Record<string, string> = {})
         standoutBlockBgOpacityClosedHover: 40,
         standoutBlockBgOpacityOpen: 80,
         standoutBlockBgOpacityOpenHover: 90,
+        emptySetStyle: "standard",
         mathHighlightColor: "#d19a66",
         mathColors: { command: "#61afef", brace: "#e5c07b", script: "#c678dd", comment: "#8b949e", delimiter: "#98c379", align: "#e06c75", escaped: "#56b6c2" }
     };
@@ -838,6 +840,24 @@ export const api: BackendApi = {
                 const expectedFilename = makeBlockFilename(block.title, block.label, block.id);
                 const contents = stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || "");
                 if (filename !== expectedFilename) {
+                    let expectedHandle: FileSystemFileHandle | null = null;
+                    try { expectedHandle = await location.directory.getFileHandle(expectedFilename); }
+                    catch (error) {
+                        if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error;
+                    }
+                    const sameEntry = expectedHandle
+                        ? (typeof expectedHandle.isSameEntry === 'function'
+                            ? await expectedHandle.isSameEntry(location.handle)
+                            : expectedHandle.name === location.handle.name)
+                        : false;
+                    if (sameEntry) {
+                        // A case-only rename may resolve to the existing entry
+                        // on macOS or Windows. Do not create and then remove an
+                        // alias of the same note; retain its current spelling.
+                        await writeLocalFile(location, contents);
+                        block.references = computeReferences(block.content || "");
+                        return { block };
+                    }
                     let newFilename = expectedFilename;
                     let counter = 1;
                     while(true) {

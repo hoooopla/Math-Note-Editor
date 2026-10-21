@@ -117,6 +117,42 @@ try {
   if (!restoredNote.includes('Shared workspace') || !swappedBackup.includes('Updated shared workspace')) {
     throw new Error('Backup restore did not safely swap the current and previous versions.');
   }
+
+  const caseRenameResponse = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...note, title: 'desktop smoke test', content: 'Shared workspace' })
+  });
+  if (!caseRenameResponse.ok) throw new Error(`Could not apply a case-only title rename: ${await caseRenameResponse.text()}`);
+  await new Promise(resolve => setTimeout(resolve, 350));
+  const afterCaseRename = (await fs.readdir(workspace)).filter(file => file.endsWith('.md') && file.includes(note.id));
+  if (afterCaseRename.length !== 1) {
+    throw new Error(`A case-only title rename must retain exactly one note file; found ${afterCaseRename.length}.`);
+  }
+  const caseRenamedText = await fs.readFile(path.join(workspace, afterCaseRename[0]), 'utf-8');
+  if (!caseRenamedText.includes('title: desktop smoke test') || !caseRenamedText.includes('Shared workspace')) {
+    throw new Error('A case-only title rename did not persist the updated metadata and body.');
+  }
+  const blocksAfterCaseRename = await (await fetch(`${url}/api/blocks?metaOnly=true`)).json();
+  if (!blocksAfterCaseRename.some(block => block.id === note.id && block.title === 'desktop smoke test')) {
+    throw new Error('The filesystem watcher removed the note after a case-only title rename.');
+  }
+
+  const ordinaryRenameResponse = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...note, title: 'Renamed desktop note', content: 'Shared workspace' })
+  });
+  if (!ordinaryRenameResponse.ok) throw new Error(`Could not apply an ordinary title rename: ${await ordinaryRenameResponse.text()}`);
+  await new Promise(resolve => setTimeout(resolve, 350));
+  const afterOrdinaryRename = (await fs.readdir(workspace)).filter(file => file.endsWith('.md') && file.includes(note.id));
+  if (afterOrdinaryRename.length !== 1 || !afterOrdinaryRename[0].startsWith('Renamed desktop note')) {
+    throw new Error(`An ordinary title rename left an unexpected file set: ${afterOrdinaryRename.join(', ')}`);
+  }
+  const blocksAfterOrdinaryRename = await (await fetch(`${url}/api/blocks?metaOnly=true`)).json();
+  if (!blocksAfterOrdinaryRename.some(block => block.id === note.id && block.title === 'Renamed desktop note')) {
+    throw new Error('The filesystem watcher removed the note after an ordinary title rename.');
+  }
   if (await fs.access(path.join(workspace, 'legacy-note.md.bak')).then(() => true, () => false)) {
     throw new Error('A legacy sidecar backup was not removed after migration.');
   }

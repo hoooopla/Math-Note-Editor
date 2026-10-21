@@ -89,6 +89,94 @@ test('opens a read-only lemma preview from a display-math explanation', async ({
     await expect(card).toHaveCount(0);
 });
 
+test('keeps embedded references literal while editing tooltip math', async ({ page, request }) => {
+    expect((await request.post('/api/blocks', {
+        data: { title: 'Literal-source lemma', label: 'proof:literal-source', content: 'Lemma body.' }
+    })).ok()).toBeTruthy();
+    await page.goto('/');
+    const activePanel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const editor = activePanel.locator('.cm-content').first();
+    const source = String.raw`\[a \tooltip{\le}{By [[proof:literal-source]] and \[q\].} b\]`;
+    const clickBeforeText = async (needle: string) => {
+        const line = activePanel.locator('.cm-line').filter({ hasText: needle }).first();
+        const point = await line.evaluate((element, target) => {
+            const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            let text: Node | null;
+            while ((text = walker.nextNode())) {
+                const offset = text.textContent?.indexOf(target) ?? -1;
+                if (offset < 0) continue;
+                const range = document.createRange();
+                range.setStart(text, offset);
+                range.setEnd(text, offset + 1);
+                const glyph = range.getBoundingClientRect();
+                const row = element.getBoundingClientRect();
+                return {
+                    x: glyph.left - row.left + glyph.width / 4,
+                    y: (glyph.top + glyph.bottom) / 2 - row.top
+                };
+            }
+            throw new Error(`Could not find ${target} in raw math source`);
+        }, needle);
+        await line.click({ position: point });
+    };
+    await editor.fill(source);
+
+    await expect(editor).toContainText('[[proof:literal-source]]');
+    await expect(activePanel.locator('.cm-embedded-block-wrapper')).toHaveCount(0);
+    await clickBeforeText('literal-source');
+    await page.keyboard.insertText('X');
+    await expect(editor).toContainText('[[proof:Xliteral-source]]');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Enter');
+    await expect(editor).not.toContainText('∨');
+
+    await editor.fill(String.raw`Inline $a \tooltip{\le}{By [[proof:literal-source]].} b$ source.`);
+    await activePanel.locator('.cm-math-inline').first().click({ position: { x: 2, y: 2 } });
+    await expect(activePanel.locator('.cm-math-editing')).toBeVisible();
+    await expect(editor).toContainText('[[proof:literal-source]]');
+    await expect(activePanel.locator('.cm-embedded-block-wrapper')).toHaveCount(0);
+    await clickBeforeText('literal-source');
+    await page.keyboard.insertText('Y');
+    await expect(editor).toContainText('[[proof:Yliteral-source]]');
+    await page.keyboard.press('Backspace');
+
+    await editor.fill(source);
+
+    await page.getByLabel('Open settings').click();
+    await page.keyboard.press('Escape');
+    await activePanel.locator('.cm-math-block .cm-math-explanation-trigger').first().click();
+    const card = page.locator('.math-explanation-popover');
+    await expect(card).toContainText('Literal-source lemma');
+    await card.getByText('Literal-source lemma').click();
+    await expect(card).toContainText('Lemma body.');
+});
+
+test('uses the explanation surface behind open embeds without changing note embed backgrounds', async ({ page, request }) => {
+    const label = `proof:tooltip-surface-${Date.now()}`;
+    expect((await request.post('/api/blocks', {
+        data: { title: 'Tooltip surface lemma', label, content: 'Embedded proof body.' }
+    })).ok()).toBeTruthy();
+
+    await page.goto('/');
+    const activePanel = page.locator('[role="tabpanel"][aria-hidden="false"]');
+    const editor = activePanel.locator('.cm-content').first();
+    await editor.fill(`[[${label}∨]]\n$x \\tooltip{=}{By [[${label}∨]].} y$`);
+    await page.getByLabel('Open settings').click();
+    await page.keyboard.press('Escape');
+
+    const noteBody = activePanel.locator('[data-embed-nav-body="true"]').first();
+    await expect(noteBody).toContainText('Embedded proof body.');
+    expect(await noteBody.evaluate(element => getComputedStyle(element).backgroundColor))
+        .not.toBe('rgba(0, 0, 0, 0)');
+
+    await activePanel.locator('.cm-math-explanation-trigger').first().click();
+    const popoverBody = page.locator('.math-explanation-popover [data-embed-nav-body="true"]').first();
+    await expect(popoverBody).toContainText('Embedded proof body.');
+    expect(await popoverBody.evaluate(element => getComputedStyle(element).backgroundColor))
+        .toBe('rgba(0, 0, 0, 0)');
+    await expect(popoverBody).toHaveCSS('border-left-width', '2px');
+});
+
 test('keeps a short explanation compact and outside the symbol', async ({ page }) => {
     await page.goto('/');
     const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
@@ -147,25 +235,29 @@ test('draws relation outlines on the glyph rather than KaTeX trailing spacing', 
     }
 });
 
-test('keeps a display explanation below the equation as an embedded block expands', async ({ page, request }) => {
+test('anchors a display explanation below its symbol as an embedded block expands', async ({ page, request }) => {
     expect((await request.post('/api/blocks', {
         data: { title: 'Long lemma', label: 'example:long-lemma', content: 'A long proof.\n\n'.repeat(30) }
     })).ok()).toBeTruthy();
     await page.goto('/');
     const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
-    await editor.fill(String.raw`\[a \tooltip{\le}{See [[example:long-lemma]].} b\]`);
+    await editor.fill(String.raw`\[\begin{aligned}a &\tooltip{\le}{See [[example:long-lemma]].} b \\ c &= d \\ e &= f\end{aligned}\]`);
     await page.getByLabel('Open settings').click();
     await page.keyboard.press('Escape');
     const equation = page.locator('.cm-math-block').first();
-    await equation.locator('.cm-math-explanation-trigger').click();
+    const target = equation.locator('.cm-math-explanation-trigger');
+    await target.click();
     const card = page.locator('.math-explanation-popover');
     await card.getByText('Long lemma').click();
     await expect(card).toContainText('A long proof');
-    const [equationRect, cardRect] = await Promise.all([equation.boundingBox(), card.boundingBox()]);
-    expect(cardRect!.y).toBeGreaterThanOrEqual(equationRect!.y + equationRect!.height);
+    const [equationRect, targetRect, cardRect] = await Promise.all([
+        equation.boundingBox(), target.boundingBox(), card.boundingBox()
+    ]);
+    expect(Math.abs(cardRect!.y - (targetRect!.y + targetRect!.height + 8))).toBeLessThan(3);
+    expect(cardRect!.y).toBeLessThan(equationRect!.y + equationRect!.height);
 });
 
-test('scrolls a low equation into view to leave room for its explanation below', async ({ page }) => {
+test('scrolls a low symbol into view to leave room for its explanation below', async ({ page }) => {
     await page.setViewportSize({ width: 900, height: 500 });
     await page.goto('/');
     const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
@@ -173,13 +265,14 @@ test('scrolls a low equation into view to leave room for its explanation below',
     await page.getByLabel('Open settings').click();
     await page.keyboard.press('Escape');
     const equation = page.locator('.cm-math-block').first();
-    await equation.locator('.cm-math-explanation-trigger').click();
+    const target = equation.locator('.cm-math-explanation-trigger');
+    await target.click();
     await expect.poll(async () => {
-        const [equationRect, cardRect] = await Promise.all([
-            equation.boundingBox(), page.locator('.math-explanation-popover').boundingBox()
+        const [targetRect, cardRect] = await Promise.all([
+            target.boundingBox(), page.locator('.math-explanation-popover').boundingBox()
         ]);
-        return Boolean(equationRect && cardRect &&
-            cardRect.y >= equationRect.y + equationRect.height && cardRect.y + cardRect.height <= 500);
+        return Boolean(targetRect && cardRect &&
+            cardRect.y >= targetRect.y + targetRect.height && cardRect.y + cardRect.height <= 500);
     }).toBe(true);
 });
 
@@ -208,6 +301,34 @@ test('opens a tooltip on the lower limit beneath a display sum', async ({ page }
     expect(rect).not.toBeNull();
     await page.mouse.click(rect!.x + rect!.width / 2, rect!.y + rect!.height / 2);
     await expect(page.locator('.math-explanation-popover')).toContainText('The lower limit.');
+});
+
+test('hovers and toggles a lower explanation through an overlapping KaTeX vlist', async ({ page }) => {
+    await page.goto('/');
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await editor.fill(String.raw`\[\begin{aligned}
+        a &\tooltip{\le}{Upper reason.} b \\
+          &\tooltip{\le}{Lower reason.} c
+    \end{aligned}\]`);
+    await page.getByLabel('Open settings').click();
+    await page.keyboard.press('Escape');
+
+    const targets = page.locator('.cm-math-block .cm-math-explanation-trigger');
+    await expect(targets).toHaveCount(2);
+    const lower = targets.nth(1);
+    const rect = await lower.boundingBox();
+    expect(rect).not.toBeNull();
+    const point = { x: rect!.x + rect!.width / 2, y: rect!.y + rect!.height / 2 };
+
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('vlist'), point)).toBe(true);
+    await page.mouse.move(point.x, point.y);
+    await expect(lower).toHaveClass(/cm-math-explanation-logical-hover/);
+
+    await page.mouse.click(point.x, point.y);
+    const card = page.locator('.math-explanation-popover');
+    await expect(card).toContainText('Lower reason.');
+    await page.mouse.click(point.x, point.y);
+    await expect(card).toHaveCount(0);
 });
 
 test('keeps nested explanation cards usable inside an expanded lemma', async ({ page, request }) => {
