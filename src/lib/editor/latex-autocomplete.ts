@@ -2,6 +2,7 @@ import { Completion, CompletionContext, pickedCompletion, snippetCompletion } fr
 import { useStore } from "../../store";
 import { latexCompletions } from "codemirror-lang-latex";
 import { parsedRangesField } from "./katex-plugin";
+import { tooltipCompletionContext } from "./math-tooltip-syntax";
 
 // Standard Overleaf-style rich snippets that auto-place your cursor inside brackets
 const inlineMathSnippets = [
@@ -119,6 +120,7 @@ function getCompletionOptions(macros: Record<string, string>, customCommands: st
 export function latexCompletion(context: CompletionContext) {
     const ranges = context.state.field(parsedRangesField, false);
     let activeMathType: "inlineMath" | "blockMath" | null = null;
+    let activeMathFrom = 0;
     if (ranges) {
         const activeMathRange = ranges.find(r => {
             if (r.type !== "inlineMath" && r.type !== "blockMath") return false;
@@ -130,11 +132,16 @@ export function latexCompletion(context: CompletionContext) {
         });
         if (!activeMathRange || (activeMathRange.type !== "inlineMath" && activeMathRange.type !== "blockMath")) return null;
         activeMathType = activeMathRange.type;
+        activeMathFrom = activeMathRange.from;
     }
 
     const word = context.matchBefore(/\\[a-zA-Z]*(?:\{[a-zA-Z*]*)?$/);
     if (!word) return null;
     if (word.from === word.to && !context.explicit) return null;
+
+    const tooltipContext = tooltipCompletionContext(context.state.doc.toString(), context.pos, activeMathFrom);
+    if (tooltipContext === "prose") return null;
+    if (tooltipContext === "inlineMath" || tooltipContext === "blockMath") activeMathType = tooltipContext;
 
     let backslashesBefore = 0;
     for (let i = word.from - 1; i >= 0; i--) {

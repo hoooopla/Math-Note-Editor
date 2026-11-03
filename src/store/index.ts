@@ -70,8 +70,8 @@ export interface AppState {
   connectGoogleDrive: () => Promise<void>;
   disconnectGoogleDrive: () => Promise<void>;
   loadBlocks: () => Promise<void>;
-  loadSettings: () => Promise<void>;
-  saveSettings: (settings: EditorSettings) => Promise<void>;
+  loadSettings: (preserveSession?: boolean) => Promise<void>;
+  saveSettings: (settings: EditorSettings) => Promise<boolean>;
   listBackups: () => Promise<WorkspaceBackup[]>;
   restoreBackup: (path: string) => Promise<void>;
   loadBlockContent: (id: string) => Promise<void>;
@@ -116,6 +116,7 @@ export interface AppState {
 
 const syncTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
 const dirtyBlockVersions = new Map<string, number>();
+const failedBlockSaves = new Map<string, unknown>();
 const blockSaveChains = new Map<string, Promise<void>>();
 const pendingBlockLabels = new Set<string>();
 let workspaceGeneration = 0;
@@ -139,7 +140,7 @@ function persistWorkspaceSession() {
   }
   const state = useStore.getState();
   if (state.backendMode !== 'server' && state.backendMode !== 'local' && state.backendMode !== 'google') return sessionSavePromise;
-  sessionSavePromise = sessionSavePromise.then(() => {
+  sessionSavePromise = sessionSavePromise.catch(() => undefined).then(() => {
     const current = useStore.getState();
     const workspaceSession = {
       openTabs: current.openTabs,
@@ -353,6 +354,15 @@ export const useStore = create<AppState>((set, get) => ({
     } finally { assetMoveInProgress = false; }
   },
   initBackend: async () => {
+    if (get().isLoaded && backendApi.mode === 'server' && dirtyBlockVersions.size > 0) {
+      try {
+        // Reconnect must not replace an unsaved paste with the disk version.
+        await get().flushPendingSaves();
+      } catch (error) {
+        set({ persistenceError: `Could not reconnect without losing unsaved changes: ${errorMessage(error)}` });
+        return;
+      }
+    }
     await backendApi.init();
     let workspaceName: string | null = null;
     if (backendApi.mode === 'server') {
@@ -512,12 +522,16 @@ export const useStore = create<AppState>((set, get) => ({
       set({ persistenceError: errorMessage(error) });
     } finally { if (beganSwitch) workspaceSwitchInProgress = false; }
   },
-  loadSettings: async () => {
+  loadSettings: async (preserveSession = false) => {
     const generation = workspaceGeneration;
     try {
       const data = await backendApi.loadSettings();
       if (generation !== workspaceGeneration) return;
       if (data) {
+        if (preserveSession) {
+          set({ settings: data });
+          return;
+        }
         const validIds = new Set(get().blockOrder);
         const openTabs = (data.workspaceSession?.openTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
         const activeTab = openTabs.includes(data.workspaceSession?.activeTab || '') ? data.workspaceSession!.activeTab : openTabs[0] || null;
@@ -548,9 +562,11 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       set({ settings: settingsWithSession, persistenceError: null });
       await backendApi.saveSettings(settingsWithSession);
+      return true;
     } catch (e) {
       console.warn("Failed to save settings", e);
       set({ settings: previousSettings, persistenceError: errorMessage(e) });
+      return false;
     }
   },
   listBackups: () => backendApi.listBackups(),
@@ -742,6 +758,8 @@ export const useStore = create<AppState>((set, get) => ({
     for (let attempt = 0; attempt < 20 && dirtyBlockVersions.size > 0; attempt++) {
       const pendingIds = Array.from(dirtyBlockVersions.keys());
       await Promise.all(pendingIds.map(id => flushBlockSave(id)));
+      const failure = pendingIds.map(id => failedBlockSaves.get(id)).find(Boolean);
+      if (failure) throw failure;
       if (dirtyBlockVersions.size > 0) await new Promise(resolve => setTimeout(resolve, 0));
     }
     if (dirtyBlockVersions.size > 0) {
@@ -1181,6 +1199,7 @@ async function flushBlockSave(id: string): Promise<void> {
 
       try {
         const result = await backendApi.updateBlock(id, block as BlockData);
+        failedBlockSaves.delete(id);
         useStore.setState({ persistenceError: null });
 
         if (dirtyBlockVersions.get(id) === version) {
@@ -1219,6 +1238,7 @@ async function flushBlockSave(id: string): Promise<void> {
         }
       } catch (error) {
         console.warn("Failed to save block", error);
+        failedBlockSaves.set(id, error);
         useStore.setState({ persistenceError: errorMessage(error) });
         return;
       }

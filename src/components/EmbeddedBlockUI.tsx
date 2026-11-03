@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useStore } from "../store";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import type { EditorView } from "@codemirror/view";
@@ -80,6 +81,16 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
             style={keyboardSelectionEdge === "before" ? { left: "-3px" } : { right: "-3px" }}
         />
     ) : null;
+    // An inline title can wrap across visual rows. Keep its caret in text flow
+    // so the after-edge follows the final rendered fragment (including math).
+    const inlineKeyboardCaret = isKeyboardSelected && keyboardSelectionEdge ? (
+        <span
+            aria-hidden="true"
+            data-testid="embedded-title-caret"
+            data-edge={keyboardSelectionEdge}
+            className="embedded-title-caret embedded-inline-title-caret pointer-events-none"
+        />
+    ) : null;
     
     const activePath = useStore(state => state.activePath);
     const activeOccurrenceKey = useStore(state => state.activeOccurrenceKey);
@@ -133,6 +144,23 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     const editorHostRef = useRef<HTMLDivElement>(null);
     const titleNavigationRef = useRef<HTMLElement>(null);
     const bodyNavigationRef = useRef<HTMLElement>(null);
+    const labelMenuRef = useRef<HTMLDivElement>(null);
+    const [labelMenu, setLabelMenu] = useState<{ x: number; y: number; copied: boolean } | null>(null);
+    useEffect(() => {
+        if (!labelMenu) return;
+        const onPointerDown = (event: PointerEvent) => {
+            if (!labelMenuRef.current?.contains(event.target as Node)) setLabelMenu(null);
+        };
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") setLabelMenu(null);
+        };
+        document.addEventListener("pointerdown", onPointerDown, true);
+        document.addEventListener("keydown", onKeyDown, true);
+        return () => {
+            document.removeEventListener("pointerdown", onPointerDown, true);
+            document.removeEventListener("keydown", onKeyDown, true);
+        };
+    }, [labelMenu]);
     const [editorPhase, setEditorPhase] = useState<EmbeddedEditorPhase>(() => initialEmbeddedEditorPhase(instanceKey));
     const editorActivated = editorPhase === "hot";
     const rendersBody = renderPart !== "title";
@@ -281,6 +309,26 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
             toggleOpen();
         }
     } : {};
+    const openLabelMenu = (event: React.MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setLabelMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 328)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 120)), copied: false });
+    };
+    const labelContextMenu = labelMenu && createPortal(
+        <div ref={labelMenuRef} role="menu" aria-label="Standout label actions" className="fixed z-[300] w-80 max-w-[calc(100vw-16px)] rounded-lg border border-outline bg-surface p-2 text-primary shadow-2xl"
+             style={{ left: labelMenu.x, top: labelMenu.y }} onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
+            <div className="mb-2 break-all px-2 font-mono text-xs text-secondary" title={fullLabel}>{fullLabel}</div>
+            <button type="button" role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-outline focus:bg-outline focus:outline-none"
+                    onClick={async () => {
+                        try {
+                            await navigator.clipboard.writeText(fullLabel);
+                            setLabelMenu(current => current ? { ...current, copied: true } : null);
+                        } catch {
+                            setLabelMenu(null);
+                        }
+                    }}>{labelMenu.copied ? "Copied" : "Copy full label"}</button>
+        </div>, document.body
+    );
 
     // if_toggled = closed
     if (ifToggled === "closed") {
@@ -308,7 +356,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
             const bgOpacityClosed = settings?.standoutBlockBgOpacityClosed ?? 30;
             const bgOpacityClosedHover = settings?.standoutBlockBgOpacityClosedHover ?? 40;
             
-            return (
+            return (<>
                 <div 
                     {...readOnlyTitleProps}
                     className={`inline-block align-top rounded-xl ${isAtStartOfLine ? 'mt-0.5' : 'mt-1'} ${isAtEndOfLine ? 'mb-1' : 'mb-2'} cursor-pointer hover:shadow-sm transition-all select-none overflow-visible bg-[var(--standout-bg)] hover:bg-[var(--standout-bg-hover)] group/embed`}
@@ -321,18 +369,18 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
-                    <div className="flex min-w-0 items-center justify-between gap-3"
+                    <div className="standout-title-row flex min-w-0 items-center justify-between gap-3"
                          style={{ 
                              paddingLeft: `${titlePl}px`, 
                              paddingRight: `${titlePr}px`, 
                              paddingTop: `${titlePt}px`, 
                              paddingBottom: `${titlePb}px` 
                          }}>
-                        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                        <div className="standout-title-content flex min-w-0 flex-1 items-center gap-2.5">
                             <div
                                 ref={titleNavigationRef as React.RefObject<HTMLDivElement>}
                                 data-embed-nav-title="true"
-                                className="relative flex max-w-full shrink-0 items-center gap-1.5 [&>span]:min-w-0 [&>span]:break-words"
+                                className="relative flex min-w-0 flex-1 items-center gap-1.5 [&>span]:min-w-0 [&>span]:break-words"
                                 data-embed-keyboard-selected={isKeyboardSelected ? "true" : undefined}
                                 style={{ color, fontSize: `${fontSize}px`, ...keyboardSelectionStyle }}
                             >
@@ -340,14 +388,15 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                                 <MathTitle text={renderedTitle} className="font-semibold" />
                                 {keyboardCaret}
                             </div>
-                            <span data-testid={`standout-label-${targetBlock.id}`} className="standout-label-tail min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50 opacity-0 group-hover/embed:opacity-100 transition-opacity" title={fullLabel} aria-label={`Label ${fullLabel}`}>{fullLabel}</span>
+                            <span data-testid={`standout-label-${targetBlock.id}`} className="standout-label-tail min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50 opacity-0 group-hover/embed:opacity-100 transition-opacity" title={`${fullLabel}\nRight-click to copy label`} aria-label={`Label ${fullLabel}`} onContextMenu={openLabelMenu}>{fullLabel}</span>
                         </div>
                         <span className="text-secondary/40 hover:text-secondary opacity-0 group-hover/embed:opacity-100 transition-all mr-1" title="Cmd/Ctrl + Click to open in new tab">
                             <ExternalLink size={14} />
                         </span>
                     </div>
                 </div>
-            );
+                {labelContextMenu}
+            </>);
         } else {
             const hasContent = targetBlock?.content !== undefined ? targetBlock.content.trim().length > 0 : !!targetBlock?.hasContent;
             const filledColor = settings?.inlineBlockTitleColorWithContent || "#a8b5c2";
@@ -365,8 +414,9 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
+                    {keyboardSelectionEdge === "before" && inlineKeyboardCaret}
                     <MathTitle text={renderedTitle} />
-                    {keyboardCaret}
+                    {keyboardSelectionEdge === "after" && inlineKeyboardCaret}
                 </span>
             );
         }
@@ -586,7 +636,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
             >
                 <span
                     {...readOnlyTitleProps}
-                    className="flex min-w-0 justify-between items-center gap-3 cursor-pointer transition-colors group/embed rounded-t-lg"
+                    className="standout-title-row flex min-w-0 w-full justify-between items-center gap-3 cursor-pointer transition-colors group/embed rounded-t-lg"
                     style={{ 
                         paddingLeft: `${titlePl}px`, 
                         paddingRight: `${titlePr}px`, 
@@ -597,20 +647,21 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
                     onClick={handleClick}
                 >
-                    <span className="flex max-w-full shrink-0 items-center gap-2.5">
+                    <span className="standout-title-content flex min-w-0 flex-1 items-center gap-2.5">
                         <span
                             ref={titleNavigationRef as React.RefObject<HTMLSpanElement>}
                             data-embed-nav-title="true"
                             data-embed-keyboard-selected={isKeyboardSelected ? "true" : undefined}
-                            className="relative min-w-0 max-w-full [&>span]:break-words"
+                            className="relative min-w-0 flex-1 [&>span]:break-words"
                             style={{ color, fontSize: `${fontSize}px`, ...keyboardSelectionStyle }}
                         >
                             <MathTitle text={renderedTitle} className="font-semibold" />
                             {keyboardCaret}
                         </span>
                     </span>
-                    <span className="flex min-w-0 flex-1 items-center gap-3 opacity-0 group-hover/embed:opacity-100 transition-opacity">
-                        <span data-testid={`standout-label-${targetBlock.id}`} className="standout-label-tail min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50" title={fullLabel} aria-label={`Label ${fullLabel}`}>{fullLabel}</span>
+                    <span className="standout-title-label-group flex min-w-0 items-center gap-3 opacity-0 group-hover/embed:opacity-100 transition-opacity">
+                        <span data-testid={`standout-label-${targetBlock.id}`} className="standout-label-tail min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50" title={`${fullLabel}\nRight-click to copy label`} aria-label={`Label ${fullLabel}`}
+                              onContextMenu={openLabelMenu}>{fullLabel}</span>
                         <span className="text-secondary/40 hover:text-secondary transition-colors" title="Cmd/Ctrl + Click to open in new tab"
                               onClick={(e) => {
                                   e.stopPropagation();
@@ -648,12 +699,13 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                 </div>
             </div>
         );
-        if (renderPart === "title") return title;
+        if (renderPart === "title") return <>{title}{labelContextMenu}</>;
         if (renderPart === "body") return body;
         return (
             <div className="w-full">
                 {title}
                 {body}
+                {labelContextMenu}
             </div>
         );
     } else {
@@ -675,8 +727,9 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                     onClick={handleClick}
                     title={`Close ${displayTitle}`}
                 >
+                    {keyboardSelectionEdge === "before" && inlineKeyboardCaret}
                     <MathTitle text={renderedTitle} />
-                    {keyboardCaret}
+                    {keyboardSelectionEdge === "after" && inlineKeyboardCaret}
             </span>
         );
         const body = (

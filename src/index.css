@@ -6,6 +6,24 @@
   50%, 100% { opacity: 0; }
 }
 
+.embedded-inline-title-caret {
+  display: inline-block;
+  position: relative;
+  width: 1px;
+  margin-right: -1px;
+  height: 1.15em;
+  vertical-align: -0.2em;
+}
+
+.embedded-inline-title-caret::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-left: 2px solid var(--color-accent);
+}
+
 .cm-focused .embedded-title-caret {
   animation: embedded-title-caret-blink 1.2s steps(1) infinite;
 }
@@ -44,6 +62,14 @@ body {
 
 .mobile-toolbar::-webkit-scrollbar {
   display: none;
+}
+
+/* A horizontal tab strip must not acquire a tiny vertical scroll range. */
+.open-tabs-strip {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
 }
 
 ::selection {
@@ -400,6 +426,48 @@ body {
 .standout-label-tail {
   direction: rtl;
   text-align: left;
+}
+
+.standout-title-row .standout-title-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.standout-title-row:has(> .standout-title-label-group) .standout-title-content,
+.standout-title-content > [data-embed-nav-title] {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.standout-title-row .standout-label-tail {
+  flex: 1 1 5%;
+  min-width: 5%;
+}
+
+.standout-title-label-group {
+  flex: 1 1 5%;
+  min-width: calc(5% + 30px);
+}
+
+.standout-title-label-group .standout-label-tail {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .standout-title-row,
+  .standout-title-content {
+    flex-wrap: wrap;
+  }
+
+  .standout-title-content,
+  .standout-title-content > [data-embed-nav-title],
+  .standout-title-row .standout-label-tail,
+  .standout-title-label-group {
+    flex-basis: 100%;
+    min-width: 0;
+    max-width: none;
+  }
 }
 
 /* The keyword key glyph causes expensive font layout in command suggestions. */

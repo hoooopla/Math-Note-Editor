@@ -56,6 +56,8 @@ type SettingsTab = typeof settingsTabs[number]['id'];
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const settings = useStore(state => state.settings);
     const saveSettings = useStore(state => state.saveSettings);
+    const loadSettings = useStore(state => state.loadSettings);
+    const clearPersistenceError = useStore(state => state.clearPersistenceError);
     const backendMode = useStore(state => state.backendMode);
     const workspaceName = useStore(state => state.workspaceName);
     const workspaceRevision = useStore(state => state.workspaceRevision);
@@ -227,15 +229,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             }
             const preferences = { ...(parsed as Record<string, unknown>) };
             delete preferences.workspaceSession;
-            await saveSettings({ ...settings, ...preferences });
-            const error = useStore.getState().persistenceError;
-            setImportMessage(error || 'Settings imported into this Google Drive folder. Open tabs were kept separate.');
+            const saved = await saveSettings({ ...settings, ...preferences });
+            setImportMessage(saved ? 'Settings imported into this Google Drive folder. Open tabs were kept separate.' : useStore.getState().persistenceError || 'Could not import settings.');
         } catch (error) {
             setImportMessage(error instanceof Error ? error.message : String(error));
         }
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
         const errors: string[] = [];
         const newMacros: Record<string, string> = {};
         for (const m of localMacros) {
@@ -331,7 +332,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
         setValidationErrors([]);
             
-        saveSettings({
+        const saved = await saveSettings({
             ...settings,
             macros: newMacros,
             customCommands: newCommands,
@@ -376,7 +377,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             mathHighlightColor: localMathHighlightColor.trim(),
             mathColors: { ...localMathColors } as any
         });
-        onClose();
+        if (saved) onClose();
     };
 
     const addMacro = () => setLocalMacros([...localMacros, { key: '', value: '' }]);
@@ -1175,7 +1176,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </div>
                 </div>
                 
-                <div className="p-4 border-t border-outline flex justify-end gap-3 bg-base/50">
+                <div className="p-4 border-t border-outline flex flex-wrap items-center justify-end gap-3 bg-base/50">
+                    {backendMode === 'google' && persistenceError && /(?:settings\.json|preferences).*?(?:changed in Google Drive|created elsewhere)/i.test(persistenceError) && (
+                        <button type="button" className="mr-auto rounded-lg border border-red-500/50 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10" onClick={() => {
+                            if (!window.confirm('Discard unsaved preference changes and reload preferences from Google Drive? Your open tabs will be kept.')) return;
+                            onClose();
+                            clearPersistenceError();
+                            void loadSettings(true);
+                        }}>Reload Drive preferences</button>
+                    )}
                     <button
                         onClick={onClose}
                         className="px-5 py-2 text-sm text-primary hover:bg-outline rounded-lg transition-colors font-medium"

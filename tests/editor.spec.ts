@@ -38,6 +38,86 @@ test('capitalizes only a leading lowercase letter for standout presentation', ()
     expect(standoutDisplayTitle(' leading space')).toBe(' leading space');
 });
 
+test('standout label context menu copies the full label without toggling the embed', async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 800 });
+    const suffix = Date.now();
+    const label = `test:standout-long-prefix-${'shared-'.repeat(12)}target-${suffix}`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: { title: 'Copyable target', label, content: 'Target body' }
+    })).json() as { id: string };
+    const sourceLabel = `test:standout-copy-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Copy source', label: sourceLabel, content: `[[@${label}]]` }
+    });
+    await openEditor(page);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const labelChip = page.getByTestId(`standout-label-${target.id}`);
+    const labelLayout = async () => labelChip.evaluate(element => {
+        const title = element.closest('.standout-title-row')?.querySelector('[data-embed-nav-title]');
+        if (!title) return null;
+        const titleRect = title.getBoundingClientRect();
+        const labelRect = element.getBoundingClientRect();
+        return { gap: labelRect.left - titleRect.right, width: labelRect.width };
+    });
+    await labelChip.hover();
+    expect((await labelLayout())!.gap).toBeLessThan(40);
+    expect((await labelLayout())!.width).toBeGreaterThan(300);
+    await expect(labelChip).toHaveAttribute('title', new RegExp('Right-click to copy label'));
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin });
+    await labelChip.click({ button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Standout label actions' });
+    await expect(menu).toContainText(label);
+    await menu.getByRole('menuitem', { name: 'Copy full label' }).click();
+    await expect(menu.getByRole('menuitem')).toHaveText('Copied');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(label);
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+    await expect(page.getByTestId(`embedded-editor-host-${target.id}`)).toBeHidden();
+    await labelChip.click();
+    await expect(page.getByTestId(`embedded-editor-host-${target.id}`)).toBeVisible();
+    expect((await labelLayout())!.gap).toBeLessThan(40);
+    expect((await labelLayout())!.width).toBeGreaterThan(300);
+    await labelChip.hover();
+    await labelChip.click({ button: 'right' });
+    await expect(menu).toBeVisible();
+    await expect(page.getByTestId(`embedded-editor-host-${target.id}`)).toBeVisible();
+    await page.mouse.click(5, 5);
+    await expect(menu).toBeHidden();
+});
+
+test('long standout titles take space before the label grows', async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 800 });
+    const suffix = Date.now();
+    const label = `test:long-title-${'shared-'.repeat(20)}${suffix}`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: { title: 'For every countable collection of nonoverlapping closed cubes, the sum of their measures equals the measure of the union', label, content: 'Body' }
+    })).json() as { id: string };
+    const sourceLabel = `test:long-title-source-${suffix}`;
+    await page.request.post('/api/blocks', { data: { title: 'Source', label: sourceLabel, content: `[[@${label}]]` } });
+    await openEditor(page);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const labelChip = page.getByTestId(`standout-label-${target.id}`);
+    await labelChip.hover();
+    const layout = await labelChip.evaluate(element => {
+        const row = element.closest('.standout-title-row')!;
+        const title = row.querySelector('[data-embed-nav-title]')!;
+        return {
+            row: row.getBoundingClientRect().width,
+            title: title.getBoundingClientRect().width,
+            label: element.getBoundingClientRect().width
+        };
+    });
+    expect(layout.title).toBeGreaterThan(layout.row * 0.65);
+    expect(layout.label).toBeGreaterThanOrEqual(layout.row * 0.05 - 2);
+    expect(layout.label).toBeLessThan(layout.row * 0.3);
+});
+
 test('preserves safe image names with spaces and encodes portable references', () => {
     expect(validateAssetPath('proof images/complex % result.gif')).toBeNull();
     expect(validateAssetPath('../outside.gif')).not.toBeNull();
@@ -858,7 +938,7 @@ test('keeps a standout title readable while abbreviating a long label from the l
     const label = page.getByTestId(`standout-label-${target.id}`);
     await expect(title).toBeVisible();
     await expect(label).toHaveText(longLabel);
-    await expect(label).toHaveAttribute('title', longLabel);
+    await expect(label).toHaveAttribute('title', `${longLabel}\nRight-click to copy label`);
     const boxes = await Promise.all([title.boundingBox(), label.boundingBox()]);
     expect(boxes[0]).not.toBeNull();
     expect(boxes[1]).not.toBeNull();
@@ -2091,6 +2171,123 @@ test('uses a normal title-edge caret without drawing a block-height caret', asyn
     expect(titleCaretHeight).toBeLessThanOrEqual(titleLineHeight + 2);
 });
 
+test('places the after-title caret beside the final math fragment when an inline title wraps', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:wrapped-title-caret-target-${suffix}`;
+    const sourceLabel = `test:wrapped-title-caret-source-${suffix}`;
+    const alias = 'measurable in $\\R^n$';
+    const source = `prefix [[${targetLabel}||${alias}]]`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Measurable set', label: targetLabel, content: 'definition' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Wrapped title caret source', label: sourceLabel, content: source }
+    });
+
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    await editor.evaluate(element => { element.style.width = '135px'; });
+    const content = editor.locator(':scope > .cm-scroller > .cm-content');
+    await content.evaluate(async element => {
+        const viewUrl = '/node_modules/.vite/deps/@codemirror_view.js';
+        const { EditorView } = await import(viewUrl);
+        const view = EditorView.findFromDOM(element.closest('.cm-editor')!);
+        view.dispatch({ selection: { anchor: view.state.doc.length } });
+        view.focus();
+    });
+
+    const title = editor.locator('[data-embed-keyboard-selected="true"]');
+    const caret = title.getByTestId('embedded-title-caret');
+    await expect(caret).toHaveAttribute('data-edge', 'after');
+    const geometry = await title.evaluate(element => {
+        const text = element.querySelector(':scope > span')!;
+        const math = element.querySelector('.cm-math-inline')!;
+        const caret = element.querySelector('[data-testid="embedded-title-caret"]')!;
+        return {
+            fragments: text.getClientRects().length,
+            math: math.getBoundingClientRect().toJSON(),
+            caret: caret.getBoundingClientRect().toJSON()
+        };
+    });
+    expect(geometry.fragments).toBeGreaterThan(1);
+    expect(geometry.caret.left).toBeGreaterThanOrEqual(geometry.math.right - 4);
+    expect(geometry.caret.top).toBeLessThan(geometry.math.bottom);
+    expect(geometry.caret.bottom).toBeGreaterThan(geometry.math.top);
+
+    await page.keyboard.press('Alt+ArrowLeft');
+    await expect(caret).toHaveAttribute('data-edge', 'before');
+    await page.keyboard.press('Alt+ArrowRight');
+    await expect(caret).toHaveAttribute('data-edge', 'after');
+
+    await editor.evaluate(element => { element.style.width = '500px'; });
+    const unwrapped = await title.evaluate(element => ({
+        fragments: element.querySelector(':scope > span')!.getClientRects().length,
+        mathRight: element.querySelector('.cm-math-inline')!.getBoundingClientRect().right,
+        caretLeft: element.querySelector('[data-testid="embedded-title-caret"]')!.getBoundingClientRect().left
+    }));
+    expect(unwrapped.fragments).toBe(1);
+    expect(unwrapped.caretLeft).toBeGreaterThanOrEqual(unwrapped.mathRight - 4);
+
+    await page.keyboard.insertText(' suffix');
+    await expect(content).toContainText('suffix');
+    const markdown = await content.evaluate(async element => {
+        const viewUrl = '/node_modules/.vite/deps/@codemirror_view.js';
+        const { EditorView } = await import(viewUrl);
+        return EditorView.findFromDOM(element.closest('.cm-editor')!).state.doc.toString();
+    });
+    expect(markdown).toBe(`${source} suffix`);
+});
+
+test('moves up from an inline title into the preceding wrap of its Markdown line', async ({ page }) => {
+    const suffix = Date.now();
+    const targetLabel = `test:up-wrap-target-${suffix}`;
+    const sourceLabel = `test:up-wrap-source-${suffix}`;
+    const source = `first source line\n${'ordinary text '.repeat(12)}[[${targetLabel}||measurable in $\\R^n$]]`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Measurable set', label: targetLabel, content: 'definition' }
+    });
+    await page.request.post('/api/blocks', {
+        data: { title: 'Up wrap source', label: sourceLabel, content: source }
+    });
+    await openEditor(page);
+    await page.getByRole('button', { name: /Search/ }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-editor').first();
+    await editor.evaluate(element => { element.style.width = '360px'; });
+    const content = editor.locator(':scope > .cm-scroller > .cm-content');
+    await content.evaluate(async element => {
+        const viewUrl = '/node_modules/.vite/deps/@codemirror_view.js';
+        const { EditorView } = await import(viewUrl);
+        const view = EditorView.findFromDOM(element.closest('.cm-editor')!);
+        view.dispatch({ selection: { anchor: view.state.doc.toString().indexOf('[[') } });
+        view.focus();
+    });
+    const title = editor.locator('[data-embed-keyboard-selected="true"]');
+    await expect(title).toBeVisible();
+    const titleTop = await title.evaluate(element => element.getBoundingClientRect().top);
+    await page.keyboard.press('ArrowUp');
+    await expect(title).toHaveCount(0);
+    const result = await content.evaluate(async element => {
+        const viewUrl = '/node_modules/.vite/deps/@codemirror_view.js';
+        const { EditorView } = await import(viewUrl);
+        const view = EditorView.findFromDOM(element.closest('.cm-editor')!);
+        return { head: view.state.selection.main.head,
+            top: view.coordsAtPos(view.state.selection.main.head, 1)?.top ?? 0,
+            line: view.state.doc.lineAt(view.state.selection.main.head).number };
+    });
+    expect(result.line).toBe(2);
+    expect(result.top).toBeLessThan(titleTop - 2);
+    await page.keyboard.press('ArrowDown');
+    await expect(title).toBeVisible();
+});
+
 test('moves by word across a selected embedded title without moving the viewport', async ({ page }) => {
     const suffix = Date.now();
     const childLabel = `test:option-title-child-${suffix}`;
@@ -2315,7 +2512,7 @@ test('moves up from the after-title caret to the immediately preceding visual ro
     const selectedTitle = page.locator('[data-embed-keyboard-selected="true"]');
     await expect(selectedTitle).toContainText('Current expanded title');
     const titleCaret = selectedTitle.getByTestId('embedded-title-caret');
-    await expect(titleCaret).toHaveCSS('right', '-3px');
+    await expect(titleCaret).toHaveAttribute('data-edge', 'after');
 
     await page.keyboard.press('ArrowUp');
 
@@ -3199,8 +3396,8 @@ test('moves down to visible suffix text beside a closed inline title', async ({ 
     const title = rootEditor.getByText('0.1 Inline Editing', { exact: true });
     const firstRow = rootEditor.getByText('Try clicking on the chip below, or moving your cursor inside it', { exact: true });
     await expect(title).toBeVisible();
-    const suffixRect = await rootEditor.locator('.cm-line').filter({ hasText: 'fefefe' }).first()
-        .evaluate(element => {
+    const suffixText = rootEditor.locator('.cm-line').filter({ hasText: 'fefefe' }).first();
+    const suffixBounds = () => suffixText.evaluate(element => {
             const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
             let node: Node | null;
             let result: DOMRect | null = null;
@@ -3216,6 +3413,7 @@ test('moves down to visible suffix text beside a closed inline title', async ({ 
             if (result) return result.toJSON();
             throw new Error('Could not find suffix text');
         });
+    const suffixRect = await suffixBounds();
     const firstRect = await firstRow.evaluate(element => element.getBoundingClientRect().toJSON());
     await page.mouse.click((suffixRect.left + suffixRect.right) / 2, (firstRect.top + firstRect.bottom) / 2);
     const titleRect = await title.evaluate(element => element.getBoundingClientRect().toJSON());
@@ -3225,10 +3423,18 @@ test('moves down to visible suffix text beside a closed inline title', async ({ 
     await page.keyboard.press('ArrowDown');
 
     const caret = rootEditor.locator(':scope > .cm-scroller > .cm-layer .cm-cursor-primary');
-    const caretRect = await caret.evaluate(element => element.getBoundingClientRect().toJSON());
-    expect(caretRect.top).toBeLessThan(suffixRect.bottom);
-    expect(caretRect.bottom).toBeGreaterThan(suffixRect.top);
-    expect(caretRect.left).toBeGreaterThan(titleRect.right + 2);
+    // CodeMirror can update its selection before its cursor layer is redrawn.
+    // Check the rendered caret after that redraw, against current text bounds.
+    await expect.poll(async () => {
+        const [caretRect, currentSuffixRect, currentTitleRect] = await Promise.all([
+            caret.evaluate(element => element.getBoundingClientRect().toJSON()),
+            suffixBounds(),
+            title.evaluate(element => element.getBoundingClientRect().toJSON())
+        ]);
+        return caretRect.top < currentSuffixRect.bottom &&
+            caretRect.bottom > currentSuffixRect.top &&
+            caretRect.left > currentTitleRect.right + 2;
+    }).toBe(true);
     await expect(title.locator('[data-testid="embedded-title-caret"]')).toHaveCount(0);
 });
 
@@ -4525,7 +4731,9 @@ test('inserts one prime per apostrophe keystroke inside inline math', async ({ p
     await expect(editor).toContainText("''");
 });
 
-test('changes empty-set appearance without rewriting the LaTeX source', async ({ page }) => {
+test('changes empty-set appearance without rewriting the LaTeX source', async ({ page, request }) => {
+    // Test mode otherwise inherits the user's workspace preference.
+    expect((await request.post('/api/settings', { data: { emptySetStyle: 'standard' } })).ok()).toBeTruthy();
     const editor = await openEditor(page);
     await replaceEditorText(page, editor, String.raw`Inline $\emptyset$ and display \[\emptyset\]`);
     await page.getByLabel('Open settings').click();
@@ -6613,6 +6821,81 @@ test('reports a failed save and retries the latest content after another edit', 
     await editor.evaluate(element => (element as HTMLElement).blur());
     expect((await retryRequest).postDataJSON().content).toBe('Save failure recovery succeeded');
     await expect(page.getByText(/Changes may not have been saved/)).toBeHidden();
+});
+
+test('saves a pasted note larger than the browser keepalive limit', async ({ page }) => {
+    const editor = await openEditor(page);
+    const content = `Large paste ${Date.now()}\n${'long mathematical note '.repeat(4000)}`;
+    expect(new TextEncoder().encode(content).byteLength).toBeGreaterThan(64 * 1024);
+    const saveRequest = page.waitForRequest(request =>
+        request.method() === 'PUT' && request.url().includes('/api/blocks/') && request.postDataJSON().content === content
+    );
+    await replaceEditorText(page, editor, content);
+    await editor.evaluate(element => (element as HTMLElement).blur());
+    const request = await saveRequest;
+    const blockId = request.url().split('/').at(-1)!;
+    await expect.poll(async () => {
+        const saved = await page.request.get(`/api/blocks/${blockId}`);
+        return (await saved.json()).content;
+    }).toBe(content);
+    await expect(page.getByText(/Changes may not have been saved/)).toBeHidden();
+});
+
+test('keeps concurrent small note saves below the combined keepalive limit', async ({ page }) => {
+    await openEditor(page);
+    const keepaliveFlags = await page.evaluate(async () => {
+        const originalFetch = window.fetch;
+        const flags: boolean[] = [];
+        window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+            if (String(input).startsWith('/api/blocks/')) {
+                flags.push(Boolean(init?.keepalive));
+                return new Promise<Response>(resolve => setTimeout(() => resolve(new Response(JSON.stringify({ block: {} }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' }
+                })), 100));
+            }
+            return originalFetch(input, init);
+        }) as typeof fetch;
+        try {
+            const { api } = await (new Function('return import("/src/store/api.ts")'))();
+            const content = 'x'.repeat(40 * 1024);
+            await Promise.all([
+                api.updateBlock('first', { id: 'first', title: 'First', label: 'first', content }),
+                api.updateBlock('second', { id: 'second', title: 'Second', label: 'second', content })
+            ]);
+            return flags;
+        } finally {
+            window.fetch = originalFetch;
+        }
+    });
+    expect(keepaliveFlags).toEqual([true, false]);
+});
+
+test('Reconnect preserves an unsaved paste until its failed save can be retried', async ({ page }) => {
+    const editor = await openEditor(page);
+    const content = `Unsent paste ${Date.now()}\n${'proof '.repeat(100)}`;
+    let failSaves = true;
+    await page.route('**/api/blocks/*', async route => {
+        if (failSaves && route.request().method() === 'PUT') return route.abort('failed');
+        await route.continue();
+    });
+
+    await replaceEditorText(page, editor, content);
+    await editor.evaluate(element => (element as HTMLElement).blur());
+    await expect(page.getByText(/Changes may not have been saved: Failed to fetch/)).toBeVisible();
+    await page.getByRole('button', { name: 'Reconnect', exact: true }).click();
+    await expect(page.getByText(/Could not reconnect without losing unsaved changes/)).toBeVisible();
+    await expect(editor).toContainText(content.split('\n')[0]);
+
+    failSaves = false;
+    const retry = page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/api/blocks/'));
+    await page.getByRole('button', { name: 'Reconnect', exact: true }).click();
+    const blockId = (await retry).url().split('/').at(-1)!;
+    await expect.poll(async () => {
+        const saved = await page.request.get(`/api/blocks/${blockId}`);
+        return (await saved.json()).content;
+    }).toBe(content);
+    await expect(page.getByText(/Changes may not have been saved/)).toBeHidden();
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first()).toContainText(content.split('\n')[0]);
 });
 
 test('shows the running build identity in General Settings', async ({ page }) => {

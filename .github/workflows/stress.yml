@@ -1,0 +1,62 @@
+name: Isolated large-note stress tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Workload multiplier (1–4)'
+        required: false
+        default: '1'
+
+jobs:
+  browser:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      STRESS_SCALE: ${{ inputs.scale || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium (Linux)
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+      - name: Install Chromium (macOS and Windows)
+        if: runner.os != 'Linux'
+        run: npx playwright install chromium
+      - run: npm run test:stress:browser
+      - name: Upload browser traces and metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-stress-${{ runner.os }}
+          path: .playwright-results
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  desktop-macos:
+    runs-on: macos-latest
+    env:
+      STRESS_SCALE: ${{ inputs.scale || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:desktop
+      - run: npm run test:stress:desktop
+      - name: Upload desktop stress summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-stress-macos
+          path: .playwright-results/desktop-stress-summary.json
+          if-no-files-found: warn

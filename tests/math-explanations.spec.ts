@@ -1,5 +1,5 @@
 import { expect, test } from 'playwright/test';
-import { maskMathExplanations, parseMathExplanations, prepareExplainedMath } from '../src/lib/editor/math-tooltip-syntax';
+import { maskMathExplanations, parseMathExplanations, prepareExplainedMath, tooltipCompletionContext } from '../src/lib/editor/math-tooltip-syntax';
 
 test.beforeEach(async ({ request }) => {
     expect((await request.post('/api/test/reset')).ok()).toBeTruthy();
@@ -15,6 +15,53 @@ test('parses balanced arguments without exposing explanation delimiters', () => 
     expect(maskMathExplanations(String.raw`plain \tooltip{x}{$z$}`)).toContain('$z$');
     expect(prepareExplainedMath(source).tex).toContain(String.raw`\htmlData{math-tooltip-id=`);
     expect(parseMathExplanations(String.raw`\tooltip{\le}{unfinished`)).toHaveLength(0);
+});
+
+test('classifies autocomplete inside complete and unfinished tooltip arguments', () => {
+    const contextAtCaret = (withCaret: string) => {
+        const position = withCaret.indexOf('|');
+        return tooltipCompletionContext(withCaret.replace('|', ''), position);
+    };
+    expect(contextAtCaret(String.raw`$x \tooltip{\fr|}{Because text} y$`)).toBe('symbol');
+    expect(contextAtCaret(String.raw`$x \tooltip{=}{Because \be|} y$`)).toBe('prose');
+    expect(contextAtCaret(String.raw`$x \tooltip{=}{Because $\fr|$} y$`)).toBe('inlineMath');
+    expect(contextAtCaret(String.raw`\[x \tooltip{=}{Because \[\fr|\]} y\]`)).toBe('blockMath');
+    expect(contextAtCaret(String.raw`$x \tooltip{=}{Because $x$ then \be|} y$`)).toBe('prose');
+    expect(contextAtCaret(String.raw`\[x \tooltip{=}{Because \[x\] then \be|} y\]`)).toBe('prose');
+    expect(contextAtCaret(String.raw`$x \tooltip{=}{Because \be|`)).toBe('prose');
+    expect(contextAtCaret(String.raw`$x \tooltip{\fr|`)).toBe('symbol');
+    expect(contextAtCaret(String.raw`$x \tooltip{=}{Because text} \fr|$`)).toBeNull();
+    const earlierIncomplete = String.raw`$x \tooltip{=}{unfinished`;
+    const laterText = `${earlierIncomplete}\nplain \\be`;
+    expect(tooltipCompletionContext(laterText, laterText.length, earlierIncomplete.length + 1)).toBeNull();
+});
+
+test('uses text completion in tooltip prose and math completion in its inner math', async ({ page, request }) => {
+    expect((await request.post('/api/settings', { data: {
+        macros: {}, customCommands: [], textCommands: ['\\because']
+    } })).ok()).toBeTruthy();
+    await page.goto('/');
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    const insertBeforeSuffix = async (source: string, suffixLength: number, command: string) => {
+        await editor.fill(source);
+        for (let index = 0; index < suffixLength; index++) await page.keyboard.press('ArrowLeft');
+        await page.keyboard.insertText(command);
+    };
+
+    await insertBeforeSuffix(String.raw`$x \tooltip{=}{Because } y$`, 4, String.raw`\bec`);
+    await expect(page.locator('.cm-tooltip-autocomplete')).toBeVisible();
+    await expect(page.locator('.cm-tooltip-autocomplete li').filter({ hasText: 'because' })).toBeVisible();
+    await expect(page.locator('.cm-tooltip-autocomplete li').filter({ hasText: '\\beta' })).toHaveCount(0);
+
+    await insertBeforeSuffix(String.raw`$x \tooltip{=}{Because $ $} y$`, 5, String.raw`\fr`);
+    await expect(page.locator('.cm-tooltip-autocomplete li').filter({ hasText: '\\frac' }).first()).toBeVisible();
+    await expect(page.locator('.cm-tooltip-autocomplete li').filter({ hasText: 'because' })).toHaveCount(0);
+
+    await insertBeforeSuffix(String.raw`\[x \tooltip{=}{Because \[ \]} y\]`, 7, String.raw`\fr`);
+    await expect(page.locator('.cm-tooltip-autocomplete li').filter({ hasText: '\\frac' }).first()).toBeVisible();
+
+    await insertBeforeSuffix(String.raw`$x \tooltip{=}{Because  y$`, 3, String.raw`\bec`);
+    await expect(page.locator('.cm-tooltip-autocomplete li').filter({ hasText: 'because' })).toBeVisible();
 });
 
 test('completes a tooltip with the cursor in the math argument', async ({ page }) => {

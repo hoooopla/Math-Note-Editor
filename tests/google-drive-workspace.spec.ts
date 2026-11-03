@@ -15,6 +15,7 @@ async function installGoogleDriveMock(
     let remoteVersion = '1';
     let settingsText: string | null = nestedSettings ?? null;
     let settingsVersion = nestedSettings ? 1 : 0;
+    let settingsWrites = 0;
     let uploadedImage = false;
     const settingsName = nestedSettings ? 'settings.json' : '.math-note-settings.json';
     const uploadedSettings = (body: string | null) => {
@@ -88,16 +89,23 @@ async function installGoogleDriveMock(
             }
             settingsText = uploadedSettings(request.postData());
             settingsVersion += 1;
+            settingsWrites += 1;
             return route.fulfill({ json: { id: 'settings-1', name: settingsName, version: '1' } });
         }
         if (url.pathname === '/upload/drive/v3/files/settings-1' && request.method() === 'PATCH') {
             settingsText = uploadedSettings(request.postData());
             settingsVersion += 1;
+            settingsWrites += 1;
             return route.fulfill({ json: { id: 'settings-1', name: settingsName, version: String(settingsVersion) } });
         }
         return route.fulfill({ status: 404, body: 'Unexpected mocked Drive request' });
     });
-    return { patched: () => patched, settings: () => settingsText, uploadedImage: () => uploadedImage, setRemoteVersion: (value: string) => { remoteVersion = value; } };
+    return {
+        patched: () => patched, settings: () => settingsText, settingsWrites: () => settingsWrites,
+        uploadedImage: () => uploadedImage,
+        setRemoteVersion: (value: string) => { remoteVersion = value; },
+        setRemoteSettings: (text: string) => { settingsText = text; settingsVersion += 1; }
+    };
 }
 
 test('clears the previous workspace before a newly selected Drive folder loads', async ({ page }) => {
@@ -207,13 +215,66 @@ test('shows the Drive folder and imports local preferences without importing tab
     });
     await expect(page.getByRole('status')).toContainText('Settings imported into this Google Drive folder');
     await expect.poll(() => drive.settings()).toContain('\\\\Z');
-    expect(JSON.parse(drive.settings() || '{}').workspaceSession.openTabs).not.toContain('other-note');
+    expect(JSON.parse(drive.settings() || '{}').workspaceSession).toBeUndefined();
     await page.getByLabel('Close settings').click();
     await page.getByRole('button', { name: 'Disconnect Google Drive' }).click();
     await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
     await page.getByLabel('Open settings').click();
     await page.getByRole('tab', { name: 'Math Macros' }).click();
     await expect(page.getByLabel('Macro 1 name')).toHaveValue('\\Z');
+});
+
+test('keeps Drive tab and lock state on this device without writing preferences', async ({ page }) => {
+    const drive = await installGoogleDriveMock(page, JSON.stringify({
+        macros: {}, customCommands: [], textCommands: [],
+        workspaceSession: { openTabs: ['drive-note'], activeTab: 'drive-note', lockedTabs: ['drive-note'] }
+    }));
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+    await expect(page.getByRole('tab', { name: /Drive Note/ })).toBeVisible();
+    await expect(page.getByTitle('Unlock for editing')).toBeVisible();
+    await page.getByTitle('Unlock for editing').click();
+    await expect(page.getByTitle('Lock for view-only')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('math-note:drive-session:v1:folder-1') || 'null')?.lockedTabs)).toEqual([]);
+    expect(drive.settingsWrites()).toBe(0);
+    expect(JSON.parse(drive.settings() || '{}').workspaceSession.lockedTabs).toEqual(['drive-note']);
+
+    await page.getByRole('button', { name: 'Disconnect Google Drive' }).click();
+    await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+    await expect(page.getByTitle('Lock for view-only')).toBeVisible();
+    await page.evaluate(() => sessionStorage.removeItem('math-note:drive-session:v1:folder-1'));
+    await page.getByRole('button', { name: 'Disconnect Google Drive' }).click();
+    await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+    await expect(page.getByTitle('Lock for view-only')).toBeVisible();
+    expect(drive.settingsWrites()).toBe(0);
+});
+
+test('retains genuine Drive preference conflicts and reloads without losing the local tab', async ({ page }) => {
+    const original = { macros: { '\\Q': '\\mathbb{Q}' }, customCommands: [], textCommands: [] };
+    const drive = await installGoogleDriveMock(page, JSON.stringify(original));
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+    await expect(page.getByRole('tab', { name: /Drive Note/ })).toBeVisible();
+    await page.getByTitle('Lock for view-only').click();
+    await expect(page.getByTitle('Unlock for editing')).toBeVisible();
+    await page.getByLabel('Open settings').click();
+    await page.getByRole('tab', { name: 'Math Macros' }).click();
+    await expect(page.getByLabel('Macro 1 replacement')).toHaveValue('\\mathbb{Q}');
+    drive.setRemoteSettings(JSON.stringify({ ...original, macros: { '\\Q': '\\mathbf{Q}' } }));
+    await page.getByLabel('Macro 1 replacement').fill('Q');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    expect(drive.settingsWrites()).toBe(0);
+    await expect(page.getByRole('alert')).toContainText('changed in Google Drive');
+    await expect(page.getByRole('button', { name: 'Save Settings' })).toBeVisible();
+    expect(drive.settingsWrites()).toBe(0);
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: 'Reload Drive preferences' }).click();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: /Drive Note/ })).toBeVisible();
+    await expect(page.getByTitle('Unlock for editing')).toBeVisible();
+    await page.getByLabel('Open settings').click();
+    await page.getByRole('tab', { name: 'Math Macros' }).click();
+    await expect(page.getByLabel('Macro 1 replacement')).toHaveValue('\\mathbf{Q}');
 });
 
 test('reports when the browser cannot open a writable local folder', async ({ page }) => {
@@ -236,6 +297,12 @@ test('loads and saves settings from a Drive workspace setting folder', async ({ 
     await page.getByLabel('Macro 1 replacement').fill('\\mathbf{Q}');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect.poll(() => drive.settings()).toContain('\\\\mathbf{Q}');
+    await page.getByLabel('Open settings').click();
+    await page.getByRole('tab', { name: 'Math Macros' }).click();
+    await page.getByLabel('Macro 1 replacement').fill('Q');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => drive.settings()).toContain('"\\\\Q": "Q"');
+    expect(drive.settingsWrites()).toBe(2);
     await expect(page.getByRole('button', { name: 'Read-Only Viewer' })).toBeVisible();
     const viewerFolder = testInfo.outputPath('viewer-folder');
     await mkdir(viewerFolder, { recursive: true });

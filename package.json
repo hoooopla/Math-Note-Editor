@@ -9,7 +9,9 @@
   "scripts": {
     "dev": "tsx server.ts",
     "dev:test": "tsx server.ts --test-mode",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --grep-invert @stress",
+    "test:stress:browser": "playwright test --grep @stress tests/stress.spec.ts",
+    "test:stress:desktop": "node scripts/stress-desktop.mjs",
     "test:atomic-saves": "tsx --test scripts/atomic-file.test.ts",
     "test:desktop-server": "node scripts/smoke-desktop-server.mjs",
     "build": "vite build",

@@ -2,18 +2,18 @@ import { CompletionContext } from "@codemirror/autocomplete";
 import { Transaction } from "@codemirror/state";
 import { useStore } from "../../store";
 import { parsedRangesField } from "./katex-plugin";
+import { tooltipCompletionContext } from "./math-tooltip-syntax";
 
 export function textCompletion(context: CompletionContext) {
-    const ranges = context.state.field(parsedRangesField, false);
-    if (ranges) {
-        // If we are INSIDE a math block, don't trigger text completion
-        const isInMath = ranges.some(r => (r.type === "inlineMath" || r.type === "blockMath") && context.pos >= r.from && context.pos <= r.to);
-        if (isInMath) return null;
-    }
-
     const word = context.matchBefore(/\\[a-zA-Z]*$/);
     if (!word) return null;
     if (word.from === word.to && !context.explicit) return null;
+
+    const ranges = context.state.field(parsedRangesField, false);
+    const mathRange = ranges?.find(r =>
+        (r.type === "inlineMath" || r.type === "blockMath") && context.pos >= r.from && context.pos <= r.to
+    );
+    if (mathRange && tooltipCompletionContext(context.state.doc.toString(), context.pos, mathRange.from) !== "prose") return null;
 
     const afterStr = context.state.doc.sliceString(context.pos, Math.min(context.pos + 50, context.state.doc.length));
     const wordAfterMatch = afterStr.match(/^[a-zA-Z]*/);

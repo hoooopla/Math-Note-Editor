@@ -4,6 +4,7 @@ import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter
 import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from '../lib/safe-relabel';
 import { googleDriveWorkspace } from '../lib/google-drive-workspace';
+import { loadDriveSession, saveDriveSession } from '../lib/drive-session-storage';
 import { decodedAssetPath, encodedAssetReference, validateAssetPath } from '../lib/asset-reference';
 import { assetMoveRevisionInput, buildAssetMovePlan, replaceAssetImageReferences, AssetMovePlan } from '../lib/safe-asset-move';
 import { imageSignatureMatches, validateImageFilename, validateImageUpload } from '../lib/image-upload-policy';
@@ -152,6 +153,8 @@ export interface BackendApi {
 
 let dirHandle: FileSystemDirectoryHandle | null = null;
 let useServer = true;
+let inflightKeepaliveBytes = 0;
+const MAX_NOTE_KEEPALIVE_BYTES = 60 * 1024;
 const viewerAssets = new Map<string, File>();
 const LOCAL_BACKUP_DIRECTORY = '.math-note-backups';
 
@@ -390,7 +393,12 @@ export const api: BackendApi = {
             await requireOk(res, 'Loading settings');
             return await res.json();
         }
-        if (api.mode === 'google') return googleDriveWorkspace.loadSettings(defaultSettings);
+        if (api.mode === 'google') {
+            const remote = await googleDriveWorkspace.loadSettings(defaultSettings);
+            const folderId = googleDriveWorkspace.folderId;
+            if (!folderId) throw new Error('No Google Drive folder is connected');
+            return { ...remote, workspaceSession: loadDriveSession(folderId, remote.workspaceSession) || undefined };
+        }
         if (api.mode === "local" && dirHandle) {
             try {
                 const settingDirHandle = await dirHandle.getDirectoryHandle('setting');
@@ -412,7 +420,8 @@ export const api: BackendApi = {
             });
             await requireOk(res, 'Saving settings');
         } else if (api.mode === 'google') {
-            await googleDriveWorkspace.saveSettings(settings);
+            const { workspaceSession: _deviceSession, ...preferences } = settings;
+            await googleDriveWorkspace.saveSettings(preferences);
         } else if (api.mode === "local" && dirHandle) {
             const settingDirHandle = await dirHandle.getDirectoryHandle('setting', { create: true });
             let existed = true;
@@ -439,8 +448,9 @@ export const api: BackendApi = {
             });
             await requireOk(res, 'Saving workspace session');
         } else if (api.mode === 'google') {
-            const current = await api.loadSettings();
-            await api.saveSettings({ ...current, workspaceSession: session });
+            const folderId = googleDriveWorkspace.folderId;
+            if (!folderId) throw new Error('No Google Drive folder is connected');
+            saveDriveSession(folderId, session);
         } else if (api.mode === 'local' && dirHandle) {
             const current = await api.loadSettings();
             await api.saveSettings({ ...current, workspaceSession: session });
@@ -820,14 +830,25 @@ export const api: BackendApi = {
         if (metadataError) throw new Error(metadataError);
         block = normalizedBlock;
         if (useServer) {
-            const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(block),
-                keepalive: true
-            });
-            await requireOk(res, 'Saving block');
-            return await res.json();
+            const body = JSON.stringify(block);
+            const bodyBytes = new Blob([body]).size;
+            // The Fetch limit applies to the total size of *in-flight* keepalive
+            // bodies, not each request independently. Large or concurrent saves
+            // use normal fetch; small saves retain page-exit protection.
+            const keepalive = inflightKeepaliveBytes + bodyBytes <= MAX_NOTE_KEEPALIVE_BYTES;
+            if (keepalive) inflightKeepaliveBytes += bodyBytes;
+            try {
+                const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body,
+                    keepalive
+                });
+                await requireOk(res, 'Saving block');
+                return await res.json();
+            } finally {
+                if (keepalive) inflightKeepaliveBytes -= bodyBytes;
+            }
         }
         if (api.mode === 'google') {
             const updated = await googleDriveWorkspace.updateBlock(block);

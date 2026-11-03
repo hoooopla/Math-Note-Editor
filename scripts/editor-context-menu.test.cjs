@@ -9,17 +9,24 @@ const editableFlags = {
 
 test('offers spelling replacements and enabled edit actions for editable text', () => {
   const replacements = [];
+  const addedWords = [];
   const menu = editorContextMenuTemplate({
     isEditable: true,
     spellcheckEnabled: true,
     misspelledWord: 'teh',
     dictionarySuggestions: ['the', 'The', 'the'],
     editFlags: editableFlags
-  }, { replaceMisspelling: suggestion => replacements.push(suggestion) });
+  }, {
+    replaceMisspelling: suggestion => replacements.push(suggestion),
+    session: { addWordToSpellCheckerDictionary: word => addedWords.push(word) }
+  });
 
-  assert.deepEqual(menu.filter(item => item.label).map(item => item.label), ['the', 'The']);
+  assert.deepEqual(menu.filter(item => item.label).map(item => item.label),
+    ['the', 'The', 'Add “teh” to dictionary']);
   menu[0].click();
+  menu[2].click();
   assert.deepEqual(replacements, ['the']);
+  assert.deepEqual(addedWords, ['teh']);
   assert.equal(menu.find(item => item.role === 'redo').enabled, false);
   assert.equal(menu.find(item => item.role === 'paste').enabled, true);
 });

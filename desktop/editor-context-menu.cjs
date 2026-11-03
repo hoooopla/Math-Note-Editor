@@ -14,6 +14,10 @@ function editorContextMenuTemplate(params, webContents) {
     } else {
       template.push({ label: 'No spelling suggestions', enabled: false });
     }
+    template.push({
+      label: `Add “${params.misspelledWord}” to dictionary`,
+      click: () => webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord)
+    });
     template.push({ type: 'separator' });
   }
 

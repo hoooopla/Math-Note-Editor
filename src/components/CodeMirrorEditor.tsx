@@ -138,6 +138,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
     const isProgrammaticFocusRef = useRef(false);
     const onBlurRef = useRef(onBlur);
     const onChangeRef = useRef(onChange);
+    const locallyClearedRef = useRef(false);
     const onFocusRef = useRef(onFocus);
     const onUpRef = useRef(onUp);
     const onDownRef = useRef(onDown);
@@ -585,6 +586,30 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 EditorView.contentAttributes.of({ spellcheck: "true" }),
                 mathPrimeInputHandler,
                 closeBrackets(),
+                // A full-document deletion in a long note can leave CodeMirror's
+                // viewport measured against the old document. Move the selected
+                // range into the first viewport and let it settle for a frame.
+                Prec.highest(keymap.of(["Backspace", "Delete"].map(key => ({
+                    key,
+                    run: (view: EditorView) => {
+                        const selection = view.state.selection.main;
+                        if (view.state.readOnly || view.state.doc.length < 10_000 ||
+                            selection.from !== 0 || selection.to !== view.state.doc.length) return false;
+                        const originalDoc = view.state.doc;
+                        view.dispatch({ selection: { anchor: originalDoc.length, head: 0 }, scrollIntoView: true });
+                        requestAnimationFrame(() => {
+                            if (!view.dom.isConnected || view.state.doc !== originalDoc) return;
+                            const currentSelection = view.state.selection.main;
+                            if (currentSelection.from !== 0 || currentSelection.to !== originalDoc.length) return;
+                            view.dispatch({
+                                changes: { from: 0, to: originalDoc.length },
+                                selection: { anchor: 0 },
+                                userEvent: "delete.selection"
+                            });
+                        });
+                        return true;
+                    }
+                })))),
                 keymap.of([{ 
                     key: "Tab", 
                     run: (view) => {
@@ -734,6 +759,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 EditorView.updateListener.of((update) => {
                     const userEvent = update.transactions.map(tr => tr.annotation(Transaction.userEvent)).find(e => Boolean(e));
                     if (update.docChanged && onChangeRef.current && userEvent) {
+                        locallyClearedRef.current = update.state.doc.length === 0;
                         onChangeRef.current(update.state.doc.toString());
                         
                     }
@@ -898,7 +924,10 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
     useEffect(() => {
         if (viewRef.current) {
             const currentDoc = viewRef.current.state.doc.toString();
-            if (content !== currentDoc && (!viewRef.current.hasFocus || currentDoc === "")) {
+            // A focused empty editor can receive newly loaded content, but a
+            // locally cleared editor must not replay a lagging content prop.
+            if (content !== currentDoc && (!viewRef.current.hasFocus ||
+                (currentDoc === "" && !locallyClearedRef.current))) {
                 let start = 0;
                 while (start < currentDoc.length && start < content.length && currentDoc[start] === content[start]) {
                     start++;

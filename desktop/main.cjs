@@ -6,6 +6,17 @@ const net = require('node:net');
 const path = require('node:path');
 const { editorContextMenuTemplate } = require('./editor-context-menu.cjs');
 
+// Stress runs must not replace the installed app's remembered workspace.
+// Both paths are supplied by the test harness and live in its temporary root.
+if (process.env.MATH_NOTE_STRESS_USER_DATA) {
+  if (!process.env.MATH_NOTE_WORKSPACE) {
+    throw new Error('An isolated desktop profile requires an isolated workspace.');
+  }
+  const isolatedProfile = path.resolve(process.env.MATH_NOTE_STRESS_USER_DATA);
+  fs.mkdirSync(isolatedProfile, { recursive: true });
+  app.setPath('userData', isolatedProfile);
+}
+
 let mainWindow = null;
 let serverProcess = null;
 let activeWorkspace = null;

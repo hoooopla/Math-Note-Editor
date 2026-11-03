@@ -57,6 +57,7 @@ export default function App() {
     const addBlock = useStore(state => state.addBlock);
     const setActiveBlock = useStore(state => state.setActiveBlock);
     const initBackend = useStore(state => state.initBackend);
+    const loadSettings = useStore(state => state.loadSettings);
     const connectLocalFS = useStore(state => state.connectLocalFS);
     const connectGoogleDrive = useStore(state => state.connectGoogleDrive);
     const disconnectGoogleDrive = useStore(state => state.disconnectGoogleDrive);
@@ -573,10 +574,23 @@ export default function App() {
                     <span>Changes may not have been saved: {persistenceError}</span>
                     <div className="flex shrink-0 items-center gap-2">
                         <button
-                            onClick={() => { clearPersistenceError(); void initBackend(); }}
+                            onClick={() => {
+                                if (backendMode === 'google' && /(?:settings\.json|preferences).*?(?:changed in Google Drive|created elsewhere)/i.test(persistenceError)) {
+                                    if (!window.confirm('Discard unsaved preference changes and reload preferences from Google Drive? Your open tabs will be kept.')) return;
+                                    setIsMacroModalOpen(false);
+                                    clearPersistenceError();
+                                    void loadSettings(true);
+                                } else if (backendMode === 'google') {
+                                    void connectGoogleDrive();
+                                } else {
+                                    clearPersistenceError();
+                                    void initBackend();
+                                }
+                            }}
                             className="rounded px-2 py-1 font-medium hover:bg-red-500/20"
                         >
-                            Reconnect
+                            {backendMode === 'google' && /(?:settings\.json|preferences).*?(?:changed in Google Drive|created elsewhere)/i.test(persistenceError)
+                                ? 'Reload preferences' : backendMode === 'google' ? 'Reconnect Drive' : 'Reconnect'}
                         </button>
                         <button onClick={clearPersistenceError} className="rounded p-1 hover:bg-red-500/20" aria-label="Dismiss save error">
                             <X size={16} />
@@ -613,7 +627,7 @@ export default function App() {
 
             <div className="flex flex-1 min-h-0 overflow-hidden">
                 <div className="flex-1 flex flex-col min-w-0 h-full">
-                <div role="tablist" aria-label="Open tabs" className="flex overflow-x-auto border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[42px] px-2 pt-2 gap-1">
+                <div role="tablist" aria-label="Open tabs" className="open-tabs-strip flex border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[43px] px-2 pt-2 gap-1">
                     {openTabs.map(id => {
                         const b = blocks.find(x => x.id === id);
                         if (!b) return null;
@@ -634,7 +648,7 @@ export default function App() {
                                 onClick={() => { setActiveExplanationId(null); activateTab(id); }}
                                 onKeyDown={(event) => handleTabKeyDown(event, id)}
                                 className={`flex items-center gap-2 px-3 py-1.5 rounded-t-lg min-w-[100px] max-w-[200px] cursor-pointer text-sm transition-colors border-t border-x ${isActive ? 'bg-base border-outline z-10 text-primary font-semibold' : 'bg-surface border-transparent text-secondary hover:bg-accent/10 hover:text-primary z-0 border-b-outline'}`}
-                                style={isActive ? { borderBottomColor: 'transparent', marginBottom: '-1px' } : { borderBottomWidth: '1px' }}
+                                style={isActive ? { borderBottomColor: 'transparent' } : { borderBottomWidth: '1px' }}
                             >
                                 <span className="truncate flex-1 select-none pointer-events-none">{b.title || b.label}</span>
                                 <button 

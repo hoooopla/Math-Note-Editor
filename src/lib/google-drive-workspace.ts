@@ -16,6 +16,8 @@ let folder: { id: string; name: string } | null = null;
 let signInScriptPromise: Promise<void> | null = null;
 let pickerScriptPromise: Promise<void> | null = null;
 const fileByBlockId = new Map<string, DriveFile>();
+let settingsFile: DriveFile | null | undefined;
+let settingsSaveChain: Promise<void> = Promise.resolve();
 
 const config = () => ({
     clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
@@ -248,17 +250,19 @@ async function updateTextFile(file: DriveFile, name: string, contents: string, m
 
 export const googleDriveWorkspace = {
     get folderName() { return folder?.name || null; },
+    get folderId() { return folder?.id || null; },
     async connect(beforeSwitch?: () => Promise<void>) {
         await authorize();
         const selected = await pickFolder();
         await beforeSwitch?.();
         folder = selected;
         fileByBlockId.clear();
+        settingsFile = undefined;
         return selected;
     },
     async disconnect() {
         if (accessToken) window.google?.accounts?.oauth2?.revoke(accessToken, () => undefined);
-        accessToken = ''; folder = null; fileByBlockId.clear();
+        accessToken = ''; folder = null; fileByBlockId.clear(); settingsFile = undefined;
     },
     async getAssetUrl(path: string): Promise<string> {
         const asset = await findAsset(path);
@@ -337,11 +341,24 @@ export const googleDriveWorkspace = {
     async deleteBlock(id: string) { const file = fileByBlockId.get(id); if (file) await driveFetch(`/drive/v3/files/${encodeURIComponent(file.id)}`, { method: 'DELETE' }); fileByBlockId.delete(id); },
     async loadSettings<T>(fallback: T): Promise<T> {
         const file = await findSettingsFile();
+        settingsFile = file;
         return file ? JSON.parse(await readText(file.id)) : fallback;
     },
     async saveSettings(settings: unknown) {
-        const file = await findSettingsFile();
-        if (file) await updateTextFile(file, file.name, JSON.stringify(settings, null, 2), 'application/json');
-        else await createTextFile(SETTINGS_NAME, JSON.stringify(settings, null, 2), 'application/json');
+        const selectedFolderId = folder?.id;
+        const task = settingsSaveChain.catch(() => undefined).then(async () => {
+            if (!selectedFolderId || folder?.id !== selectedFolderId) throw new Error('Google Drive folder changed before preferences could be saved.');
+            if (settingsFile === undefined) settingsFile = await findSettingsFile();
+            const contents = JSON.stringify(settings, null, 2);
+            if (settingsFile) {
+                settingsFile = await updateTextFile(settingsFile, settingsFile.name, contents, 'application/json');
+            } else {
+                // A different device may have created preferences after this one loaded.
+                if (await findSettingsFile()) throw new Error('Google Drive preferences were created elsewhere. Reload preferences before saving.');
+                settingsFile = await createTextFile(SETTINGS_NAME, contents, 'application/json');
+            }
+        });
+        settingsSaveChain = task.catch(() => undefined);
+        return task;
     }
 };

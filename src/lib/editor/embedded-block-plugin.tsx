@@ -1685,6 +1685,36 @@ function moveFromSelectedTitleToAdjacentRow(
     const titleRect = title.getBoundingClientRect();
     const doc = view.state.doc;
     const titleLine = doc.lineAt(forward ? link.to : link.from);
+    if (!forward && link.from > titleLine.from &&
+        !interactiveEmbeddedLinks(view.state).some(candidate =>
+            candidate.from >= titleLine.from && candidate.to <= link.from)) {
+        // The prefix can occupy several visual rows of this same Markdown line.
+        // Source-line fallback would skip those rows and jump to the line above.
+        let nearest: { anchor: number; top: number; distanceX: number } | null = null;
+        for (let anchor = Math.max(titleLine.from, link.from - 4096); anchor < link.from; anchor++) {
+            const coords = view.coordsAtPos(anchor, 1);
+            if (!coords || coords.bottom > titleRect.top + 2) continue;
+            const distanceX = Math.abs(coords.left - x);
+            if (!nearest || coords.top > nearest.top + 2 ||
+                (Math.abs(coords.top - nearest.top) <= 2 && distanceX < nearest.distanceX)) {
+                nearest = { anchor, top: coords.top, distanceX };
+            }
+        }
+        if (nearest) {
+            const origin = view.state.selection.main;
+            const goalColumn = Math.max(0, x - view.contentDOM.getBoundingClientRect().left);
+            const destination = EditorSelection.cursor(nearest.anchor, 1, undefined, goalColumn);
+            view.dispatch({
+                selection: EditorSelection.create([destination]),
+                effects: [setEditorFocus.of(true), setEmbeddedObjectSelection.of(null)],
+                scrollIntoView: false
+            });
+            rememberVisualMove(view, direction, origin, destination, {
+                x, y: (titleRect.top + titleRect.bottom) / 2
+            }, { from: link.from, to: link.to, edge: origin.head === link.from ? "before" : "after" });
+            return true;
+        }
+    }
     const adjacentNumber = titleLine.number + (forward ? 1 : -1);
     if (adjacentNumber >= 1 && adjacentNumber <= doc.lines) {
         const sameLineText = doc.sliceString(forward ? link.to : titleLine.from,

@@ -56,8 +56,42 @@ async function expectEmbeddedEditorReentry(page: import('playwright/test').Page,
     expect(await (await request.get(`/api/blocks/${root.id}/raw`)).text()).toBe(source);
 }
 
+async function expectHorizontalTabStrip(page: import('playwright/test').Page, request: import('playwright/test').APIRequestContext) {
+    const ids: string[] = [];
+    for (let index = 0; index < 10; index++) {
+        const block = await (await request.post('/api/blocks', { data: {
+            title: `Scrollable tab ${index}`, label: `scrollable:tab:${index}`, content: `Tab ${index}`
+        } })).json();
+        ids.push(block.id);
+    }
+    expect((await request.post('/api/workspace/session', { data: {
+        openTabs: ids, activeTab: ids[0], persistForTest: true
+    } })).ok()).toBeTruthy();
+    await page.goto('/');
+    const strip = page.getByRole('tablist', { name: 'Open tabs' });
+    await expect(strip.getByRole('tab')).toHaveCount(ids.length);
+    const geometry = await strip.evaluate(element => {
+        const style = getComputedStyle(element);
+        element.scrollLeft = element.scrollWidth;
+        element.scrollTop = 50;
+        return { horizontal: element.scrollLeft, vertical: element.scrollTop,
+            verticalOverflow: element.scrollHeight - element.clientHeight,
+            overflowY: style.overflowY, touchAction: style.touchAction };
+    });
+    expect(geometry.horizontal).toBeGreaterThan(0);
+    expect(geometry.vertical, JSON.stringify(geometry)).toBe(0);
+    expect(geometry.verticalOverflow).toBe(0);
+    expect(geometry.overflowY).toBe('hidden');
+    expect(geometry.touchAction).toBe('pan-x');
+    await expect(strip.getByRole('tab').last()).toBeInViewport();
+}
+
 test.describe('iPhone reading', () => {
     test.use(iPhone);
+
+    test('scrolls open tabs horizontally without vertical movement', async ({ page, request }) => {
+        await expectHorizontalTabStrip(page, request);
+    });
 
     test('re-enters an open embedded editor after two pencil-toggle cycles', async ({ page, request }) => {
         await expectEmbeddedEditorReentry(page, request);
@@ -155,6 +189,10 @@ test.describe('iPhone reading', () => {
 
 test.describe('iPad reading', () => {
     test.use(iPad);
+
+    test('scrolls open tabs horizontally without vertical movement', async ({ page, request }) => {
+        await expectHorizontalTabStrip(page, request);
+    });
 
     test('re-enters an open embedded editor after two pencil-toggle cycles', async ({ page, request }) => {
         await expectEmbeddedEditorReentry(page, request);

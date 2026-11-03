@@ -26,6 +26,50 @@ function argument(source: string, start: number) {
     return null;
 }
 
+export type TooltipCompletionContext = "symbol" | "prose" | "inlineMath" | "blockMath";
+
+function explanationMathAt(source: string, from: number, position: number): TooltipCompletionContext {
+    let mode: TooltipCompletionContext = "prose";
+    for (let at = from; at < position; at++) {
+        if (source[at] === "\n" && mode === "inlineMath") mode = "prose";
+        if (mode !== "inlineMath" && source.startsWith("\\[", at) && !escaped(source, at) && at + 1 < position) {
+            mode = "blockMath";
+            at++;
+        } else if (mode === "blockMath" && source.startsWith("\\]", at) && !escaped(source, at) && at + 1 < position) {
+            mode = "prose";
+            at++;
+        } else if (mode !== "blockMath" && source[at] === "$" && !escaped(source, at)) {
+            mode = mode === "inlineMath" ? "prose" : "inlineMath";
+        }
+    }
+    return mode;
+}
+
+/** Completion context while typing either a complete or an unfinished \tooltip command. */
+export function tooltipCompletionContext(source: string, position: number, from = 0): TooltipCompletionContext | null {
+    let context: TooltipCompletionContext | null = null;
+    for (let at = from; at < position; at++) {
+        if (!source.startsWith("\\tooltip", at) || escaped(source, at) || /[A-Za-z]/.test(source[at + 8] || "")) continue;
+        let next = at + 8;
+        while (/[ \t]/.test(source[next] || "")) next++;
+        if (source[next] !== "{") continue;
+        const symbol = argument(source, next);
+        if (position > next && (!symbol || position <= symbol.end - 1)) {
+            context = "symbol";
+            continue;
+        }
+        if (!symbol) continue;
+        next = symbol.end;
+        while (/[ \t]/.test(source[next] || "")) next++;
+        if (source[next] !== "{") continue;
+        const content = argument(source, next);
+        if (position > next && (!content || position <= content.end - 1)) {
+            context = explanationMathAt(source, next + 1, position);
+        }
+    }
+    return context;
+}
+
 /** Find complete commands only. Source positions stay valid in the editor. */
 export function parseMathExplanations(source: string): MathExplanation[] {
     const found: MathExplanation[] = [];
