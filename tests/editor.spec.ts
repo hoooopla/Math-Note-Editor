@@ -106,15 +106,17 @@ test('long standout titles take space before the label grows', async ({ page }) 
     await labelChip.hover();
     const layout = await labelChip.evaluate(element => {
         const row = element.closest('.standout-title-row')!;
+        const content = element.closest('.standout-title-content')!;
         const title = row.querySelector('[data-embed-nav-title]')!;
         return {
             row: row.getBoundingClientRect().width,
+            content: content.getBoundingClientRect().width,
             title: title.getBoundingClientRect().width,
             label: element.getBoundingClientRect().width
         };
     });
     expect(layout.title).toBeGreaterThan(layout.row * 0.65);
-    expect(layout.label).toBeGreaterThanOrEqual(layout.row * 0.05 - 2);
+    expect(layout.label).toBeGreaterThanOrEqual(layout.content * 0.05 - 1);
     expect(layout.label).toBeLessThan(layout.row * 0.3);
 });
 

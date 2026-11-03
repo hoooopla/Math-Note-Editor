@@ -71,7 +71,7 @@ test('keeps diagrams rendered in a locked embedded note', async ({ page, request
         title: 'Diagram parent', label: 'test:diagram-parent', content: '[[test:diagram-child∨]]'
     } })).json();
     await page.goto('/');
-    await page.getByRole('button', { name: /Search/ }).click();
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
     const search = page.getByPlaceholder('Search blocks or create new...');
     await search.fill(root.label);
     await search.press('Enter');
