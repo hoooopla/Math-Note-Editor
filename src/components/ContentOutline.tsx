@@ -1,10 +1,12 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { EditorView } from '@codemirror/view';
+import { foldedRanges } from '@codemirror/language';
 import { ChevronDown, ChevronRight, Loader2, RotateCcw, SlidersHorizontal, X } from 'lucide-react';
 import { useStore } from '../store';
 import { buildContentOutline, OutlineNode } from '../lib/content-outline';
 import { parseEmbeddedLinks } from '../lib/embedded-link-syntax';
 import { MathTitle } from './MathTitle';
+import { unfoldHeadingAncestors } from '../lib/editor/heading-fold';
 
 const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
@@ -20,6 +22,30 @@ async function findUntil<T>(find: () => T | null | undefined, frames = 90): Prom
 function editorIn(element: Element): EditorView | null {
     const dom = element.querySelector<HTMLElement>('.cm-editor');
     return dom ? EditorView.findFromDOM(dom) : null;
+}
+
+function foldedHeadingKeys(rootId: string, nodes: OutlineNode[]): Set<string> {
+    const folded = new Set<string>();
+    const panel = document.getElementById(`block-tab-panel-${rootId}`);
+    if (!panel) return folded;
+    const visit = (items: OutlineNode[]) => items.forEach(node => {
+        if (node.kind === 'heading') {
+            const key = JSON.stringify(node.path.map(segment => `${segment.blockId}@${segment.from}`));
+            const host = node.path.length
+                ? Array.from(panel.querySelectorAll<HTMLElement>('[data-occurrence-key]')).find(element => element.dataset.occurrenceKey === key)
+                : panel.querySelector<HTMLElement>('[data-block-root]');
+            const view = host && editorIn(host);
+            if (view && node.from < view.state.doc.length) {
+                const line = view.state.doc.lineAt(node.from);
+                if (line.from === node.from) foldedRanges(view.state).between(line.to, line.to + 1, from => {
+                    if (from === line.to) folded.add(node.key);
+                });
+            }
+        }
+        visit(node.children);
+    });
+    visit(nodes);
+    return folded;
 }
 
 async function navigate(rootId: string, node: OutlineNode): Promise<boolean> {
@@ -38,6 +64,7 @@ async function navigate(rootId: string, node: OutlineNode): Promise<boolean> {
         const link = parseEmbeddedLinks(view.state.doc.toString()).find(item => item.from === segment.from)
             || parseEmbeddedLinks(view.state.doc.toString()).find(item => item.from >= segment.from - 2 && item.from <= segment.from + 2);
         if (!link) return false;
+        unfoldHeadingAncestors(view, link.from);
         view.dispatch({ effects: EditorView.scrollIntoView(link.from, { y: 'center' }) });
         const title = await findUntil(() => view!.dom.querySelector<HTMLElement>(`.cm-embedded-block-wrapper[data-embed-from="${link.from}"][data-embed-part="title"] [data-embed-nav-title], .cm-embedded-block-wrapper[data-embed-from="${link.from}"][data-embed-part="full"] [data-embed-nav-title]`));
         if (!title) return false;
@@ -53,6 +80,7 @@ async function navigate(rootId: string, node: OutlineNode): Promise<boolean> {
         if (!view) return false;
     }
     const position = Math.min(node.from, view.state.doc.length);
+    unfoldHeadingAncestors(view, position);
     view.dispatch({ effects: EditorView.scrollIntoView(position, { y: 'start', yMargin: 80 }) });
     if (node.kind !== 'heading') {
         const title = await findUntil(() => view!.dom.querySelector<HTMLElement>(`.cm-embedded-block-wrapper[data-embed-from="${position}"] [data-embed-nav-title]`));
@@ -95,7 +123,7 @@ export function ContentOutline({ rootId, onClose }: { rootId: string; onClose: (
     };
 
     const restoreView = () => {
-        setCollapsed(visibleNodes());
+        setCollapsed(new Set([...visibleNodes(), ...foldedHeadingKeys(rootId, nodes)]));
     };
 
     const loadNode = (node: OutlineNode) => {

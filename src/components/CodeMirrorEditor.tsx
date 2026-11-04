@@ -5,6 +5,8 @@ import { search } from "@codemirror/search";
 import { markdown } from "@codemirror/lang-markdown";
 import { mathMarkdownExtension } from "../lib/editor/math-markdown-extension";
 import { headingPlugin, removeHeadingPrefix } from "../lib/editor/heading-plugin";
+import { headingFolding } from "../lib/editor/heading-fold";
+import { foldState } from "@codemirror/language";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { history, historyField, defaultKeymap, historyKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, blockMathDecorationField, mathTooltipField, autoClosingDollarField, updateAutoClosingDollar, isDollarEscaped } from "../lib/editor/katex-plugin";
@@ -43,7 +45,7 @@ function trimEditorStateCache() {
 
 function rememberEditorState(key: string, state: EditorState, group?: string) {
     editorStateCache.delete(key);
-    editorStateCache.set(key, { doc: state.doc.toString(), json: state.toJSON({ history: historyField }), group });
+    editorStateCache.set(key, { doc: state.doc.toString(), json: state.toJSON({ history: historyField, fold: foldState }), group });
     trimEditorStateCache();
 }
 
@@ -543,6 +545,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),
                 markdown({ addKeymap: false, extensions: [mathMarkdownExtension] }),
                 headingPlugin,
+                headingFolding,
                 EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["(", "[", "{", "'", '"', "$"] } }]),
                 macrosCompartmentRef.current.of(livePreviewMacros.of(macros)),
                 parentLabelCompartmentRef.current.of(parentLabelFacet.of(parentLabelRef.current || "")),
@@ -802,7 +805,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         let state: EditorState;
         if (cachedState?.doc === content) {
             try {
-                state = EditorState.fromJSON(cachedState.json, { extensions }, { history: historyField });
+                state = EditorState.fromJSON(cachedState.json, { extensions }, { history: historyField, fold: foldState });
                 editorStateCache.delete(stateCacheKey!);
                 editorStateCache.set(stateCacheKey!, { ...cachedState, group: stateCacheGroupRef.current });
             } catch {

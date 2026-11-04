@@ -121,6 +121,7 @@ body {
 /* Inactive Markdown heading syntax is collapsed; activating its line reveals
    the real source markers for direct editing. */
 .cm-content .cm-line.cm-heading-line {
+  position: relative;
   font-family: var(--font-sans);
   font-weight: 700;
   color: var(--color-primary);
@@ -557,3 +558,14 @@ body {
 .float-tooltip-kap { display: none !important; }
 /* Dock the outline when the note retains a comfortable reading width. */
 .outline-docked .outline-tab-panel { left: 16rem; }
+.cm-heading-fold-toggle { position: absolute; left: -.7em; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: .65em; height: 1em; border: 0; padding: 0; background: transparent; color: var(--color-secondary); font: inherit; cursor: pointer; opacity: 0; transition: opacity 120ms ease, color 120ms ease; }
+.cm-heading-fold-chevron { display: block; width: .65em; height: .65em; }
+.cm-heading-fold-toggle[data-folded="false"] .cm-heading-fold-chevron { transform: rotate(90deg); }
+.cm-heading-line:hover .cm-heading-fold-toggle,
+.cm-heading-line:focus-within .cm-heading-fold-toggle,
+.cm-heading-fold-toggle:focus-visible { opacity: 1; }
+.cm-content .cm-line.cm-heading-folded-line { padding-left: .75em; }
+.cm-heading-folded-line .cm-heading-fold-toggle { left: 0; width: .7em; opacity: 1; }
+@media (hover: none) { .cm-heading-fold-toggle { opacity: 1; } }
+.cm-heading-fold-toggle:hover { color: var(--color-accent); }
+.cm-heading-fold-placeholder { margin-left: .35em; border: 0; border-radius: .3em; padding: 0 .3em; background: var(--color-surface); color: var(--color-secondary); font: inherit; cursor: pointer; }

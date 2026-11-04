@@ -133,7 +133,8 @@ test(`reveals a suffix after delayed body loading${cancelWithWheel ? ' without o
         await page.waitForTimeout(200);
         if (cancelWithWheel) {
             const bounds = await panel.boundingBox();
-            await page.mouse.move(bounds!.x + 20, bounds!.y + 20);
+            // The outline can cover the panel's left edge; wheel over the note.
+            await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + 20);
             await page.mouse.wheel(0, -80);
         }
         releaseLoad();

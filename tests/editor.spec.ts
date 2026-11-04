@@ -936,7 +936,7 @@ test('keeps a standout title readable while abbreviating a long label from the l
     await page.getByPlaceholder('Search blocks or create new...').fill(sourceLabel);
     await page.getByPlaceholder('Search blocks or create new...').press('Enter');
 
-    const title = page.getByText('Important theorem title', { exact: true });
+    const title = page.locator('[role="tabpanel"][aria-hidden="false"]').getByText('Important theorem title', { exact: true });
     const label = page.getByTestId(`standout-label-${target.id}`);
     await expect(title).toBeVisible();
     await expect(label).toHaveText(longLabel);
@@ -974,19 +974,19 @@ test('capitalizes only letter-leading standout titles without changing inline ti
 
     const standoutTitle = page.getByText('Countable subadditivity', { exact: true });
     await expect(standoutTitle).toHaveCount(1);
-    await expect(page.getByText('countable subadditivity', { exact: true })).toHaveCount(1);
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"]').getByText('countable subadditivity', { exact: true })).toHaveCount(1);
     const mathLeadingTitle = page.locator('[data-embed-nav-title="true"]')
         .filter({ has: page.locator('.katex') })
         .filter({ hasText: 'remains lowercase' });
     await expect(mathLeadingTitle).toHaveCount(1);
     expect(await mathLeadingTitle.textContent()).toContain('remains lowercase');
     expect(await mathLeadingTitle.textContent()).not.toContain('Remains lowercase');
-    await expect(page.getByText('(local) estimate', { exact: true })).toHaveCount(1);
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"]').getByText('(local) estimate', { exact: true })).toHaveCount(1);
 
     await standoutTitle.click();
     await expect(page.getByText('Lowercase target content', { exact: true })).toBeVisible();
     await expect(page.getByText('Countable subadditivity', { exact: true })).toHaveCount(1);
-    await expect(page.getByText('countable subadditivity', { exact: true })).toHaveCount(1);
+    await expect(page.locator('[role="tabpanel"][aria-hidden="false"]').getByText('countable subadditivity', { exact: true })).toHaveCount(1);
 
     await expect.poll(async () => (await (await page.request.get(`/api/blocks/${lowercase.id}`)).json()).title)
         .toBe('countable subadditivity');
@@ -2851,7 +2851,7 @@ test('preserves blank rows and crosses preceding nested embed boundaries logical
     const rootEditor = panel.locator('.cm-editor').first();
     const rootContent = rootEditor.locator(':scope > .cm-scroller > .cm-content');
     const deepestRow = page.getByText('deep final row before blank', { exact: true });
-    const followingTitle = page.getByText('Following application title', { exact: true });
+    const followingTitle = page.locator('[role="tabpanel"][aria-hidden="false"]').getByText('Following application title', { exact: true });
     await expect(deepestRow).toBeVisible();
     await expect(followingTitle).toBeVisible();
     await page.evaluate(() => new Promise<void>(resolve =>
@@ -4028,7 +4028,7 @@ test('keeps fresh vertical movement inside wrapped text before and after an inli
         .toBeGreaterThan(firstWrapCaret.top + 2);
     const secondWrapCaret = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
     expect(secondWrapCaret.top).toBeGreaterThan(firstWrapCaret.top + 2);
-    const titleRect = await page.getByText('Fresh wrapped portal', { exact: true })
+    const titleRect = await page.locator('[role="tabpanel"][aria-hidden="false"]').getByText('Fresh wrapped portal', { exact: true })
         .evaluate(element => element.getBoundingClientRect().toJSON());
     expect(secondWrapCaret.bottom).toBeLessThan(titleRect.top + 2);
 
@@ -4101,7 +4101,7 @@ test('keeps fresh wrapped-row navigation inside a nested editor with inline math
     await expect(childHost.locator('[data-embed-keyboard-selected="true"]')).toHaveCount(0);
     const secondWrapCaret = await nativeCaret.evaluate(element => element.getBoundingClientRect().toJSON());
     expect(secondWrapCaret.top).toBeGreaterThan(firstWrapCaret.top + 2);
-    const leafTitleRect = await page.getByText('Nested wrapped leaf', { exact: true })
+    const leafTitleRect = await page.locator('[role="tabpanel"][aria-hidden="false"]').getByText('Nested wrapped leaf', { exact: true })
         .evaluate(element => element.getBoundingClientRect().toJSON());
     expect(secondWrapCaret.bottom).toBeLessThan(leafTitleRect.top + 2);
 });
@@ -4746,7 +4746,7 @@ test('changes empty-set appearance without rewriting the LaTeX source', async ({
     await expect(page.locator('.cm-math-inline .amsrm, .cm-math-block .amsrm')).toHaveCount(0);
 
     await page.getByLabel('Open settings').click();
-    await page.getByRole('tab', { name: 'Math Visual' }).click();
+    await page.getByRole('tab', { name: 'Appearance' }).click();
     const style = page.getByLabel('Empty Set Appearance');
     await expect(style).toHaveValue('standard');
     await style.selectOption('slanted');
@@ -6950,7 +6950,7 @@ test('validates settings and supports keyboard dialog navigation', async ({ page
     await expect(page.getByLabel('Math Block Vertical Padding (px)')).toHaveCount(0);
 
     await page.getByLabel('Global Search Shortcut').fill('meta+k');
-    await page.getByRole('tab', { name: 'Math Visual' }).click();
+    await page.getByRole('tab', { name: 'Appearance' }).click();
     await page.getByLabel('Math Block Vertical Padding (px)').fill('-1');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect(page.getByRole('alert')).toContainText('Math block vertical padding must be between 0 and 100');
@@ -6963,7 +6963,7 @@ test('validates settings and supports keyboard dialog navigation', async ({ page
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect(page.getByRole('alert')).toContainText('must be a backslash followed by letters');
 
-    await page.getByRole('tab', { name: 'Math Visual' }).click();
+    await page.getByRole('tab', { name: 'Appearance' }).click();
     await page.getByLabel('Default Text hex color').fill('red');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect(page.getByRole('alert')).toContainText('must be a six-digit hex color');

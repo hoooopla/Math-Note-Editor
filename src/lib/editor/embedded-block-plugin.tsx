@@ -1,6 +1,7 @@
 import { Decoration, DecorationSet, EditorView, WidgetType, showTooltip, Tooltip, KeyBinding } from "@codemirror/view";
 import { EditorSelection, RangeSetBuilder, StateEffect, StateField, Facet } from "@codemirror/state";
 import { completionStatus, startCompletion } from "@codemirror/autocomplete";
+import { foldedRanges } from "@codemirror/language";
 import { editorFocusField, parsedRangesField, setEditorFocus } from "./katex-plugin";
 import { findHighlightOverlaps, setFindHighlight } from "./find-highlight";
 import { Root, createRoot } from "react-dom/client";
@@ -1167,10 +1168,16 @@ function buildEmbeddedDecorations(state: import("@codemirror/state").EditorState
     const selection = state.selection.main;
     const objectSelection = state.field(embeddedObjectSelectionField, false);
     const transientOpen = state.field(transientEmbeddedOpenField, false);
+    const folded = foldedRanges(state);
     
     const decos: {from: number, to: number, deco: Decoration}[] = [];
 
     for (const link of links) {
+        let hiddenByHeading = false;
+        folded.between(link.from, link.to, (from, to) => {
+            if (from <= link.from && link.to <= to) hiddenByHeading = true;
+        });
+        if (hiddenByHeading) continue;
         // Embedded-link syntax inside a formula belongs to the formula's raw
         // source. In particular, a [[label]] inside \tooltip{...}{...} must
         // stay literal while the surrounding math is edited. The explanation
@@ -1275,6 +1282,7 @@ export const embeddedBlockPlugin = StateField.define<DecorationSet>({
     },
     update(decorations, tr) {
         if (tr.docChanged || tr.selection || tr.startState.readOnly !== tr.state.readOnly ||
+            foldedRanges(tr.startState) !== foldedRanges(tr.state) ||
             tr.startState.field(parsedRangesField, false) !== tr.state.field(parsedRangesField, false) ||
             tr.effects.some(e => e.is(setEditorFocus) || e.is(setFindHighlight) || e.is(setEmbeddedObjectSelection) || e.is(setTransientEmbeddedOpen) || e.is(clearTransientEmbeddedOpen))) {
             return buildEmbeddedDecorations(tr.state);
