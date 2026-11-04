@@ -47,8 +47,7 @@ const settingsTabs = [
     { id: 'macros', label: 'Math Macros' },
     { id: 'commands', label: 'Autocomplete' },
     { id: 'text', label: 'Text Autocomplete' },
-    { id: 'embedded', label: 'Embedded Blocks' },
-    { id: 'colors', label: 'Math Visual' }
+    { id: 'appearance', label: 'Appearance' }
 ] as const;
 
 type SettingsTab = typeof settingsTabs[number]['id'];
@@ -86,6 +85,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [localReopenTabShortcut, setLocalReopenTabShortcut] = useState<string>('mod+shift+t');
     const [localNextTabShortcut, setLocalNextTabShortcut] = useState<string>('ctrl+tab');
     const [localPreviousTabShortcut, setLocalPreviousTabShortcut] = useState<string>('ctrl+shift+tab');
+    const [localOutlineDockWidth, setLocalOutlineDockWidth] = useState<number>(800);
     const [workspacePath, setWorkspacePath] = useState<string | null>(null);
     const [importMessage, setImportMessage] = useState<string | null>(null);
     const [localMathHighlightColor, setLocalMathHighlightColor] = useState<string>('#d19a66');
@@ -143,6 +143,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setLocalReopenTabShortcut(settings.reopenClosedTabShortcut || 'mod+shift+t');
             setLocalNextTabShortcut(settings.nextTabShortcut || 'ctrl+tab');
             setLocalPreviousTabShortcut(settings.previousTabShortcut || 'ctrl+shift+tab');
+            setLocalOutlineDockWidth(settings.outlineDockWidth ?? 800);
             if (window.mathNotesDesktop) {
                 void window.mathNotesDesktop.getWorkspacePath().then(setWorkspacePath).catch(() => setWorkspacePath(null));
             } else {
@@ -298,6 +299,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
 
         const numericValues: Array<[string, number, number, number]> = [
+            ['Outline dock width', localOutlineDockWidth, 500, 1600],
             ['Inline block indent', localInlineBlockIndentWidth, 0, 200],
             ['Inline title underline opacity', localInlineBlockTitleUnderlineOpacity, 0, 100],
             ['Standout block indent', localStandoutBlockIndentWidth, 0, 200],
@@ -345,6 +347,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             reopenClosedTabShortcut: normalizedShortcuts.reopenTab,
             nextTabShortcut: normalizedShortcuts.nextTab,
             previousTabShortcut: normalizedShortcuts.previousTab,
+            outlineDockWidth: localOutlineDockWidth,
             inlineBlockTitleColorWithContent: localInlineBlockColorFilled.trim(),
             inlineBlockTitleColorEmpty: localInlineBlockColorEmpty.trim(),
             inlineBlockTitleUnderlineOpacity: localInlineBlockTitleUnderlineOpacity,
@@ -888,9 +891,20 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             </div>
                         )}
 
-                        {activeTab === 'embedded' && (
+                        {activeTab === 'appearance' && (
                             <div className="max-w-2xl">
-                                <h3 className="text-base font-semibold text-primary mb-1">Inline Embedded Block Settings</h3>
+                                <h3 className="text-base font-semibold text-primary mb-1">Appearance</h3>
+                                <p className="text-sm text-secondary mb-6">Adjust the outline, embedded blocks, and math display.</p>
+                                <section className="mb-8 rounded-lg border border-outline bg-base/40 p-4">
+                                    <h3 className="text-sm font-semibold text-primary">Outline</h3>
+                                    <label htmlFor="outline-dock-width" className="mt-3 block text-sm text-primary">Dock outline at tab width</label>
+                                    <p className="mt-1 text-xs text-secondary">At this width, opening the outline makes room for it. When there is ample space beside the centered note, the note stays in place.</p>
+                                    <div className="mt-3 flex items-center gap-2">
+                                        <input id="outline-dock-width" type="number" min={500} max={1600} step={10} value={localOutlineDockWidth} onChange={event => setLocalOutlineDockWidth(event.target.valueAsNumber)} className="w-24 rounded-md border border-outline bg-surface px-2 py-1 text-sm text-primary" />
+                                        <span className="text-xs text-secondary">CSS pixels</span>
+                                    </div>
+                                </section>
+                                <h3 className="border-t border-outline pt-6 text-base font-semibold text-primary mb-1">Inline Embedded Blocks</h3>
                                 <p className="text-sm text-secondary mb-6">Configure how inline embedded blocks appear.</p>
                                 
                                 <div className="space-y-4">
@@ -954,7 +968,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     </div>
                                     
                                     <div className="flex flex-col gap-2 mt-8">
-                                        <h3 className="text-base font-semibold text-primary mb-1">Standout Embedded Block Settings</h3>
+                                        <h3 className="text-base font-semibold text-primary mb-1">Standout Embedded Blocks</h3>
                                         <p className="text-sm text-secondary mb-4">Configure how standout embedded blocks appear.</p>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             {[
@@ -1099,9 +1113,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             </div>
                         )}
 
-                        {activeTab === 'colors' && (
-                            <div className="max-w-2xl">
-                                <h3 className="text-base font-semibold text-primary mb-1">Math Visual</h3>
+                        {activeTab === 'appearance' && (
+                            <div className="max-w-2xl border-t border-outline pt-6">
+                                <h3 className="text-base font-semibold text-primary mb-1">Math</h3>
                                 <p className="text-sm text-secondary mb-6">Configure raw LaTeX syntax colors, symbol appearance, and the spacing around displayed equations.</p>
                                 
                                 <div className="space-y-4">

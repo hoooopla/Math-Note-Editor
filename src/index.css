@@ -555,3 +555,5 @@ body {
 .graph-tooltip { display: none !important; }
 
 .float-tooltip-kap { display: none !important; }
+/* Dock the outline when the note retains a comfortable reading width. */
+.outline-docked .outline-tab-panel { left: 16rem; }

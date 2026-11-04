@@ -9,7 +9,8 @@ import { getOrderedBlocks, useStore } from "./store";
 import { preloadGoogleSignIn } from "./lib/google-drive-workspace";
 import { BlockContainer } from "./components/Block";
 import { CodeMirrorEditor } from "./components/CodeMirrorEditor";
-import { Search, ScanText, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut } from "lucide-react";
+import { Search, ScanText, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut, ListTree } from "lucide-react";
+import { ContentOutline } from "./components/ContentOutline";
 import { isIPhoneOrIPad } from "./lib/ios-device";
 import "./index.css";
 
@@ -82,6 +83,9 @@ export default function App() {
     const [isFindOpen, setIsFindOpen] = useState(false);
     const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
     const [isBlockMapOpen, setIsBlockMapOpen] = useState(false);
+    const [isOutlineOpen, setIsOutlineOpen] = useState(false);
+    const outlineAreaRef = useRef<HTMLDivElement>(null);
+    const [outlineAreaWidth, setOutlineAreaWidth] = useState(0);
     const [isTestMode, setIsTestMode] = useState(false);
     const [isDesktop, setIsDesktop] = useState(false);
     const [googleSignInReady, setGoogleSignInReady] = useState(false);
@@ -92,6 +96,15 @@ export default function App() {
     const lastFocusedEditorRef = useRef<EditorView | null>(null);
     const [imageInsertError, setImageInsertError] = useState('');
     const isMobileIOS = isIPhoneOrIPad();
+
+    useLayoutEffect(() => {
+        const area = outlineAreaRef.current;
+        if (!area) return;
+        const observer = new ResizeObserver(() => setOutlineAreaWidth(area.getBoundingClientRect().width));
+        observer.observe(area);
+        setOutlineAreaWidth(area.getBoundingClientRect().width);
+        return () => observer.disconnect();
+    }, []);
 
     useEffect(() => {
         const rememberEditor = (event: FocusEvent) => {
@@ -625,7 +638,7 @@ export default function App() {
                 </div>
             )}
 
-            <div className="flex flex-1 min-h-0 overflow-hidden">
+            <div className="flex flex-1 min-h-0 overflow-hidden relative">
                 <div className="flex-1 flex flex-col min-w-0 h-full">
                 <div role="tablist" aria-label="Open tabs" className="open-tabs-strip flex border-b border-outline bg-surface shrink-0 hidden-scrollbar items-end h-[43px] px-2 pt-2 gap-1">
                     {openTabs.map(id => {
@@ -684,14 +697,19 @@ export default function App() {
                     </div>)}
                 </div>
 
-                <div className="relative flex-1 min-h-0 bg-base">
+                <div ref={outlineAreaRef} className={`outline-content-area relative flex-1 min-h-0 bg-base ${isOutlineOpen && activeTab && !activeExplanationId ? outlineAreaWidth >= 1408 ? 'outline-free' : outlineAreaWidth >= (settings.outlineDockWidth ?? 800) ? 'outline-docked' : '' : ''}`}>
+                    {activeTab && !activeExplanationId && <div key={activeTab} className={`absolute inset-y-0 left-0 z-40 shadow-xl ${isOutlineOpen ? '' : 'hidden'}`}><ContentOutline rootId={activeTab} onClose={() => setIsOutlineOpen(false)}/></div>}
+                    {activeTab && !activeExplanationId && !isOutlineOpen && <button type="button" onClick={() => setIsOutlineOpen(true)}
+                        aria-label="Open content outline" title="Open content outline" className="absolute left-3 top-3 z-50 rounded-lg border border-outline bg-surface p-2 text-secondary shadow-lg transition-colors hover:bg-[#263247] hover:text-accent">
+                        <ListTree size={18}/>
+                    </button>}
                     {openTabs.map(id => (
                         <div
                             key={id}
                             id={`block-tab-panel-${id}`}
                             role="tabpanel"
                             aria-hidden={activeTab !== id || !!activeExplanationId}
-                            className={`absolute inset-0 overflow-y-auto p-4 md:p-8 bg-base ${activeTab === id && !activeExplanationId ? 'visible pointer-events-auto' : 'invisible pointer-events-none'}`}
+                            className={`outline-tab-panel absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 md:px-8 md:pb-8 md:pt-16 bg-base ${activeTab === id && !activeExplanationId ? 'visible pointer-events-auto' : 'invisible pointer-events-none'}`}
                             onMouseDownCapture={(e) => {
                                 const target = e.target;
                                 const content = e.button === 0 && target instanceof Element

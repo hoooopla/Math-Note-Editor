@@ -23,6 +23,7 @@ export interface EditorSettings {
     reopenClosedTabShortcut?: string;
     nextTabShortcut?: string;
     previousTabShortcut?: string;
+    outlineDockWidth?: number;
     inlineBlockTitleColorWithContent?: string;
     inlineBlockTitleColorEmpty?: string;
     inlineBlockTitleUnderlineOpacity?: number;
@@ -90,6 +91,7 @@ export function createDefaultEditorSettings(macros: Record<string, string> = {})
         reopenClosedTabShortcut: "mod+shift+t",
         nextTabShortcut: "ctrl+tab",
         previousTabShortcut: "ctrl+shift+tab",
+        outlineDockWidth: 800,
         inlineBlockTitleColorWithContent: "#a8b5c2",
         inlineBlockTitleColorEmpty: "#FF997D",
         inlineBlockTitleUnderlineOpacity: 100,
