@@ -1,3 +1,5 @@
+import { isEscaped, pairedDollarPositions, syntaxPositions, parseEmbeddedText as parseCore, resolveEmbeddedLabel as resolveCore } from './note-display-core.mjs';
+
 export interface EmbeddedLinkSyntax {
     from: number;
     to: number;
@@ -18,84 +20,8 @@ export interface ActiveEmbeddedTarget {
     standout: boolean;
 }
 
-function isEscaped(text: string, position: number): boolean {
-    let backslashes = 0;
-    for (let index = position - 1; index >= 0 && text[index] === "\\"; index--) backslashes++;
-    return backslashes % 2 === 1;
-}
-
-function pairedDollarPositions(text: string): Set<number> {
-    const dollars: number[] = [];
-    for (let index = 0; index < text.length; index++) {
-        if (text[index] === "$" && !isEscaped(text, index)) dollars.push(index);
-    }
-    if (dollars.length % 2 === 1) dollars.pop();
-    return new Set(dollars);
-}
-
-function syntaxPositions(text: string): Set<number> {
-    const pairedDollars = pairedDollarPositions(text);
-    const outsideMath = new Set<number>();
-    let inMath = false;
-    for (let index = 0; index < text.length; index++) {
-        if (pairedDollars.has(index)) {
-            inMath = !inMath;
-            continue;
-        }
-        if (!inMath) outsideMath.add(index);
-    }
-    return outsideMath;
-}
-
-function decodeOutsideMathEscapes(text: string): string {
-    const outsideMath = syntaxPositions(text);
-    let decoded = "";
-    for (let index = 0; index < text.length; index++) {
-        if (text[index] === "\\" && outsideMath.has(index) && index + 1 < text.length && "[]|@/∨$\\".includes(text[index + 1])) {
-            decoded += text[++index];
-        } else {
-            decoded += text[index];
-        }
-    }
-    return decoded.normalize("NFC");
-}
-
 export function parseEmbeddedText(rawInput: string): Omit<EmbeddedLinkSyntax, "from" | "to" | "rawText"> {
-    let text = rawInput.trim();
-    let standout = false;
-    if (text.startsWith("@")) {
-        standout = true;
-        text = text.slice(1);
-    }
-
-    let outsideMath = syntaxPositions(text);
-    let open = false;
-    const lastIndex = text.length - 1;
-    if (lastIndex >= 0 && text[lastIndex] === "∨" && outsideMath.has(lastIndex) && !isEscaped(text, lastIndex)) {
-        open = true;
-        text = text.slice(0, -1).trimEnd();
-        outsideMath = syntaxPositions(text);
-    }
-
-    let aliasIndex = -1;
-    for (let index = 0; index < text.length - 1; index++) {
-        if (text[index] === "|" && text[index + 1] === "|" && outsideMath.has(index) && outsideMath.has(index + 1) && !isEscaped(text, index)) {
-            aliasIndex = index;
-            break;
-        }
-    }
-
-    const rawLabel = (aliasIndex === -1 ? text : text.slice(0, aliasIndex)).trim();
-    const rawAlias = aliasIndex === -1 ? null : text.slice(aliasIndex + 2).trim();
-    const relative = rawLabel.startsWith("/");
-    return {
-        text: rawInput,
-        label: decodeOutsideMathEscapes(rawLabel),
-        alias: rawAlias === null ? null : decodeOutsideMathEscapes(rawAlias),
-        standout,
-        open,
-        relative
-    };
+    return parseCore(rawInput);
 }
 
 export function parseEmbeddedLinks(documentText: string): EmbeddedLinkSyntax[] {
@@ -156,7 +82,7 @@ export function parseEmbeddedLinks(documentText: string): EmbeddedLinkSyntax[] {
 }
 
 export function resolveEmbeddedLabel(parsed: Pick<EmbeddedLinkSyntax, "label" | "relative">, parentLabel: string): string {
-    return parsed.relative ? parentLabel + parsed.label : parsed.label;
+    return resolveCore(parsed, parentLabel);
 }
 
 export function setEmbeddedOpen(rawText: string, open: boolean): string {

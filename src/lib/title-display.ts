@@ -4,9 +4,8 @@
  * lowercase letter. A title beginning with math, punctuation, whitespace, or a
  * number is deliberately left alone.
  */
+import { standoutDisplayTitle as sharedStandoutDisplayTitle } from './note-display-core.mjs';
+
 export function standoutDisplayTitle(title: string | null): string | null {
-    if (!title) return title;
-    const first = title.match(/^./u)?.[0];
-    if (!first || !/^\p{Ll}$/u.test(first)) return title;
-    return first.toUpperCase() + title.slice(first.length);
+    return sharedStandoutDisplayTitle(title);
 }
