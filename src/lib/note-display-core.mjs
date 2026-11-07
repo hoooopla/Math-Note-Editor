@@ -104,6 +104,17 @@ export function standoutDisplayTitle(title) {
     return first && /^\p{Ll}$/u.test(first) ? first.toUpperCase() + title.slice(first.length) : title;
 }
 
+export function describeEmbeddedPresentation(raw, parentLabel, title = null) {
+    const parsed = parseEmbeddedText(raw);
+    const resolvedTitle = title ?? parsed.alias;
+    return {
+        ...parsed,
+        targetLabel: resolveEmbeddedLabel(parsed, parentLabel),
+        style: /** @type {'standout' | 'inline'} */ (parsed.standout ? 'standout' : 'inline'),
+        displayTitle: parsed.standout ? standoutDisplayTitle(resolvedTitle) : resolvedTitle
+    };
+}
+
 // Return text and TeX segments; the caller chooses KaTeX settings and markup.
 export function splitMathTitle(text) {
     const segments = [];

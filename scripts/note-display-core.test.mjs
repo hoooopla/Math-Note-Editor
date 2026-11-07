@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseEmbeddedText, parseEmbeddedLinks, resolveEmbeddedLabel, standoutDisplayTitle, splitMathTitle } from '../src/lib/note-display-core.mjs';
+import { parseEmbeddedText, parseEmbeddedLinks, resolveEmbeddedLabel, standoutDisplayTitle, splitMathTitle, describeEmbeddedPresentation } from '../src/lib/note-display-core.mjs';
 
 test('embedded links share the editor syntax', () => {
     const parsed = parseEmbeddedText('@/child || $x^2$ ∨');
@@ -14,6 +14,10 @@ test('embedded links share the editor syntax', () => {
     assert.equal(links.length, 2);
     assert.equal(links[0].alias, '$a]]b$');
     assert.equal(links[1].label, 'escaped]]label');
+    assert.deepEqual(
+        (({targetLabel,style,displayTitle})=>({targetLabel,style,displayTitle}))(describeEmbeddedPresentation('@/child∨','topic/root','lower title')),
+        {targetLabel:'topic/root/child',style:'standout',displayTitle:'Lower title'}
+    );
 });
 
 test('title math and standout capitalization remain presentation rules', () => {

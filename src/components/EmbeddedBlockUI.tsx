@@ -8,13 +8,12 @@ import { setEditorFocus } from "../lib/editor/katex-plugin";
 import { setEmbeddedObjectSelection } from "../lib/editor/embedded-object-selection";
 import { MathTitle } from "./MathTitle";
 import { ExternalLink, ChevronRight, ChevronDown } from "lucide-react";
-import { parseEmbeddedText, resolveEmbeddedLabel } from "../lib/embedded-link-syntax";
+import { describeEmbeddedPresentation } from "../lib/note-display-core.mjs";
 import { handOffEditorBoundary } from "../lib/editor/editor-boundary-registry";
 import { startCompletion } from "@codemirror/autocomplete";
 import { findActiveEmbeddedTarget } from "../lib/embedded-link-syntax";
 import { EMBEDDED_PREFETCH_AHEAD_SCREENS, scheduleEmbeddedBlockPrefetch, scheduleEmbeddedDescendantPrefetch } from "../lib/embedded-prefetch";
 import { effectiveMathMacros } from "../lib/math-render-settings";
-import { standoutDisplayTitle } from "../lib/title-display";
 import {
     demoteEmbeddedOccurrence,
     initialEmbeddedEditorPhase,
@@ -59,8 +58,8 @@ export interface EmbeddedBlockUIProps {
 export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurrencePath = [], toggleOpen, view, parentReadOnly, stateRef, isAtEndOfLine = false, isAtStartOfLine = false, isKeyboardSelected = false, keyboardSelectionEdge, renderPart = "full", onRendererReady }: EmbeddedBlockUIProps) {
     const pos = stateRef?.pos;
     const length = stateRef?.length;
-    const parsedEmbed = parseEmbeddedText(text);
-    const displayStyle: "standout" | "inline" = parsedEmbed.standout ? "standout" : "inline";
+    const parsedEmbed = describeEmbeddedPresentation(text, parentLabel);
+    const displayStyle: "standout" | "inline" = parsedEmbed.style;
     const ifToggled: "open" | "closed" = parsedEmbed.open ? "open" : "closed";
     // A terminal open embed already contributes the surrounding editor's
     // source-line height. Repeating body padding/margins at every descendant
@@ -104,7 +103,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     const macros = useMemo(() => effectiveMathMacros(settings), [settings.macros, settings.emptySetStyle]);
 
     let displayTitle: string | null = parsedEmbed.alias;
-    const fullLabel = resolveEmbeddedLabel(parsedEmbed, parentLabel);
+    const fullLabel = parsedEmbed.targetLabel;
 
     const targetBlockId = useStore(state => state.blockIdByLabel[fullLabel]);
     const targetBlock = useStore(state => targetBlockId ? state.blocksById[targetBlockId] : undefined);
@@ -251,9 +250,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
     // title remains sentence-friendly in inline embeds, search, and editing.
     // This transform is display-only and intentionally does not skip over a
     // leading math delimiter, punctuation mark, number, or whitespace.
-    const renderedTitle = displayStyle === "standout"
-        ? standoutDisplayTitle(displayTitle)
-        : displayTitle;
+    const renderedTitle = describeEmbeddedPresentation(text, parentLabel, displayTitle).displayTitle;
 
     if (!isLabelExisted) {
         // An open link has separate title and body widgets. A missing target

@@ -4,7 +4,7 @@ import path from 'node:path';
 import MarkdownIt from 'markdown-it';
 import katex from 'katex';
 import sanitizeHtml from 'sanitize-html';
-import { parseEmbeddedText, parseEmbeddedLinks, resolveEmbeddedLabel, standoutDisplayTitle, splitMathTitle } from '../../src/lib/note-display-core.mjs';
+import { parseEmbeddedLinks, describeEmbeddedPresentation, splitMathTitle } from '../../src/lib/note-display-core.mjs';
 
 const escape = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const slug = s => encodeURIComponent(s);
@@ -50,14 +50,14 @@ const refs = new Map(notes.map(n => [n.label, new Set()]));
 const outgoing = new Map(notes.map(n => [n.label, new Set()]));
 let embedSequence = 0;
 function reference(raw, note, stack) {
-  const parsed = parseEmbeddedText(raw);
+  const parsed = describeEmbeddedPresentation(raw,note.label);
   const {standout,open,label,alias} = parsed;
-  const targetLabel = resolveEmbeddedLabel(parsed,note.label);
+  const targetLabel = parsed.targetLabel;
   const target = byLabel.get(targetLabel);
   if (!target) { errors.push(`${path.relative(source,note.file)}: missing reference ${targetLabel}`); return {title:`<span class="broken-reference" title="Missing note">${escape(alias || label)}</span>`,body:''}; }
   outgoing.get(note.label).add(target.label); refs.get(target.label).add(note.label);
   const title=alias || target.title;
-  const displayTitle=standout ? standoutDisplayTitle(title) : title;
+  const displayTitle=describeEmbeddedPresentation(raw,note.label,title).displayTitle;
   const link = `<a class="note-reference${standout?' standout':''}" href="${urlFor(target)}">${renderTitle(displayTitle)}</a>`;
   if (!open) return {title:link,body:''};
   if (stack.includes(target.label)) return {title:`${link}<span class="embed-cycle" title="Circular embed: already shown above"> ↩</span>`,body:''};
