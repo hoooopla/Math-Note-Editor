@@ -5,7 +5,8 @@ import path from "path";
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from "./src/lib/block-metadata";
-import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from "./src/lib/label-policy";
+import { makeInitialBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from "./src/lib/label-policy";
+import { validateEditorSettings } from "./src/lib/settings-validation";
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from "./src/lib/safe-relabel";
 import { atomicWriteFile, backupFile } from "./src/lib/atomic-file";
 import { createBlocksViewFixture } from "./src/lib/blocks-view-fixture";
@@ -17,7 +18,7 @@ const app = express();
 const portArgumentIndex = process.argv.indexOf("--port");
 const requestedPort = portArgumentIndex >= 0 ? Number(process.argv[portArgumentIndex + 1]) : 3000;
 const PORT = Number.isInteger(requestedPort) && requestedPort > 0 && requestedPort <= 65535 ? requestedPort : 3000;
-const HOST = process.env.HOST || "127.0.0.1";
+const HOST = process.env.MATH_NOTE_DESKTOP === "true" ? "127.0.0.1" : (process.env.HOST || "127.0.0.1");
 const isProduction = process.env.NODE_ENV === "production" || process.argv.includes("--production");
 const isTestMode = process.argv.includes("--test-mode");
 app.use(express.json({ limit: '20mb' }));
@@ -29,6 +30,7 @@ app.use(express.json({ limit: '20mb' }));
 const WORKSPACE_DIR = path.resolve(process.env.MATH_NOTE_WORKSPACE || path.join(process.cwd(), "blocks"));
 const BLOCKS_DIR = WORKSPACE_DIR;
 const BACKUP_DIR = path.join(WORKSPACE_DIR, ".math-note-backups");
+const RECOVERY_DIR = path.join(WORKSPACE_DIR, ".math-note-recovery");
 const DIST_DIR = path.resolve(process.env.MATH_NOTE_DIST_DIR || path.join(process.cwd(), "dist"));
 
 interface BlockData {
@@ -38,6 +40,7 @@ interface BlockData {
     content?: string;
     hasContent?: boolean;
     references?: string[];
+    revision?: string;
 }
 
 let blocksMap = new Map<string, BlockData>();
@@ -45,6 +48,7 @@ let sseClients: express.Response[] = [];
 let testSettings: Record<string, unknown> | null = null;
 let testWorkspaceSession: { openTabs: string[]; activeTab: string | null; lockedTabs: string[] } | null = null;
 const testAssets = new Map<string, { buffer: Buffer; contentType: string }>();
+const testRecoveryDrafts = new Map<string, Record<string, unknown>>();
 const assetWriteLocks = new Map<string, Promise<void>>();
 
 async function withAssetWriteLock<T>(assetPath: string, operation: () => Promise<T>): Promise<T> {
@@ -81,6 +85,7 @@ app.post("/api/test/reset", (_req, res) => {
     blockIdToFileMap.clear();
     pendingBlockLabels.clear();
     testAssets.clear();
+    testRecoveryDrafts.clear();
     testSettings = null;
     testWorkspaceSession = null;
     for (const block of INITIAL_BLOCKS) {
@@ -112,6 +117,25 @@ function notifyClients(message: any) {
     });
 }
 
+function blockRevision(block: Pick<BlockData, 'title' | 'label' | 'content'>): string {
+    return crypto.createHash('sha256').update(JSON.stringify([block.title, block.label, block.content || ''])).digest('hex');
+}
+
+function rejectWorkspaceSymlinks(target: string) {
+    const relative = path.relative(WORKSPACE_DIR, target);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Path leaves the workspace');
+    let current = WORKSPACE_DIR;
+    for (const part of relative.split(path.sep).filter(Boolean)) {
+        current = path.join(current, part);
+        try {
+            if (fsSync.lstatSync(current).isSymbolicLink()) throw new Error('Workspace symlinks are not supported');
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') break;
+            throw error;
+        }
+    }
+}
+
 async function ensureDir(dir: string) {
     try {
         await fs.mkdir(dir, { recursive: true });
@@ -119,18 +143,23 @@ async function ensureDir(dir: string) {
 }
 
 function workspaceBackupPath(targetPath: string) {
+    rejectWorkspaceSymlinks(targetPath);
     const relativePath = path.relative(WORKSPACE_DIR, path.resolve(targetPath));
     if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
         throw new Error(`Cannot back up a file outside the workspace: ${targetPath}`);
     }
-    return path.join(BACKUP_DIR, `${relativePath}.bak`);
+    const backupPath = path.join(BACKUP_DIR, `${relativePath}.bak`);
+    rejectWorkspaceSymlinks(backupPath);
+    return backupPath;
 }
 
 function writeWorkspaceFile(targetPath: string, contents: string | Buffer) {
+    rejectWorkspaceSymlinks(targetPath);
     return atomicWriteFile(targetPath, contents, { backupPath: workspaceBackupPath(targetPath) });
 }
 
 function backupWorkspaceFile(targetPath: string) {
+    rejectWorkspaceSymlinks(targetPath);
     return backupFile(targetPath, workspaceBackupPath(targetPath));
 }
 
@@ -164,6 +193,7 @@ function safeWorkspaceRelativePath(value: unknown) {
     if (!parts.length || parts.some(part => part === '.' || part === '..')) throw new Error('Invalid workspace path');
     const target = path.resolve(WORKSPACE_DIR, ...parts);
     if (!target.startsWith(`${WORKSPACE_DIR}${path.sep}`)) throw new Error('Invalid workspace path');
+    rejectWorkspaceSymlinks(target);
     return { normalized: parts.join('/'), target };
 }
 
@@ -328,80 +358,40 @@ async function writeRelabelTransaction(updatedBlocks: BlockData[]) {
     }
 }
 
-async function pathsReferToSameFile(leftPath: string, rightPath: string) {
-    if (path.resolve(leftPath) === path.resolve(rightPath)) return true;
-    try {
-        const [left, right] = await Promise.all([fs.stat(leftPath), fs.stat(rightPath)]);
-        return left.dev === right.dev && left.ino === right.ino;
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-        throw error;
-    }
-}
-
 async function writeBlockToFileUnlocked(block: BlockData) {
     if (isTestMode) return;
-    
-    let oldFilename = blockIdToFileMap.get(block.id);
-    let baseDir = oldFilename ? path.dirname(oldFilename) : "";
-    if (baseDir === ".") baseDir = "";
-
-    let readableFilename = makeBlockFilename(block.title || "", block.label || "", block.id);
-    let newFilename = baseDir ? path.join(baseDir, readableFilename) : readableFilename;
-
-    const isConflict = Array.from(blockIdToFileMap.entries()).some(([i, f]) => f === newFilename && i !== block.id);
-    if (isConflict) {
-        readableFilename = makeBlockFilename(block.title || "", block.label || "", `${block.id}-duplicate`);
-        newFilename = baseDir ? path.join(baseDir, readableFilename) : readableFilename;
+    // The path is assigned once. A Finder rename is discovered by the watcher
+    // and becomes the new path; editing title or label never renames it.
+    const filename = blockIdToFileMap.get(block.id) || makeInitialBlockFilename(block.title || '', block.id);
+    const filePath = path.join(BLOCKS_DIR, filename);
+    rejectWorkspaceSymlinks(filePath);
+    if (!blockIdToFileMap.has(block.id) && fsSync.existsSync(filePath)) {
+        throw new Error(`Note filename "${filename}" is already in use`);
     }
-
-    const oldFilePath = oldFilename ? path.join(BLOCKS_DIR, oldFilename) : null;
-    const filePath = path.join(BLOCKS_DIR, newFilename);
     const fileContent = stringifyFrontmatter({
         id: block.id,
         title: block.title || "",
         label: block.label || ""
     }, block.content || "");
     
-    if (baseDir) {
-        await ensureDir(path.join(BLOCKS_DIR, baseDir));
-    }
-    if (oldFilename && oldFilename !== newFilename && oldFilePath) {
-        await backupWorkspaceFile(oldFilePath);
-        // APFS and common Windows filesystems are case-insensitive by default.
-        // A title-only capitalization change can therefore make two distinct
-        // path strings resolve to the same file. Writing the "new" path and
-        // then unlinking the "old" one would delete the note we just saved.
-        // Keep the existing filename spelling and update that entry in place.
-        if (await pathsReferToSameFile(oldFilePath, filePath)) {
-            await writeWorkspaceFile(oldFilePath, fileContent);
-            blockIdToFileMap.set(block.id, oldFilename);
-            return;
-        }
-    }
+    await ensureDir(path.dirname(filePath));
     await writeWorkspaceFile(filePath, fileContent);
-
-    // Publish the replacement mapping before removing the old entry so the
-    // filesystem watcher cannot mistake our own rename for an external block
-    // deletion during the unlink notification.
-    blockIdToFileMap.set(block.id, newFilename);
-    if (oldFilename && oldFilename !== newFilename) {
-        try {
-            await fs.unlink(path.join(BLOCKS_DIR, oldFilename));
-        } catch (e) {
-            console.warn(`Could not delete old file ${oldFilename}:`, e);
-        }
-    }
+    blockIdToFileMap.set(block.id, filename);
 }
 
 async function writeBlockToFile(block: BlockData) {
-    const previous = blockWriteQueues.get(block.id) || Promise.resolve();
-    const current = previous.catch(() => {}).then(() => writeBlockToFileUnlocked(block));
-    blockWriteQueues.set(block.id, current);
+    return withBlockWriteLock(block.id, () => writeBlockToFileUnlocked(block));
+}
+
+async function withBlockWriteLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const previous = blockWriteQueues.get(id) || Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    const queued = current.then(() => {}, () => {});
+    blockWriteQueues.set(id, queued);
     try {
-        await current;
+        return await current;
     } finally {
-        if (blockWriteQueues.get(block.id) === current) blockWriteQueues.delete(block.id);
+        if (blockWriteQueues.get(id) === queued) blockWriteQueues.delete(id);
     }
 }
 
@@ -412,6 +402,7 @@ function blockMetadata(block: BlockData) {
         label: block.label,
         references: block.references || [],
         hasContent: block.hasContent ?? (block.content !== undefined && block.content.trim().length > 0),
+        revision: block.revision || blockRevision(block),
         _fileMeta: { fileName: blockIdToFileMap.get(block.id) }
     };
 }
@@ -423,6 +414,7 @@ async function ensureBlockContent(id: string): Promise<BlockData | null> {
 
     const filename = blockIdToFileMap.get(id);
     if (!filename) return cached;
+    rejectWorkspaceSymlinks(path.join(BLOCKS_DIR, filename));
     const fileText = await fs.readFile(path.join(BLOCKS_DIR, filename), "utf-8");
     const parsed = parseFrontmatter(fileText);
     const fullBlock: BlockData = {
@@ -433,8 +425,32 @@ async function ensureBlockContent(id: string): Promise<BlockData | null> {
         content: parsed.content,
         hasContent: parsed.content.trim().length > 0
     };
+    fullBlock.revision = blockRevision(fullBlock);
     blocksMap.set(id, fullBlock);
     return fullBlock;
+}
+
+async function readCurrentBlock(id: string): Promise<BlockData | null> {
+    if (isTestMode) {
+        const block = await ensureBlockContent(id);
+        return block ? { ...block, revision: blockRevision(block) } : null;
+    }
+    const filename = blockIdToFileMap.get(id);
+    if (!filename) return null;
+    const filePath = path.join(BLOCKS_DIR, filename);
+    rejectWorkspaceSymlinks(filePath);
+    const parsed = parseFrontmatter(await fs.readFile(filePath, 'utf-8'));
+    if (metadataText(parsed.data.id) !== id) throw new Error('Note identity changed on disk');
+    const block: BlockData = {
+        id,
+        title: normalizeBlockTitle(metadataText(parsed.data.title)),
+        label: normalizeBlockLabel(metadataText(parsed.data.label)),
+        content: parsed.content,
+        hasContent: parsed.content.trim().length > 0,
+        references: computeReferences(parsed.content)
+    };
+    block.revision = blockRevision(block);
+    return block;
 }
 
 async function initBlocks() {
@@ -461,6 +477,11 @@ async function initBlocks() {
         const mdFiles = files.filter(f => typeof f === 'string' && f.endsWith(".md")) as string[];
         const metadataEntries = await mapWithConcurrency(mdFiles, 16, async file => {
             const filePath = path.join(BLOCKS_DIR, file);
+            try { rejectWorkspaceSymlinks(filePath); }
+            catch (error) {
+                console.warn(`Skipping unsafe note path "${file}": ${error}`);
+                return null;
+            }
             const content = await fs.readFile(filePath, "utf-8");
             const parsed = parseFrontmatter(content);
             const id = metadataText(parsed.data.id, path.basename(file, ".md"));
@@ -471,11 +492,16 @@ async function initBlocks() {
                     title: normalizeBlockTitle(metadataText(parsed.data.title)),
                     label: normalizeBlockLabel(metadataText(parsed.data.label)),
                     references: computeReferences(parsed.content),
-                    hasContent: parsed.content.trim().length > 0
+                    hasContent: parsed.content.trim().length > 0,
+                    revision: blockRevision({
+                        title: normalizeBlockTitle(metadataText(parsed.data.title)),
+                        label: normalizeBlockLabel(metadataText(parsed.data.label)),
+                        content: parsed.content
+                    })
                 } satisfies BlockData
             };
         });
-        for (const { file, block } of metadataEntries) {
+        for (const { file, block } of metadataEntries.filter((entry): entry is NonNullable<typeof entry> => !!entry)) {
             const id = block.id;
             const normalizedFile = file.replace(/\\/g, '/');
             const existingFilename = blockIdToFileMap.get(id);
@@ -483,11 +509,18 @@ async function initBlocks() {
             // workspace reload is in progress (notably during backup restore).
             // Only a different path represents a genuine duplicate id.
             if (existingFilename && existingFilename !== normalizedFile) {
-                throw new Error(`Duplicate block id "${id}" found in "${existingFilename}" and "${file}"`);
+                // Keep the second note and its content; only its duplicate ID
+                // changes. The original file is backed up before repair.
+                const newId = uuidv4();
+                const filePath = path.join(BLOCKS_DIR, normalizedFile);
+                const original = parseFrontmatter(await fs.readFile(filePath, 'utf-8'));
+                await writeWorkspaceFile(filePath, stringifyFrontmatter({ ...original.data, id: newId }, original.content));
+                block.id = newId;
+                console.warn(`Reassigned duplicate note ID in "${file}"; original copy is in workspace backups.`);
             }
-            blocksMap.set(id, block);
+            blocksMap.set(block.id, block);
             // Normalize path slashes for consistency across platforms (use forward slash in map)
-            blockIdToFileMap.set(id, normalizedFile);
+            blockIdToFileMap.set(block.id, normalizedFile);
         }
     }
 }
@@ -608,6 +641,7 @@ app.post('/api/assets/move/commit', async (req, res) => {
         });
         // Copy first. If writing a note fails, both image paths remain available.
         await writeRelabelTransaction(updatedBlocks);
+        for (const block of updatedBlocks) block.revision = blockRevision(block);
         for (const block of updatedBlocks) blocksMap.set(block.id, block);
         for (const block of updatedBlocks) notifyClients({ type: 'update', block });
         let warning: string | undefined;
@@ -665,7 +699,7 @@ app.get("/api/blocks", async (req, res) => {
 app.get("/api/blocks/:id", async (req, res) => {
     try {
         const id = req.params.id;
-        const block = await ensureBlockContent(id);
+        const block = await readCurrentBlock(id);
         if (block) {
             res.json(block);
         } else {
@@ -680,6 +714,7 @@ app.get("/api/settings", async (req, res) => {
     try {
         const settingDir = path.join(WORKSPACE_DIR, "setting");
         const settingsPath = path.join(settingDir, "settings.json");
+        rejectWorkspaceSymlinks(settingsPath);
         const content = await fs.readFile(settingsPath, "utf-8").catch(() => "{\"macros\":{},\"customCommands\":[],\"textCommands\":[]}");
         if (isTestMode) {
             if (!testSettings) {
@@ -695,8 +730,84 @@ app.get("/api/settings", async (req, res) => {
     }
 });
 
+function recoveryPath(id: string) {
+    if (!id || id.length > 256) throw new Error('Invalid note ID');
+    const target = path.join(RECOVERY_DIR, `${crypto.createHash('sha256').update(id).digest('hex')}.json`);
+    rejectWorkspaceSymlinks(target);
+    return target;
+}
+
+app.get('/api/recovery', async (_req, res) => {
+    try {
+        if (isTestMode) return res.json({ drafts: Array.from(testRecoveryDrafts.values()), errors: [] });
+        rejectWorkspaceSymlinks(RECOVERY_DIR);
+        const files = await fs.readdir(RECOVERY_DIR).catch(error => {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+            throw error;
+        });
+        const drafts: Record<string, unknown>[] = [];
+        const errors: string[] = [];
+        for (const file of files.filter(name => name.endsWith('.json'))) {
+            try {
+                const target = path.join(RECOVERY_DIR, file);
+                rejectWorkspaceSymlinks(target);
+                const draft = JSON.parse(await fs.readFile(target, 'utf-8'));
+                if (typeof draft.id !== 'string' || recoveryPath(draft.id) !== target) throw new Error('Invalid recovery record');
+                drafts.push(draft);
+            } catch (error) { errors.push(`${file}: ${String(error)}`); }
+        }
+        res.json({ drafts, errors });
+    } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+
+app.put('/api/recovery/:id', async (req, res) => {
+    try {
+        const id = String(req.params.id || '');
+        const draft = req.body;
+        if (draft?.id !== id || typeof draft.title !== 'string' || typeof draft.label !== 'string' ||
+            (draft.content !== undefined && typeof draft.content !== 'string') ||
+            (draft.baseRevision !== undefined && typeof draft.baseRevision !== 'string') ||
+            typeof draft.updatedAt !== 'number' || !Number.isFinite(draft.updatedAt)) {
+            return res.status(400).json({ error: 'Invalid recovery draft' });
+        }
+        const record = { id, title: draft.title, label: draft.label, content: draft.content,
+            baseRevision: draft.baseRevision, updatedAt: draft.updatedAt };
+        await withBlockWriteLock(id, async () => {
+            if (isTestMode) {
+                const previous = testRecoveryDrafts.get(id);
+                if (!previous || Number(previous.updatedAt) <= record.updatedAt) testRecoveryDrafts.set(id, record);
+            } else {
+                await ensureDir(RECOVERY_DIR);
+                const target = recoveryPath(id);
+                const previous = await fs.readFile(target, 'utf-8').then(text => JSON.parse(text) as { updatedAt?: number }).catch(error => {
+                    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+                    throw error;
+                });
+                if (previous && Number(previous.updatedAt) > record.updatedAt) return;
+                await atomicWriteFile(target, JSON.stringify(record), { backup: false });
+            }
+        });
+        res.json({ success: true });
+    } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+
+app.delete('/api/recovery/:id', async (req, res) => {
+    try {
+        const id = String(req.params.id || '');
+        await withBlockWriteLock(id, async () => {
+            if (isTestMode) testRecoveryDrafts.delete(id);
+            else await fs.unlink(recoveryPath(id)).catch(error => {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            });
+        });
+        res.json({ success: true });
+    } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+
 app.post("/api/settings", async (req, res) => {
     try {
+        const issues = validateEditorSettings(req.body);
+        if (issues.length) return res.status(400).json({ error: issues.join(' ') });
         if (isTestMode) {
             testSettings = structuredClone(req.body || {});
             delete testSettings.workspaceSession;
@@ -776,12 +887,32 @@ app.post("/api/workspace/duplicate-labels/:id/resolve", async (req, res) => {
             hasContent: (existing.content || "").trim().length > 0
         };
         await writeBlockToFile(updated);
+        updated.revision = blockRevision(updated);
         blocksMap.set(id, updated);
         notifyClients({ type: "update", block: updated });
         res.json(blockMetadata(updated));
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
+});
+
+app.post("/api/workspace/duplicate-labels/:id/undo-resolve", async (req, res) => {
+    try {
+        if (relabelInProgress) return res.status(409).json({ error: "A tree transformation is currently running" });
+        const existing = await ensureBlockContent(req.params.id);
+        const currentLabel = normalizeBlockLabel(metadataText(req.body.currentLabel));
+        const oldLabel = normalizeBlockLabel(metadataText(req.body.oldLabel));
+        if (!existing || existing.label !== currentLabel ||
+            !Array.from(blocksMap.values()).some(block => block.id !== existing.id && normalizeBlockLabel(block.label) === oldLabel)) {
+            return res.status(409).json({ error: "The duplicate label repair changed since it was recorded" });
+        }
+        const updated: BlockData = { ...existing, label: oldLabel };
+        await writeBlockToFile(updated);
+        updated.revision = blockRevision(updated);
+        blocksMap.set(updated.id, updated);
+        notifyClients({ type: "update", block: updated });
+        res.json(blockMetadata(updated));
+    } catch (error) { res.status(500).json({ error: String(error) }); }
 });
 
 app.post("/api/relabel/preview", async (req, res) => {
@@ -827,6 +958,7 @@ app.post("/api/relabel/commit", async (req, res) => {
             });
         }
         await writeRelabelTransaction(updatedBlocks);
+        for (const block of updatedBlocks) block.revision = blockRevision(block);
         for (const block of updatedBlocks) blocksMap.set(block.id, block);
         for (const block of updatedBlocks) notifyClients({ type: "update", block });
         res.json({ plan, updatedBlocks });
@@ -860,7 +992,51 @@ app.post("/api/blocks", async (req, res) => {
             };
             block.references = computeReferences(block.content || "");
             await writeBlockToFile(block);
+            block.revision = blockRevision(block);
             blocksMap.set(block.id, block);
+            notifyClients({ type: 'update', block });
+            res.json(block);
+        } finally {
+            pendingBlockLabels.delete(label);
+        }
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Undo of a deletion must restore the original identity so existing embedded
+// references and open tabs still point at the same note.
+app.post("/api/blocks/restore", async (req, res) => {
+    try {
+        if (relabelInProgress) return res.status(409).json({ error: "A tree transformation is currently running" });
+        const id = req.body?.id;
+        if (typeof id !== "string" || !id || id.length > 256) {
+            return res.status(400).json({ error: "A valid note ID is required" });
+        }
+        const title = normalizeBlockTitle(metadataText(req.body.title));
+        const label = normalizeBlockLabel(metadataText(req.body.label));
+        const content = req.body.content;
+        const metadataError = validateBlockMetadata(title, label);
+        if (metadataError || typeof content !== "string") {
+            return res.status(400).json({ error: metadataError || "Note content is required" });
+        }
+        if (blocksMap.has(id) || blockIdToFileMap.has(id)) {
+            return res.status(409).json({ error: `Note ID "${id}" already exists` });
+        }
+        if (pendingBlockLabels.has(label) || Array.from(blocksMap.values()).some(candidate => candidate.label === label)) {
+            return res.status(409).json({ error: `Label "${label}" already exists` });
+        }
+        pendingBlockLabels.add(label);
+        try {
+            const block: BlockData = {
+                id, title, label, content,
+                hasContent: content.trim().length > 0,
+                references: computeReferences(content)
+            };
+            await writeBlockToFile(block);
+            block.revision = blockRevision(block);
+            blocksMap.set(block.id, block);
+            notifyClients({ type: 'update', block });
             res.json(block);
         } finally {
             pendingBlockLabels.delete(label);
@@ -874,9 +1050,15 @@ app.put("/api/blocks/:id", async (req, res) => {
     try {
         if (relabelInProgress) return res.status(409).json({ error: "A tree transformation is currently running" });
         const id = req.params.id;
-        const existing = await ensureBlockContent(id);
+        await withBlockWriteLock(id, async () => {
+        const existing = await readCurrentBlock(id);
         if (!existing) {
             return res.status(404).json({ error: "Block not found" });
+        }
+        const baseRevision = req.body?.baseRevision;
+        if (typeof baseRevision !== 'string' && !isTestMode) return res.status(428).json({ error: 'Reload the note before saving; its base revision is missing.' });
+        if (typeof baseRevision === 'string' && baseRevision !== existing.revision) {
+            return res.status(409).json({ error: 'This note changed elsewhere. Your draft is still in the editor.', currentBlock: existing });
         }
         
         const newLabel = req.body.label !== undefined
@@ -892,6 +1074,7 @@ app.put("/api/blocks/:id", async (req, res) => {
                 error: "Label changes require a reviewed tree transformation. Use /api/relabel/preview and /api/relabel/commit."
             });
         }
+        if (req.body.content !== undefined && typeof req.body.content !== 'string') return res.status(400).json({ error: 'Note content must be text' });
 
         const block: BlockData = {
             id,
@@ -901,9 +1084,12 @@ app.put("/api/blocks/:id", async (req, res) => {
             hasContent: (req.body.content !== undefined ? req.body.content : existing.content || "").trim().length > 0
         };
         block.references = computeReferences(block.content || "");
-        await writeBlockToFile(block);
+        await writeBlockToFileUnlocked(block);
+        block.revision = blockRevision(block);
         blocksMap.set(id, block);
+        notifyClients({ type: 'update', block });
         res.json({ block, updatedBlocks: [block] });
+        });
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
@@ -928,20 +1114,30 @@ app.delete("/api/blocks/:id", async (req, res) => {
     try {
         if (relabelInProgress) return res.status(409).json({ error: "A tree transformation is currently running" });
         const id = req.params.id;
+        await withBlockWriteLock(id, async () => {
+        const existing = await readCurrentBlock(id);
+        if (!existing) return res.status(404).json({ error: 'Block not found' });
+        const baseRevision = req.body?.baseRevision;
+        if (typeof baseRevision !== 'string' && !isTestMode) return res.status(428).json({ error: 'Reload the note before deleting; its base revision is missing.' });
+        if (typeof baseRevision === 'string' && baseRevision !== existing.revision) {
+            return res.status(409).json({ error: 'This note changed elsewhere. Delete was cancelled.', currentBlock: existing });
+        }
         const filename = blockIdToFileMap.get(id);
         if (isTestMode) {
             blockIdToFileMap.delete(id);
         } else if (filename) {
             const filePath = path.join(BLOCKS_DIR, filename);
             await backupWorkspaceFile(filePath);
-            await fs.unlink(filePath).catch(() => {});
+            rejectWorkspaceSymlinks(filePath);
+            await fs.unlink(filePath);
             blockIdToFileMap.delete(id);
         } else {
-            const fallbackPath = path.join(BLOCKS_DIR, `${id}.md`);
-            await fs.unlink(fallbackPath).catch(() => {});
+            return res.status(404).json({ error: 'Note file not found' });
         }
         blocksMap.delete(id);
+        notifyClients({ type: 'delete', id });
         res.json({ success: true });
+        });
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
@@ -973,17 +1169,34 @@ async function startServer() {
     await initBlocks();
 
     if (!isTestMode && fsSync.existsSync(BLOCKS_DIR)) {
-        fsSync.watch(BLOCKS_DIR, (eventType, filename) => {
+        fsSync.watch(BLOCKS_DIR, { recursive: true }, (eventType, changedFilename) => {
+            const filename = changedFilename?.replace(/\\/g, '/');
             if (!filename || !filename.endsWith('.md')) return;
             
             setTimeout(async () => {
                 const filePath = path.join(BLOCKS_DIR, filename);
                 let content;
                 try {
+                    rejectWorkspaceSymlinks(filePath);
                     content = await fs.readFile(filePath, "utf-8");
                 } catch (e) {
                     const id = Array.from(blockIdToFileMap.entries()).find(([k, v]) => v === filename)?.[0];
                     if (id && blocksMap.has(id)) {
+                        // Finder may report the old name before the new name.
+                        // Find its ID at the new path before announcing deletion.
+                        const candidates = await fs.readdir(BLOCKS_DIR, { recursive: true });
+                        for (const candidate of candidates) {
+                            if (typeof candidate !== 'string' || !candidate.endsWith('.md') || candidate === filename) continue;
+                            const candidatePath = path.join(BLOCKS_DIR, candidate);
+                            try {
+                                rejectWorkspaceSymlinks(candidatePath);
+                                const parsedCandidate = parseFrontmatter(await fs.readFile(candidatePath, 'utf-8'));
+                                if (metadataText(parsedCandidate.data.id) === id) {
+                                    blockIdToFileMap.set(id, candidate.replace(/\\/g, '/'));
+                                    return;
+                                }
+                            } catch { /* Ignore unreadable or unsafe candidates. */ }
+                        }
                         blocksMap.delete(id);
                         blockIdToFileMap.delete(id);
                         notifyClients({ type: 'delete', id });
@@ -1003,6 +1216,7 @@ async function startServer() {
                 const parsedTitle = normalizeBlockTitle(metadataText(parsed.data.title));
                 const parsedLabel = normalizeBlockLabel(metadataText(parsed.data.label));
                 if (existing && existing.content === parsed.content && existing.title === parsedTitle && existing.label === parsedLabel) {
+                    if (mappedFilename !== filename) blockIdToFileMap.set(id, filename);
                     return; // No change or our own update
                 }
 
@@ -1011,7 +1225,8 @@ async function startServer() {
                     title: parsedTitle,
                     label: parsedLabel,
                     references: computeReferences(parsed.content),
-                    content: parsed.content
+                    content: parsed.content,
+                    revision: blockRevision({ title: parsedTitle, label: parsedLabel, content: parsed.content })
                 };
                 blocksMap.set(id, newBlock);
                 blockIdToFileMap.set(id, filename);

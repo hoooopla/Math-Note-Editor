@@ -94,12 +94,21 @@ export function linkCompletion(context: CompletionContext): CompletionResult | n
             boost: 998,
             info: () => completionPreview(normalizedCreateLabel, newTitle, applyText),
             apply: (view, completion, applyFrom, applyTo) => {
-                view.dispatch({
-                    changes: { from: applyFrom, to: applyTo, insert: applyText },
-                    annotations: Transaction.userEvent.of("input.complete")
-                });
-                void store.addBlock({ title: newTitle, label: normalizedCreateLabel }).then(created => {
-                    if (!created || !view.dom.isConnected) return;
+                const originalDoc = view.state.doc;
+                void store.requestWorkspaceAction('Create note', `Create “${newTitle}” with label “${normalizedCreateLabel}” and insert its link?`, async () => {
+                    if (!view.dom.isConnected || view.state.doc !== originalDoc) return;
+                    const created = await store.addBlock({ title: newTitle, label: normalizedCreateLabel });
+                    if (!created) return;
+                    if (!view.dom.isConnected || view.state.doc !== originalDoc) {
+                        useStore.getState().openBlockNextToActive(created.id);
+                        return;
+                    }
+                    store.separateNextEdit();
+                    view.dispatch({
+                        changes: { from: applyFrom, to: applyTo, insert: applyText },
+                        annotations: Transaction.userEvent.of("input.complete")
+                    });
+                    store.attachLastEditToCreate(created.id);
                     view.focus();
                     closeCompletion(view);
                     // The block index changed outside CodeMirror. Re-dispatch

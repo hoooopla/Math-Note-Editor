@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ChevronRight, File, FileImage, Folder, FolderPlus, Search, Upload, X } from 'lucide-react';
 import { useStore } from '../store';
 import { encodedAssetReference, imageReference, validateAssetPath, validateImageWidth } from '../lib/asset-reference';
 import { imageUploadLimit, validateImageFilename, validateImageUpload } from '../lib/image-upload-policy';
 import { ImageGeometry, readImageGeometry, validImageGeometry } from '../lib/image-geometry';
+import { useDialogFocus } from '../lib/use-dialog-focus';
 
 function relativeAssetPath(path: string): string {
     return path.replace(/^assets\//, '');
@@ -38,6 +39,8 @@ export function ImageUploadModal() {
     const [existingGeometry, setExistingGeometry] = useState<ImageGeometry | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useDialogFocus(dialogRef, !!params, () => { if (!busy) close(null); }, '[aria-label="Search assets"]');
 
     useEffect(() => {
         if (!params) return;
@@ -198,7 +201,7 @@ export function ImageUploadModal() {
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4" role="presentation">
-            <div role="dialog" aria-modal="true" aria-label="Insert image" className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-outline bg-surface shadow-xl">
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Insert image" className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-outline bg-surface shadow-xl">
                 <header className="flex items-center justify-between border-b border-outline p-4">
                     <h2 className="text-lg font-bold text-primary">Insert image</h2>
                     <button type="button" aria-label="Close" onClick={() => close(null)} className="text-secondary hover:text-primary"><X size={20} /></button>

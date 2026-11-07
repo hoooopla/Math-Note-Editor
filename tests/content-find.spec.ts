@@ -14,6 +14,52 @@ test('literal matches keep source offsets after Unicode case folding and excerpt
     expect(matchExcerpt(source, matches[1])).toEqual({ before: 'word then ', matched: 'word', after: ' then word' });
 });
 
+test('all notes enforces the per-note and overall result limits', async ({ page, request }) => {
+    for (let index = 0; index < 6; index++) {
+        expect((await request.post('/api/blocks', { data: {
+            title: `Limit note ${index}`, label: `find:limit-${index}`,
+            content: Array.from({ length: 210 }, () => 'violetlimit').join(' ')
+        } })).ok()).toBeTruthy();
+    }
+    await page.goto('/');
+    await page.keyboard.press('ControlOrMeta+f');
+    const find = page.getByTestId('content-find-panel');
+    await find.getByLabel('Search scope').selectOption('all');
+    const input = find.getByLabel('Find in content');
+    await input.fill('violetlimit');
+    await expect(find).toContainText('0/1000');
+    await input.press('Shift+Enter');
+    await expect(find).toContainText('1000/1000');
+    const last = find.getByRole('listbox').getByRole('option', { selected: true });
+    await expect(last).toHaveAttribute('aria-posinset', '1000');
+});
+
+test('a slower body response cannot bring back results from a replaced all-notes query', async ({ page, request }) => {
+    const slow = await (await request.post('/api/blocks', { data: {
+        title: 'Slow body', label: 'find:slow-body', content: 'oldvioletterm'
+    } })).json();
+    expect((await request.post('/api/blocks', { data: {
+        title: 'Fast body', label: 'find:fast-body', content: 'newamberterm'
+    } })).ok()).toBeTruthy();
+    await page.route(`**/api/blocks/${slow.id}`, async route => {
+        await new Promise(resolve => setTimeout(resolve, 450));
+        await route.continue();
+    });
+    await page.goto('/');
+    await page.keyboard.press('ControlOrMeta+f');
+    const find = page.getByTestId('content-find-panel');
+    await find.getByLabel('Search scope').selectOption('all');
+    const input = find.getByLabel('Find in content');
+    await input.fill('oldvioletterm');
+    await expect(find).toContainText('Searching notes');
+    await input.fill('newamberterm');
+    await expect(find).toContainText('0/1');
+    await expect(find.getByRole('listbox').getByRole('option')).toHaveCount(1);
+    await expect(find.getByRole('listbox').getByRole('option')).toContainText('newamberterm');
+    await page.waitForTimeout(500);
+    await expect(find).toContainText('0/1');
+});
+
 test('a quick Enter searches all notes and opens a match after its body loads', async ({ page, request }) => {
     expect((await request.post('/api/blocks', { data: {
         title: 'Quick find note', label: 'find:quick-note', content: 'A singular bluedragon appears here.'

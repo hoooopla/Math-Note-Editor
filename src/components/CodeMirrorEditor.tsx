@@ -8,7 +8,7 @@ import { headingPlugin, removeHeadingPrefix } from "../lib/editor/heading-plugin
 import { headingFolding } from "../lib/editor/heading-fold";
 import { foldState } from "@codemirror/language";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { history, historyField, defaultKeymap, historyKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
+import { defaultKeymap, cursorLineStart, cursorLineEnd, selectLineStart, selectLineEnd } from "@codemirror/commands";
 import { mathPlugin, livePreviewMacros, editorFocusField, setEditorFocus, parsedRangesField, blockMathDecorationField, mathTooltipField, autoClosingDollarField, updateAutoClosingDollar, isDollarEscaped } from "../lib/editor/katex-plugin";
 import { findHighlightField } from "../lib/editor/find-highlight";
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, completionStatus, closeCompletion, startCompletion } from "@codemirror/autocomplete";
@@ -45,7 +45,7 @@ function trimEditorStateCache() {
 
 function rememberEditorState(key: string, state: EditorState, group?: string) {
     editorStateCache.delete(key);
-    editorStateCache.set(key, { doc: state.doc.toString(), json: state.toJSON({ history: historyField, fold: foldState }), group });
+    editorStateCache.set(key, { doc: state.doc.toString(), json: state.toJSON({ fold: foldState }), group });
     trimEditorStateCache();
 }
 
@@ -82,6 +82,7 @@ useStore.subscribe((state, previousState) => {
 });
 
 export interface CodeMirrorEditorProps {
+    blockId?: string;
     isReadOnly?: boolean;
     content: string;
     onBlur: (val: string) => void;
@@ -106,7 +107,10 @@ export interface CodeMirrorEditorProps {
     findRoot?: boolean;
 }
 
-export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, focusX, focusRequestKey, stateCacheKey, stateCacheGroup, isDormant = false, onFocus, parentLabel, visitedLabels, occurrencePath, onEsc, onImagePaste, onReady, findRoot = false }: CodeMirrorEditorProps) {
+export function CodeMirrorEditor({ blockId, isReadOnly, content, onBlur, onChange, onUp, onDown, isFocused, macros, focusDirection, focusX, focusRequestKey, stateCacheKey, stateCacheGroup, isDormant = false, onFocus, parentLabel, visitedLabels, occurrencePath, onEsc, onImagePaste, onReady, findRoot = false }: CodeMirrorEditorProps) {
+    const replayRevision = useStore(state => state.historyState.replayRevision);
+    const historyBusy = useStore(state => state.historyState.busy);
+    const lastReplayRevisionRef = useRef(replayRevision);
     const containerRef = useRef<HTMLDivElement>(null);
     const [openExplanation, setOpenExplanation] = useState<OpenExplanation | null>(null);
     const openExplanationRef = useRef<OpenExplanation | null>(null);
@@ -450,11 +454,13 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         ]));
         
         const extensions = [
+                EditorState.transactionFilter.of(transaction =>
+                    transaction.docChanged && useStore.getState().historyState.busy ? [] : transaction
+                ),
                 oneDark,
                 drawSelection(),
                 dropCursor(),
                 EditorView.lineWrapping,
-                history(),
                 navigationKeymap,
                 customKeymap,
                 keymap.of([{
@@ -542,7 +548,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                         return true;
                     }
                 }]),
-                keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),
+                keymap.of([...closeBracketsKeymap, ...defaultKeymap]),
                 markdown({ addKeymap: false, extensions: [mathMarkdownExtension] }),
                 headingPlugin,
                 headingFolding,
@@ -762,6 +768,11 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 EditorView.updateListener.of((update) => {
                     const userEvent = update.transactions.map(tr => tr.annotation(Transaction.userEvent)).find(e => Boolean(e));
                     if (update.docChanged && onChangeRef.current && userEvent) {
+                        const removed = update.startState.doc.length - update.state.doc.length;
+                        if (userEvent.startsWith('delete') &&
+                            (removed > 1 || !update.startState.selection.main.empty)) {
+                            useStore.getState().separateNextEdit();
+                        }
                         locallyClearedRef.current = update.state.doc.length === 0;
                         onChangeRef.current(update.state.doc.toString());
                         
@@ -805,7 +816,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
         let state: EditorState;
         if (cachedState?.doc === content) {
             try {
-                state = EditorState.fromJSON(cachedState.json, { extensions }, { history: historyField, fold: foldState });
+                state = EditorState.fromJSON(cachedState.json, { extensions }, { fold: foldState });
                 editorStateCache.delete(stateCacheKey!);
                 editorStateCache.set(stateCacheKey!, { ...cachedState, group: stateCacheGroupRef.current });
             } catch {
@@ -842,14 +853,15 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
 
     useLayoutEffect(() => {
         if (!viewRef.current) return;
+        const temporarilyReadOnly = !!isReadOnly || historyBusy;
         viewRef.current.dispatch({
             effects: [readOnlyCompartmentRef.current.reconfigure([
-                EditorState.readOnly.of(!!isReadOnly),
-                EditorView.editable.of(!isReadOnly)
-            ]), setEditorFocus.of(!isReadOnly && isFocused), ...(!isReadOnly ? [clearTransientEmbeddedOpen.of(null)] : [])]
+                EditorState.readOnly.of(temporarilyReadOnly),
+                EditorView.editable.of(!temporarilyReadOnly)
+            ]), setEditorFocus.of(!temporarilyReadOnly && isFocused), ...(!temporarilyReadOnly ? [clearTransientEmbeddedOpen.of(null)] : [])]
         });
         if (isReadOnly && viewRef.current.hasFocus) viewRef.current.contentDOM.blur();
-    }, [isReadOnly, isDormant]);
+    }, [isReadOnly, isDormant, historyBusy]);
 
     useEffect(() => {
         let focusRetryFrame: number | null = null;
@@ -925,11 +937,13 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
 
     // Sync external content changes
     useEffect(() => {
+        const isHistoryReplay = !!blockId && lastReplayRevisionRef.current !== replayRevision;
+        lastReplayRevisionRef.current = replayRevision;
         if (viewRef.current) {
             const currentDoc = viewRef.current.state.doc.toString();
             // A focused empty editor can receive newly loaded content, but a
             // locally cleared editor must not replay a lagging content prop.
-            if (content !== currentDoc && (!viewRef.current.hasFocus ||
+            if (content !== currentDoc && (isHistoryReplay || !viewRef.current.hasFocus ||
                 (currentDoc === "" && !locallyClearedRef.current))) {
                 let start = 0;
                 while (start < currentDoc.length && start < content.length && currentDoc[start] === content[start]) {
@@ -952,7 +966,7 @@ export function CodeMirrorEditor({ isReadOnly, content, onBlur, onChange, onUp, 
                 });
             }
         }
-    }, [content]);
+    }, [blockId, content, replayRevision]);
 
     const macrosRef = useRef(macros);
 

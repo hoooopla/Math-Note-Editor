@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { AlertTriangle, FileWarning, X } from "lucide-react";
 import { useStore } from "../store";
+import { useDialogFocus } from '../lib/use-dialog-focus';
 
 export function WorkspaceIssuesModal({ onClose }: { onClose: () => void }) {
     const issues = useStore(state => state.workspaceIssues);
@@ -9,6 +10,8 @@ export function WorkspaceIssuesModal({ onClose }: { onClose: () => void }) {
     const [editingId, setEditingId] = useState<string | null>(null);
     const [label, setLabel] = useState('');
     const [error, setError] = useState<string | null>(null);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useDialogFocus(dialogRef, true, onClose);
 
     const beginRepair = (blockId: string, currentLabel: string) => {
         setEditingId(blockId);
@@ -18,11 +21,14 @@ export function WorkspaceIssuesModal({ onClose }: { onClose: () => void }) {
 
     const saveRepair = async () => {
         if (!editingId) return;
-        const repaired = await repairDuplicateLabel(editingId, label);
-        if (!repaired) setError('Choose a unique, valid label and try again.');
+        const target = issues.flatMap(issue => issue.blocks).find(block => block.id === editingId);
+        await useStore.getState().requestWorkspaceAction('Repair label', `Change its label to “${label}”. You can undo this action.`, async () => {
+            const repaired = await repairDuplicateLabel(editingId, label);
+            if (!repaired) setError('Choose a unique, valid label and try again.');
+        }, target ? { notes: [{ title: target.title, label: target.label }] } : undefined);
     };
 
-    return <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="workspace-issues-title">
+    return <div ref={dialogRef} className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="workspace-issues-title">
         <div className="flex max-h-[85vh] w-[min(94vw,760px)] flex-col overflow-hidden rounded-xl border border-amber-400/40 bg-surface shadow-2xl">
             <div className="flex items-start justify-between gap-4 border-b border-outline px-5 py-4">
                 <div className="flex gap-3">

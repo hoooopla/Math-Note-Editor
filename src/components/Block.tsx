@@ -176,11 +176,10 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
     const [labelInput, setLabelInput] = useState(block.label);
     const [error, setError] = useState<string | null>(null);
     const [focusRequestKey, setFocusRequestKey] = useState(0);
-    const [pendingRelabel, setPendingRelabel] = useState<{ oldPrefix: string, newPrefix: string } | null>(null);
+    const [pendingRelabel, setPendingRelabel] = useState<{ oldPrefix: string, newPrefix: string, newTitle: string } | null>(null);
     const [isRepairingLabel, setIsRepairingLabel] = useState(false);
     const [showBacklinks, setShowBacklinks] = useState(false);
 
-    const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
     useEffect(() => {
         if (activeTabId !== block.id || isLocked) setMobileEditMode(false);
@@ -266,21 +265,24 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
         setError(null);
         if (finalLabel !== block.label) {
             if (hasDuplicateLabel) {
-                setIsRepairingLabel(true);
-                const repaired = await repairDuplicateLabel(block.id, finalLabel);
-                setIsRepairingLabel(false);
-                if (!repaired) {
-                    setError("Could not repair this label. Check the workspace warning for details.");
-                    return;
-                }
-                if (finalTitle !== block.title) updateBlock(block.id, { title: finalTitle });
-                setIsEditingMeta(false);
+                await useStore.getState().requestWorkspaceAction('Repair label', `Change its label to “${finalLabel}”. You can undo this action.`, async () => {
+                    setIsRepairingLabel(true);
+                    try {
+                        const repaired = await repairDuplicateLabel(block.id, finalLabel);
+                        if (!repaired) {
+                            setError("Could not repair this label. Check the workspace warning for details.");
+                            return;
+                        }
+                        if (finalTitle !== block.title) updateBlock(block.id, { title: finalTitle });
+                        setIsEditingMeta(false);
+                    } finally { setIsRepairingLabel(false); }
+                }, { notes: [{ title: block.title, label: block.label }] });
                 return;
             }
-            if (finalTitle !== block.title) updateBlock(block.id, { title: finalTitle });
-            setPendingRelabel({ oldPrefix: block.label, newPrefix: finalLabel });
+            setPendingRelabel({ oldPrefix: block.label, newPrefix: finalLabel, newTitle: finalTitle });
         } else if (finalTitle !== block.title) {
-            updateBlock(block.id, { title: finalTitle });
+            const confirmed = await useStore.getState().requestWorkspaceAction('Change title', `Change its title to “${finalTitle}”. You can undo this action.`, () => updateBlock(block.id, { title: finalTitle }), { notes: [{ title: block.title, label: block.label }] });
+            if (!confirmed) return;
         }
         setIsEditingMeta(false);
     };
@@ -317,7 +319,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
 
             <div 
                 data-testid={`block-metadata-header-${block.id}`}
-                className={`flex items-start gap-3 px-4 py-2.5 bg-transparent border-b border-outline text-sm text-secondary cursor-text select-none rounded-t-[8px] relative ${showBacklinks ? 'z-40' : 'z-10'}`}
+                className={`flex items-start gap-3 px-4 py-2.5 bg-transparent border-b border-outline text-sm text-secondary cursor-text select-none rounded-t-[8px] relative ${showBacklinks ? 'z-40' : 'z-30'}`}
                 onClick={(e) => {
                     e.stopPropagation();
                     if (!isEditingMeta) {
@@ -335,7 +337,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                         <div 
                             className="flex min-w-0 flex-col gap-2"
                             onBlur={(e) => {
-                                if (!e.currentTarget.contains(e.relatedTarget)) {
+                                if (!e.currentTarget.contains(e.relatedTarget) && !useStore.getState().actionRequest) {
                                     cancelMeta();
                                 }
                             }}
@@ -464,22 +466,16 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                                             <span>View raw Markdown</span>
                                         </a>
                                     )}
-                                    {!isViewOnly && (isConfirmingDelete ? (
-                                        <div className="flex items-center gap-2 px-3 py-2 text-red-400" onClick={e => e.stopPropagation()}>
-                                            <span className="mr-auto">Delete note?</span>
-                                            <button aria-label="Confirm delete block" onClick={() => deleteBlock(block.id)} className="rounded p-0.5 hover:bg-red-400/10"><Check size={15} /></button>
-                                            <button aria-label="Cancel delete block" onClick={() => setIsConfirmingDelete(false)} className="rounded p-0.5 text-secondary hover:bg-surface"><X size={15} /></button>
-                                        </div>
-                                    ) : (
+                                    {!isViewOnly && (
                                         <button
-                                            onClick={() => setIsConfirmingDelete(true)}
+                                            onClick={() => { void useStore.getState().requestWorkspaceAction('Delete note', 'This note will be deleted from the workspace. You can undo this action.', async () => { await deleteBlock(block.id); }, { notes: [{ title: block.title, label: block.label }], destructive: true }); }}
                                             className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-400 transition-colors hover:bg-red-400/10"
                                             title="Delete Block"
                                         >
                                             <Trash2 size={15} />
                                             <span>Delete note…</span>
                                         </button>
-                                    ))}
+                                    )}
                                 </div>
                             </details>
                         )}
@@ -521,6 +517,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
             )}
             <div className="p-4 relative font-sans text-primary min-h-[3rem] z-20">
                 <CodeMirrorEditor 
+                    blockId={block.id}
                     content={block.content} 
                     onBlur={handleContentBlur}
                     onChange={handleContentChange}
@@ -542,6 +539,7 @@ export function Block({ block, isFocused, focusDirection, focusX, macros, setAct
                 newPrefix={pendingRelabel.newPrefix}
                 onClose={(completed) => {
                     if (!completed) setLabelInput(block.label);
+                    else if (pendingRelabel.newTitle !== block.title) updateBlock(block.id, { title: pendingRelabel.newTitle });
                     setPendingRelabel(null);
                 }}
             /></React.Suspense>}

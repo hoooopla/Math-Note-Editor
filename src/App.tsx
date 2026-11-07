@@ -7,9 +7,10 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "re
 import { EditorView } from "@codemirror/view";
 import { getOrderedBlocks, useStore } from "./store";
 import { preloadGoogleSignIn } from "./lib/google-drive-workspace";
+import { flushRecoveryWritesOnExit } from "./lib/draft-recovery";
 import { BlockContainer } from "./components/Block";
 import { CodeMirrorEditor } from "./components/CodeMirrorEditor";
-import { Search, ScanText, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut, ListTree } from "lucide-react";
+import { Search, ScanText, Plus, X, Settings, FolderOpen, Command, FileText, Loader2, Network, FlaskConical, AlertTriangle, Boxes, Cloud, LogOut, ListTree, Undo2, Redo2, Trash2 } from "lucide-react";
 import { ContentOutline } from "./components/ContentOutline";
 import { isIPhoneOrIPad } from "./lib/ios-device";
 import "./index.css";
@@ -56,6 +57,9 @@ export default function App() {
     const isLoaded = useStore(state => state.isLoaded);
     const isLoadingFiles = useStore(state => state.isLoadingFiles);
     const addBlock = useStore(state => state.addBlock);
+    const historyState = useStore(state => state.historyState);
+    const historyRequest = useStore(state => state.historyRequest);
+    const actionRequest = useStore(state => state.actionRequest);
     const setActiveBlock = useStore(state => state.setActiveBlock);
     const initBackend = useStore(state => state.initBackend);
     const loadSettings = useStore(state => state.loadSettings);
@@ -72,6 +76,8 @@ export default function App() {
     const closeStoreTab = useStore(state => state.closeTab);
     const settings = useStore(state => state.settings);
     const persistenceError = useStore(state => state.persistenceError);
+    const recoveredDrafts = useStore(state => state.recoveredDrafts);
+    const blocksById = useStore(state => state.blocksById);
     const workspaceIssues = useStore(state => state.workspaceIssues);
     const imageUploadParams = useStore(state => state.imageUploadParams);
     const setImageUploadParams = useStore(state => state.setImageUploadParams);
@@ -96,6 +102,81 @@ export default function App() {
     const lastFocusedEditorRef = useRef<EditorView | null>(null);
     const [imageInsertError, setImageInsertError] = useState('');
     const isMobileIOS = isIPhoneOrIPad();
+    const confirmationButtonRef = useRef<HTMLButtonElement>(null);
+    const cancelConfirmationButtonRef = useRef<HTMLButtonElement>(null);
+    const confirmationDialogRef = useRef<HTMLDivElement>(null);
+    const recoveryDialogRef = useRef<HTMLDivElement>(null);
+    const [showRecovery, setShowRecovery] = useState(false);
+    const recoveryPromptSeen = useRef(false);
+
+    useEffect(() => {
+        if (recoveredDrafts.length && !recoveryPromptSeen.current) {
+            recoveryPromptSeen.current = true;
+            setShowRecovery(true);
+        }
+        if (!recoveredDrafts.length) { recoveryPromptSeen.current = false; setShowRecovery(false); }
+    }, [recoveredDrafts.length]);
+
+    const confirmationOpen = !!(historyRequest || actionRequest);
+    const recoveryVisible = showRecovery && recoveredDrafts.length > 0 && !confirmationOpen;
+    useEffect(() => {
+        const dialog = confirmationOpen ? confirmationDialogRef.current : recoveryVisible ? recoveryDialogRef.current : null;
+        if (!dialog) return;
+        const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const first = confirmationOpen
+            ? (actionRequest?.destructive ? cancelConfirmationButtonRef.current : confirmationButtonRef.current)
+            : dialog.querySelector<HTMLElement>('button');
+        first?.focus();
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && recoveryVisible) {
+                event.preventDefault();
+                event.stopPropagation();
+                setShowRecovery(false);
+                return;
+            }
+            if (event.key !== 'Tab') return;
+            const focusable: HTMLElement[] = Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+            if (!focusable.length) { event.preventDefault(); dialog.focus(); return; }
+            const firstItem = focusable[0];
+            const lastItem = focusable[focusable.length - 1];
+            if (event.shiftKey && (document.activeElement === firstItem || !dialog.contains(document.activeElement))) {
+                event.preventDefault(); lastItem.focus();
+            } else if (!event.shiftKey && (document.activeElement === lastItem || !dialog.contains(document.activeElement))) {
+                event.preventDefault(); firstItem.focus();
+            }
+        };
+        dialog.addEventListener('keydown', onKeyDown);
+        return () => {
+            dialog.removeEventListener('keydown', onKeyDown);
+            if (previouslyFocused?.isConnected) previouslyFocused.focus();
+        };
+    }, [confirmationOpen, recoveryVisible, actionRequest?.destructive]);
+
+    useLayoutEffect(() => {
+        const onHistoryKeyDown = (event: KeyboardEvent) => {
+            const store = useStore.getState();
+            if (event.key === 'Escape' && (store.historyRequest || store.actionRequest)) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (store.historyRequest) store.cancelHistoryRequest();
+                else store.cancelWorkspaceAction();
+                return;
+            }
+            if (event.isComposing || store.historyRequest || store.actionRequest) return;
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            // Keep native undo within ordinary form fields, including search and metadata inputs.
+            if (target?.closest('input, textarea, select, [contenteditable="true"]') && !target.closest('.cm-content')) return;
+            const undo = shortcutMatches(event, 'mod+z');
+            const redo = shortcutMatches(event, 'mod+shift+z') || shortcutMatches(event, 'ctrl+y');
+            if (!undo && !redo) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (undo) void store.historyUndo();
+            else void store.historyRedo();
+        };
+        window.addEventListener('keydown', onHistoryKeyDown, true);
+        return () => window.removeEventListener('keydown', onHistoryKeyDown, true);
+    }, []);
 
     useLayoutEffect(() => {
         const area = outlineAreaRef.current;
@@ -238,6 +319,10 @@ export default function App() {
                 useStore.getState().cycleTab(-1);
             } else if (command === 'go-to-parent') {
                 useStore.getState().goToNearestParent();
+            } else if (command === 'undo') {
+                void useStore.getState().historyUndo();
+            } else if (command === 'redo') {
+                void useStore.getState().historyRedo();
             }
         });
     }, []);
@@ -247,9 +332,9 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        const handlePageHide = () => { void flushPendingSaves(); };
+        const handlePageHide = () => { flushRecoveryWritesOnExit(); void flushPendingSaves(); };
         const handleVisibilityChange = () => {
-            if (document.visibilityState === 'hidden') void flushPendingSaves();
+            if (document.visibilityState === 'hidden') { flushRecoveryWritesOnExit(); void flushPendingSaves(); }
         };
 
         window.addEventListener('pagehide', handlePageHide);
@@ -449,7 +534,7 @@ export default function App() {
                 "--math-block-padding-y": `${settings.mathBlockPaddingY ?? 4}px`
             } as React.CSSProperties}
         >
-            <div className={`flex h-12 bg-surface border-b border-outline items-center justify-between px-4 shrink-0 ${isMobileIOS ? 'mobile-toolbar gap-4' : ''}`} data-testid="app-toolbar">
+            <div className={`flex h-12 w-full min-w-0 bg-surface border-b border-outline items-center justify-between px-4 shrink-0 ${isMobileIOS ? 'mobile-toolbar gap-4' : ''}`} data-testid="app-toolbar">
                 <div className={`flex items-center gap-4 ${isMobileIOS ? 'shrink-0' : ''}`}>
                     <h1 className="text-[16px] font-bold tracking-tight text-primary flex items-center gap-2 whitespace-nowrap">
                         <Command className="text-accent" size={20} />
@@ -472,6 +557,28 @@ export default function App() {
                 </div>
 
                 <div className={`flex items-center gap-2 ${isMobileIOS ? 'shrink-0' : ''}`}>
+                    <button
+                        onClick={() => setIsSearchModalOpen(true)}
+                        className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
+                        title={`Search (${settings.searchShortcut || 'mod+k'})`}
+                        aria-label="Search"
+                    >
+                        <Search size={18} />
+                    </button>
+                    <button type="button" onClick={() => void useStore.getState().historyUndo()}
+                        disabled={!historyState.undoLabel || historyState.busy}
+                        className="rounded p-1.5 text-secondary transition-colors hover:bg-accent/20 hover:text-accent disabled:cursor-not-allowed disabled:opacity-35"
+                        title={historyState.undoLabel ? `Undo ${historyState.undoLabel} (Cmd/Ctrl+Z)` : 'Nothing to undo'}
+                        aria-label="Undo">
+                        <Undo2 size={18} />
+                    </button>
+                    <button type="button" onClick={() => void useStore.getState().historyRedo()}
+                        disabled={!historyState.redoLabel || historyState.busy}
+                        className="rounded p-1.5 text-secondary transition-colors hover:bg-accent/20 hover:text-accent disabled:cursor-not-allowed disabled:opacity-35"
+                        title={historyState.redoLabel ? `Redo ${historyState.redoLabel} (Cmd/Ctrl+Shift+Z)` : 'Nothing to redo'}
+                        aria-label="Redo">
+                        <Redo2 size={18} />
+                    </button>
                     {backendMode === 'google' && (
                         <div className="mr-2 flex items-center gap-1 rounded-lg border border-outline bg-base px-2 py-1 text-xs text-secondary" title="The connected Google Drive folder">
                             <Cloud size={14} className="text-accent" />
@@ -525,14 +632,6 @@ export default function App() {
                             {isLoadingFiles ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
                         </button>
                     </>}
-                    <button 
-                        onClick={() => setIsSearchModalOpen(true)}
-                        className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
-                        title={`Search (${settings.searchShortcut || 'mod+k'})`}
-                        aria-label="Search"
-                    >
-                        <Search size={18} />
-                    </button>
                     <button type="button" onClick={() => setIsFindOpen(true)}
                         className="p-1.5 hover:bg-accent/20 rounded text-secondary hover:text-accent transition-colors"
                         title="Find in content (Cmd/Ctrl+F)" aria-label="Find in content">
@@ -566,12 +665,10 @@ export default function App() {
                     </button>
                     {backendMode !== "viewer" && (
                         <button 
-                            onClick={async () => {
+                            onClick={() => { void useStore.getState().requestWorkspaceAction('Create note', 'A new note will be added to this workspace.', async () => {
                                 const newBlock = await addBlock();
-                                if (newBlock) {
-                                    activateRootBlock(newBlock.id, "start");
-                                }
-                            }}
+                                if (newBlock) activateRootBlock(newBlock.id, "start");
+                            }); }}
                             className="p-1.5 hover:bg-accent/20 rounded text-accent transition-colors"
                             title="New Block"
                             aria-label="Create new block"
@@ -609,6 +706,13 @@ export default function App() {
                             <X size={16} />
                         </button>
                     </div>
+                </div>
+            )}
+
+            {recoveredDrafts.length > 0 && (
+                <div className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100" role="status">
+                    <span>{recoveredDrafts.length} saved draft{recoveredDrafts.length === 1 ? '' : 's'} need review.</span>
+                    <button type="button" className="rounded px-2 py-1 font-semibold hover:bg-amber-400/20" onClick={() => setShowRecovery(true)}>Review drafts</button>
                 </div>
             )}
 
@@ -842,6 +946,103 @@ export default function App() {
             )}
             {isMacroModalOpen && <React.Suspense fallback={<ModalLoading label="Loading settings"/>}><SettingsModal isOpen onClose={closeSettings} /></React.Suspense>}
             {imageUploadParams && <React.Suspense fallback={<ModalLoading label="Loading image upload"/>}><ImageUploadModal /></React.Suspense>}
+            {(historyRequest || actionRequest) && (
+                <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/60 p-4"
+                    onMouseDown={event => { if (event.target === event.currentTarget) {
+                        if (historyRequest) useStore.getState().cancelHistoryRequest();
+                        else useStore.getState().cancelWorkspaceAction();
+                    } }}>
+                    <div ref={confirmationDialogRef} role="dialog" aria-modal="true"
+                        aria-label={historyRequest ? `${historyRequest.direction === 'undo' ? 'Undo' : 'Redo'} ${historyRequest.label}` : actionRequest!.label}
+                        className="max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-xl border border-outline bg-surface p-5 shadow-2xl shadow-black/40">
+                        <div className="flex items-center gap-2">
+                            {actionRequest?.destructive && <Trash2 size={18} className="shrink-0 text-red-400" aria-hidden="true" />}
+                            <h2 className="text-base font-semibold text-primary">
+                                {historyRequest ? `${historyRequest.direction === 'undo' ? 'Undo' : 'Redo'} change` : actionRequest!.label}
+                            </h2>
+                        </div>
+                        {historyRequest ? <div className="mt-3 space-y-3 text-sm text-secondary">
+                            {historyRequest.change ? <div>
+                                <p className="mb-2 text-xs font-medium text-secondary">{historyRequest.change.kind} change</p>
+                                <div className="space-y-2">
+                                    <div className="rounded-lg border border-outline bg-base/60 px-3 py-2">
+                                        <div className="text-[11px] font-semibold uppercase tracking-wide text-secondary">From</div>
+                                        <div className="mt-1 break-all font-mono text-xs text-primary">{historyRequest.change.from}</div>
+                                    </div>
+                                    <div className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-2">
+                                        <div className="text-[11px] font-semibold uppercase tracking-wide text-accent">To</div>
+                                        <div className="mt-1 break-all font-mono text-xs text-primary">{historyRequest.change.to}</div>
+                                    </div>
+                                </div>
+                            </div> : <p>{historyRequest.direction === 'undo' ? 'Reverse' : 'Repeat'} <span className="font-medium text-primary">{historyRequest.label}</span>.</p>}
+                            {historyRequest.crossTab && <p>This change affects another tab.</p>}
+                            {historyRequest.affectedNotes.length > 0 && <div>
+                                <p className="mb-1.5 text-xs font-medium text-secondary">{historyRequest.affectedNotes.length === 1 ? 'Note affected' : `${historyRequest.affectedNotes.length} notes affected`}</p>
+                                <ul className="max-h-44 space-y-2 overflow-y-auto">
+                                    {historyRequest.affectedNotes.map((note, index) => <li key={`${note.label || note.title}-${index}`} className="flex gap-2 rounded-lg border border-outline bg-base/60 px-3 py-2">
+                                        <span className="shrink-0 text-xs font-medium text-secondary">{index + 1}.</span>
+                                        <div className="min-w-0">
+                                            <div className="break-words font-medium text-primary">{note.title}</div>
+                                            {note.label && <div className="mt-0.5 break-all text-xs text-secondary"><span className="mr-1">Label:</span><span className="font-mono">{note.label}</span></div>}
+                                        </div>
+                                    </li>)}
+                                </ul>
+                            </div>}
+                        </div> : <div className="mt-3 space-y-3 text-sm text-secondary">
+                            <p>{actionRequest!.detail}</p>
+                            {!!actionRequest!.notes?.length && <div>
+                                <p className="mb-1.5 text-xs font-medium text-secondary">{actionRequest!.notes!.length === 1 ? 'Note affected' : `${actionRequest!.notes!.length} notes affected`}</p>
+                                <ul className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-outline bg-base/60 p-2">
+                                    {actionRequest!.notes!.map((note, index) => <li key={`${note.label || note.title}-${index}`} className="min-w-0 px-1 py-0.5">
+                                        <div className="break-words font-semibold text-primary">{note.title || 'Untitled note'}</div>
+                                        {note.label && <div className="mt-0.5 break-all text-xs text-secondary"><span className="mr-1 font-sans">Label:</span><span className="font-mono">{note.label}</span></div>}
+                                    </li>)}
+                                </ul>
+                            </div>}
+                        </div>}
+                        <div className="mt-5 flex justify-end gap-2">
+                            <button ref={cancelConfirmationButtonRef} type="button" className="rounded-lg px-3 py-1.5 text-sm text-secondary hover:bg-outline"
+                                onClick={() => { if (historyRequest) useStore.getState().cancelHistoryRequest(); else useStore.getState().cancelWorkspaceAction(); }}>
+                                Cancel
+                            </button>
+                            <button ref={confirmationButtonRef} type="button" disabled={historyState.busy}
+                                className={`rounded-lg px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 ${actionRequest?.destructive ? 'bg-red-600' : 'bg-accent'}`}
+                                onClick={() => { if (historyRequest) void useStore.getState().confirmHistoryRequest(); else void useStore.getState().confirmWorkspaceAction(); }}>
+                                {historyRequest ? (historyRequest.direction === 'undo' ? 'Undo' : 'Redo') : actionRequest!.label}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {recoveryVisible && (
+                <div className="fixed inset-0 z-[390] flex items-center justify-center bg-black/65 p-4" onMouseDown={event => { if (event.target === event.currentTarget) setShowRecovery(false); }}>
+                    <div ref={recoveryDialogRef} role="dialog" aria-modal="true" aria-labelledby="recovery-title" tabIndex={-1}
+                        className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl border border-outline bg-surface p-5 shadow-2xl">
+                        <div className="flex items-start justify-between gap-3">
+                            <div><h2 id="recovery-title" className="text-lg font-semibold text-primary">Review saved drafts</h2>
+                                <p className="mt-1 text-sm text-secondary">These edits were left before the notes finished saving. Choose what to keep.</p></div>
+                            <button type="button" className="rounded p-1 text-secondary hover:bg-outline" aria-label="Close draft review" onClick={() => setShowRecovery(false)}><X size={18}/></button>
+                        </div>
+                        <div className="mt-4 space-y-3">
+                            {recoveredDrafts.map(draft => {
+                                const current = blocksById[draft.id];
+                                const canRestore = !!current && !!draft.baseRevision && current.revision === draft.baseRevision;
+                                return <section key={draft.id} className="rounded-lg border border-outline bg-base/60 p-3">
+                                    <div className="font-semibold text-primary">{draft.title || 'Untitled note'}</div>
+                                    <div className="mt-0.5 break-all font-mono text-xs text-secondary">{draft.label}</div>
+                                    <p className="mt-2 text-xs text-secondary">{canRestore ? 'The saved note is unchanged since this draft.' : 'The saved note has changed, is missing, or cannot be verified. Keep both versions by making a new note.'}</p>
+                                    {draft.content && <p className="mt-2 max-h-20 overflow-hidden whitespace-pre-wrap break-words rounded bg-surface px-2 py-1 text-xs text-secondary">{draft.content.slice(0, 240)}</p>}
+                                    <div className="mt-3 flex flex-wrap justify-end gap-2">
+                                        <button type="button" className="rounded px-2 py-1 text-xs text-secondary hover:bg-outline" onClick={() => void useStore.getState().discardRecoveryDraft(draft.id)}>Discard draft</button>
+                                        <button type="button" className="rounded border border-outline px-2 py-1 text-xs text-primary hover:bg-outline" onClick={() => void useStore.getState().copyRecoveryDraft(draft.id)}>Save as new note</button>
+                                        {canRestore && <button type="button" className="rounded bg-accent px-2 py-1 text-xs font-semibold text-white" onClick={() => void useStore.getState().restoreRecoveryDraft(draft.id)}>Restore in note</button>}
+                                    </div>
+                                </section>;
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

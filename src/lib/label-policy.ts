@@ -62,3 +62,7 @@ export function makeBlockFilename(title: string, label: string, id: string): str
     const includeContext = contextPart.toLocaleLowerCase() !== titlePart.toLocaleLowerCase();
     return `${titlePart}${includeContext ? `--${contextPart}` : ""}--${idPart}.md`;
 }
+
+export function makeInitialBlockFilename(title: string, id: string): string {
+    return `${readableFilenamePart(title, "Untitled", 80)}--${readableFilenamePart(id, "id", 40)}.md`;
+}

@@ -515,6 +515,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
             {targetBlock.content !== undefined ? (
                 <div className="block">
                     <div className="embedded-editor-live block"><CodeMirrorEditor
+                    blockId={targetBlock.id}
                     isReadOnly={isReadOnly}
                     isDormant={!editorActivated}
                     content={targetBlock.content}

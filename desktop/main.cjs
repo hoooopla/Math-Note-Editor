@@ -212,6 +212,7 @@ async function startServer(workspace) {
   serverProcess = spawn(process.execPath, [paths.server, '--production', '--port', String(port)], {
     env: {
       ...process.env,
+      HOST: '127.0.0.1',
       ELECTRON_RUN_AS_NODE: '1',
       MATH_NOTE_DESKTOP: 'true',
       MATH_NOTE_WORKSPACE: workspace,
@@ -291,10 +292,31 @@ function installMenu() {
         { label: 'Previous Note Tab', accelerator: toAccelerator(noteShortcuts.previousTab, 'ctrl+shift+tab'), click: () => sendNoteCommand('previous-tab') }
       ]
     },
-    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: 'Edit', submenu: [
+      { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => { void routeUndoRedo('undo'); } },
+      { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', click: () => { void routeUndoRedo('redo'); } },
+      { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }
+    ] },
     { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+async function routeUndoRedo(direction) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const contents = mainWindow.webContents;
+  try {
+    const ordinaryFieldFocused = await contents.executeJavaScript(`(() => {
+      const element = document.activeElement;
+      return element instanceof HTMLElement && !!element.closest('input, textarea, select, [contenteditable="true"]') && !element.closest('.cm-content');
+    })()`);
+    if (ordinaryFieldFocused) {
+      if (direction === 'undo') contents.undo();
+      else contents.redo();
+      return;
+    }
+  } catch { /* The renderer may be navigating; fall through to its command handler. */ }
+  sendNoteCommand(direction);
 }
 
 async function createWindow() {
@@ -318,8 +340,30 @@ async function createWindow() {
     }
   });
   installMenu();
-  mainWindow.webContents.on('context-menu', (_event, params) => {
-    const template = editorContextMenuTemplate(params, mainWindow.webContents);
+  mainWindow.webContents.on('context-menu', async (_event, params) => {
+    let selectedSpelling = null;
+    const word = params.selectionText?.trim();
+    if (params.isEditable && params.spellcheckEnabled && !params.misspelledWord &&
+        word && /^[\p{L}][\p{L}\p{M}'’-]*$/u.test(word) && word.length <= 80) {
+      try {
+        selectedSpelling = await mainWindow.webContents.executeJavaScript(
+          `window.mathNotesDesktop.checkSelectedSpelling(${JSON.stringify(word)})`
+        );
+      } catch { /* Keep the ordinary edit menu if spelling lookup is unavailable. */ }
+    }
+    let workspaceHistory = null;
+    if (params.isEditable) {
+      try {
+        const isWorkspaceEditor = await mainWindow.webContents.executeJavaScript(
+          `!!document.elementFromPoint(${Number(params.x)}, ${Number(params.y)})?.closest('.cm-editor')`
+        );
+        if (isWorkspaceEditor) workspaceHistory = {
+          undo: () => sendNoteCommand('undo'),
+          redo: () => sendNoteCommand('redo')
+        };
+      } catch { /* Fall back to native edit actions if the renderer is unavailable. */ }
+    }
+    const template = editorContextMenuTemplate(params, mainWindow.webContents, selectedSpelling, workspaceHistory);
     if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow });
   });
   await mainWindow.loadURL(`http://127.0.0.1:${port}`);

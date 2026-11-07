@@ -2,13 +2,16 @@ import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import { api as backendApi, createDefaultEditorSettings, EditorSettings, WorkspaceBackup, parseFrontmatter, computeReferences } from './api';
 import { metadataText } from '../lib/block-metadata';
-import { normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
+import { MAX_BLOCK_LABEL_LENGTH, MAX_BLOCK_TITLE_LENGTH, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 import { SafeRelabelPlan } from '../lib/safe-relabel';
 import { AssetMovePlan } from '../lib/safe-asset-move';
 import { DuplicateLabelIssue, findDuplicateLabelIssues } from '../lib/workspace-validation';
 import { resetEmbeddedEditorLifecycle } from '../lib/embedded-editor-lifecycle';
 import { resetEmbeddedPrefetchWorkspace } from '../lib/embedded-prefetch';
 import { invalidateImageAsset, resetImageResourceWorkspace } from '../lib/editor/image-resources';
+import { normalizeEditorSettings, validateEditorSettings } from '../lib/settings-validation';
+import { googleDriveWorkspace } from '../lib/google-drive-workspace';
+import { discardRecoveryDraft, getLocalRecoveryDraft, loadRecoveryDrafts, saveRecoveryDraft, type RecoveryDraft, type RecoveryWorkspace } from '../lib/draft-recovery';
 
 export interface BlockData {
   id: string;
@@ -17,6 +20,7 @@ export interface BlockData {
   content?: string;
   hasContent?: boolean;
   references?: string[];
+  revision?: string;
   _fileMeta?: any;
 }
 
@@ -39,6 +43,29 @@ interface ImageUploadParams {
   file: File | null;
   onInsert: (text: string) => void;
   assertInsertable: () => void;
+}
+
+type HistoryDirection = 'undo' | 'redo';
+type HistoryEntry =
+  | { kind: 'edit'; id: string; field: 'content' | 'title'; before: string; after: string; title: string; ownerTab: string | null; at: number }
+  | { kind: 'create'; block: BlockData; index: number; linkedEdit?: { id: string; before: string; after: string }; title: string; ownerTab: string | null; at: number }
+  | { kind: 'delete'; block: BlockData; index: number; title: string; ownerTab: string | null; at: number }
+  | { kind: 'repair'; id: string; before: string; after: string; title: string; ownerTab: string | null; at: number }
+  | { kind: 'relabel'; oldPrefix: string; newPrefix: string; ids: string[]; before: Record<string, BlockData>; after: Record<string, BlockData>; title: string; ownerTab: string | null; at: number }
+  | { kind: 'assetMove'; source: string; destination: string; ids: string[]; before: Record<string, string>; after: Record<string, string>; title: string; ownerTab: string | null; at: number };
+
+interface HistoryRequest {
+  direction: HistoryDirection;
+  label: string;
+  crossTab: boolean;
+  affectedNotes: Array<{ title: string; label?: string }>;
+  change?: { kind: string; from: string; to: string };
+  special: boolean;
+}
+
+interface WorkspaceActionDetails {
+  notes?: Array<{ title: string; label?: string }>;
+  destructive?: boolean;
 }
 
 export interface AppState {
@@ -83,6 +110,18 @@ export interface AppState {
   commitRelabel: (plan: SafeRelabelPlan) => Promise<void>;
   repairDuplicateLabel: (id: string, newLabel: string) => Promise<boolean>;
   deleteBlock: (id: string) => Promise<void>;
+  separateNextEdit: () => void;
+  attachLastEditToCreate: (createdId: string) => void;
+  historyState: { undoLabel?: string; redoLabel?: string; busy: boolean; replayRevision: number };
+  historyRequest: HistoryRequest | null;
+  historyUndo: () => Promise<void>;
+  historyRedo: () => Promise<void>;
+  confirmHistoryRequest: () => Promise<void>;
+  cancelHistoryRequest: () => void;
+  actionRequest: { label: string; detail: string; notes?: WorkspaceActionDetails['notes']; destructive?: boolean } | null;
+  requestWorkspaceAction: (label: string, detail: string, run: () => Promise<void> | void, details?: WorkspaceActionDetails) => Promise<boolean>;
+  confirmWorkspaceAction: () => Promise<void>;
+  cancelWorkspaceAction: () => void;
   setActiveBlock: (id: string | null, dir?: "start" | "end" | null, path?: string[] | null, pos?: number | null, x?: number | null, occurrenceKey?: string | null) => void;
   setSettings: (settings: EditorSettings) => void;
   setOpenTabs: (tabs: string[]) => void;
@@ -110,6 +149,11 @@ export interface AppState {
   imageUploadParams: ImageUploadParams | null;
   setImageUploadParams: (params: ImageUploadParams | null) => void;
   persistenceError: string | null;
+  recoveredDrafts: RecoveryDraft[];
+  reviewRecoveryDrafts: () => Promise<void>;
+  restoreRecoveryDraft: (id: string) => Promise<void>;
+  copyRecoveryDraft: (id: string) => Promise<void>;
+  discardRecoveryDraft: (id: string) => Promise<void>;
   blockLoadErrors: Record<string, string>;
   clearPersistenceError: () => void;
 }
@@ -122,8 +166,108 @@ const pendingBlockLabels = new Set<string>();
 let workspaceGeneration = 0;
 let assetMoveInProgress = false;
 let workspaceSwitchInProgress = false;
+const undoEntries: HistoryEntry[] = [];
+const redoEntries: HistoryEntry[] = [];
+const MAX_HISTORY_ENTRIES = 120;
+const MAX_HISTORY_CHARACTERS = 8_000_000;
+let historyReplayInProgress = false;
+let queuedHistoryDirection: HistoryDirection | null = null;
+let confirmedActionInProgress = false;
+let pendingAction: { run: () => Promise<void> | void; resolve: (accepted: boolean) => void } | null = null;
+let forceHistoryBoundary = false;
+let lastRecoveryStamp = 0;
+
+function historyLabel(entry: HistoryEntry): string {
+  if (entry.kind === 'edit') return entry.field === 'content' ? `Edit ${entry.title}` : `Change title of ${entry.title}`;
+  if (entry.kind === 'create') return `Create ${entry.title}`;
+  if (entry.kind === 'delete') return `Delete ${entry.title}`;
+  if (entry.kind === 'repair') return `Repair label of ${entry.title}`;
+  if (entry.kind === 'relabel') return `Rename ${entry.oldPrefix} to ${entry.newPrefix}`;
+  return `Move image ${entry.source} to ${entry.destination}`;
+}
+
+function historyChange(entry: HistoryEntry, direction: HistoryDirection): HistoryRequest['change'] {
+  const reverse = direction === 'undo';
+  if (entry.kind === 'relabel') return { kind: 'Label path', from: reverse ? entry.newPrefix : entry.oldPrefix, to: reverse ? entry.oldPrefix : entry.newPrefix };
+  if (entry.kind === 'repair') return { kind: 'Label', from: reverse ? entry.after : entry.before, to: reverse ? entry.before : entry.after };
+  if (entry.kind === 'assetMove') return { kind: 'Image path', from: reverse ? entry.destination : entry.source, to: reverse ? entry.source : entry.destination };
+  if (entry.kind === 'edit' && entry.field === 'title') return { kind: 'Title', from: reverse ? entry.after : entry.before, to: reverse ? entry.before : entry.after };
+  return undefined;
+}
+
+function historyAffectedNotes(entry: HistoryEntry, blocksById: Record<string, BlockData>): HistoryRequest['affectedNotes'] {
+  const ids = entry.kind === 'edit' || entry.kind === 'repair' ? [entry.id] : entry.kind === 'relabel' || entry.kind === 'assetMove' ? entry.ids : [entry.block.id];
+  return ids.map(id => {
+    const block = blocksById[id] || (entry.kind === 'create' || entry.kind === 'delete' ? entry.block : entry.kind === 'relabel' ? entry.before[id] || entry.after[id] : undefined);
+    return { title: block?.title || id, label: block?.label };
+  });
+}
+
+function updateHistoryState() {
+  useStore.setState(state => ({ historyState: {
+    undoLabel: undoEntries.length ? historyLabel(undoEntries[undoEntries.length - 1]) : undefined,
+    redoLabel: redoEntries.length ? historyLabel(redoEntries[redoEntries.length - 1]) : undefined,
+    busy: state.historyState.busy,
+    replayRevision: state.historyState.replayRevision
+  } }));
+}
+
+function historyEntrySize(entry: HistoryEntry): number {
+  if (entry.kind === 'edit') return entry.before.length + entry.after.length;
+  if (entry.kind === 'create') return (entry.block.content?.length || 0)
+    + (entry.linkedEdit ? entry.linkedEdit.before.length + entry.linkedEdit.after.length : 0);
+  if (entry.kind === 'delete') return entry.block.content?.length || 0;
+  if (entry.kind === 'repair') return entry.before.length + entry.after.length;
+  if (entry.kind === 'relabel') return Object.values(entry.before).reduce((size, block) => size + (block.content?.length || 0), 0)
+    + Object.values(entry.after).reduce((size, block) => size + (block.content?.length || 0), 0);
+  return Object.values(entry.before).reduce((size, content) => size + content.length, 0)
+    + Object.values(entry.after).reduce((size, content) => size + content.length, 0);
+}
+
+function trimHistory() {
+  let size = undoEntries.reduce((sum, entry) => sum + historyEntrySize(entry), 0);
+  while (undoEntries.length > 1 && (undoEntries.length > MAX_HISTORY_ENTRIES || size > MAX_HISTORY_CHARACTERS)) {
+    size -= historyEntrySize(undoEntries.shift()!);
+  }
+}
+
+function pushHistory(entry: HistoryEntry) {
+  if (historyReplayInProgress) return;
+  // A run of ordinary typing in the same note is one undo step. A new action
+  // or a pause starts a new step, preserving cross-tab chronological order.
+  const previous = undoEntries.at(-1);
+  if (entry.kind === 'edit' && entry.field === 'content' && previous?.kind === 'edit'
+    && previous.field === 'content' && previous.id === entry.id
+    && previous.ownerTab === entry.ownerTab && entry.at - previous.at < 750 && !forceHistoryBoundary) {
+    previous.after = entry.after;
+    previous.at = entry.at;
+  } else if (entry.kind === 'edit' && entry.field === 'title' && previous?.kind === 'relabel'
+    && previous.ids.includes(entry.id) && entry.at - previous.at < 5000) {
+    previous.after[entry.id] = { ...previous.after[entry.id], title: entry.after };
+  } else {
+    undoEntries.push(entry);
+  }
+  trimHistory();
+  redoEntries.length = 0;
+  forceHistoryBoundary = false;
+  updateHistoryState();
+}
+
+function clearHistory() {
+  queuedHistoryDirection = null;
+  undoEntries.length = 0;
+  redoEntries.length = 0;
+  forceHistoryBoundary = false;
+  if (pendingAction) { pendingAction.resolve(false); pendingAction = null; }
+  useStore.setState(state => ({
+    historyRequest: null,
+    actionRequest: null,
+    historyState: { busy: false, replayRevision: state.historyState.replayRevision + 1 }
+  }));
+}
 
 function beginWorkspaceSwitch() {
+  if (confirmedActionInProgress || historyReplayInProgress) throw new Error('Finish the current note action before changing workspaces.');
   if (assetMoveInProgress) throw new Error('Finish the image move before changing workspaces.');
   if (workspaceSwitchInProgress) throw new Error('Another workspace change is still running.');
   workspaceSwitchInProgress = true;
@@ -154,6 +298,20 @@ function persistWorkspaceSession() {
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+function recoveryWorkspace(state: AppState): RecoveryWorkspace | null {
+  if (state.backendMode === 'server') return { mode: 'server', name: state.workspaceName || 'default' };
+  if (state.backendMode === 'local') return { mode: 'local', name: state.workspaceName || 'selected-folder' };
+  if (state.backendMode === 'google' && googleDriveWorkspace.folderId) return { mode: 'google', name: googleDriveWorkspace.folderId };
+  return null;
+}
+
+async function clearRecoveredDraft(id: string) {
+  const workspace = recoveryWorkspace(useStore.getState());
+  if (!workspace) return;
+  await discardRecoveryDraft(workspace, id);
+  useStore.setState(state => ({ recoveredDrafts: state.recoveredDrafts.filter(draft => draft.id !== id) }));
+}
+
 function cloneLabelIndex(source?: Record<string, string>): Record<string, string> {
   return Object.assign(Object.create(null), source || {});
 }
@@ -183,6 +341,165 @@ function normalizeBlocks(blocks: BlockData[]) {
   return { blockOrder, blocksById, blockIdByLabel, workspaceIssues };
 }
 
+function insertRestoredBlock(block: BlockData, index: number) {
+  useStore.setState(state => {
+    const without = state.blockOrder.filter(id => id !== block.id);
+    without.splice(Math.min(Math.max(index, 0), without.length), 0, block.id);
+    const blocksById = { ...state.blocksById, [block.id]: block };
+    const normalized = normalizeBlocks(without.map(id => blocksById[id]).filter(Boolean));
+    return {
+      ...normalized,
+      blocksRevision: state.blocksRevision + 1,
+      persistenceError: null
+    };
+  });
+}
+
+async function ensureFullBlock(id: string): Promise<BlockData> {
+  const current = useStore.getState().blocksById[id];
+  if (!current) throw new Error('The note no longer exists.');
+  if (current.content !== undefined) return { ...current };
+  const loaded = await backendApi.loadBlockContent(id);
+  if (!loaded) throw new Error(`Could not load “${current.title}” for undo history.`);
+  return { ...current, ...loaded };
+}
+
+async function replayHistory(direction: HistoryDirection) {
+  const source = direction === 'undo' ? undoEntries : redoEntries;
+  const destination = direction === 'undo' ? redoEntries : undoEntries;
+  const entry = source.at(-1);
+  if (!entry || useStore.getState().historyState.busy) return;
+  useStore.setState(state => ({ historyState: { ...state.historyState, busy: true }, historyRequest: null }));
+  historyReplayInProgress = true;
+  let rollback: (() => Promise<void>) | null = null;
+  try {
+    const store = useStore.getState();
+    await store.flushPendingSaves();
+    if (entry.kind === 'edit') {
+      const expected = direction === 'undo' ? entry.after : entry.before;
+      const replacement = direction === 'undo' ? entry.before : entry.after;
+      const current = store.blocksById[entry.id];
+      if (!current || current[entry.field] !== expected) throw new Error(`“${entry.title}” changed since this history step. Review it before trying again.`);
+      store.updateBlock(entry.id, { [entry.field]: replacement });
+      rollback = async () => { useStore.getState().updateBlock(entry.id, { [entry.field]: expected }); };
+      await store.flushBlock(entry.id);
+      if (failedBlockSaves.has(entry.id)) throw failedBlockSaves.get(entry.id);
+    } else if (entry.kind === 'create' || entry.kind === 'delete') {
+      const shouldExist = entry.kind === 'create' ? direction === 'undo' : direction === 'redo';
+      if (entry.kind === 'create' && entry.linkedEdit) {
+        const linked = useStore.getState().blocksById[entry.linkedEdit.id];
+        const expected = direction === 'undo' ? entry.linkedEdit.after : entry.linkedEdit.before;
+        if (!linked || linked.content !== expected) throw new Error('The note containing the new link changed. Review it before trying again.');
+      }
+      if (shouldExist) {
+        const current = store.blocksById[entry.block.id];
+        if (!current || current.title !== entry.block.title || current.label !== entry.block.label || current.content !== entry.block.content) {
+          throw new Error(`“${entry.title}” changed since this history step. Review it before trying again.`);
+        }
+        await store.deleteBlock(entry.block.id);
+        if (useStore.getState().blocksById[entry.block.id]) throw new Error(`Could not delete “${entry.title}”.`);
+        rollback = async () => { insertRestoredBlock(await backendApi.restoreBlock(entry.block), entry.index); };
+        if (entry.kind === 'create' && entry.linkedEdit) {
+          useStore.getState().updateBlock(entry.linkedEdit.id, { content: entry.linkedEdit.before });
+          rollback = async () => {
+            insertRestoredBlock(await backendApi.restoreBlock(entry.block), entry.index);
+            useStore.getState().updateBlock(entry.linkedEdit!.id, { content: entry.linkedEdit!.after });
+          };
+          await useStore.getState().flushBlock(entry.linkedEdit.id);
+          if (failedBlockSaves.has(entry.linkedEdit.id)) throw failedBlockSaves.get(entry.linkedEdit.id);
+        }
+      } else {
+        if (store.blocksById[entry.block.id] || Object.values(store.blocksById).some(block => block.label === entry.block.label)) {
+          throw new Error(`The original ID or label for “${entry.title}” is already in use.`);
+        }
+        const restored = await backendApi.restoreBlock(entry.block);
+        insertRestoredBlock(restored, entry.index);
+        rollback = async () => { await useStore.getState().deleteBlock(entry.block.id); };
+        if (entry.kind === 'create' && entry.linkedEdit) {
+          useStore.getState().updateBlock(entry.linkedEdit.id, { content: entry.linkedEdit.after });
+          rollback = async () => {
+            useStore.getState().updateBlock(entry.linkedEdit!.id, { content: entry.linkedEdit!.before });
+            await useStore.getState().deleteBlock(entry.block.id);
+          };
+          await useStore.getState().flushBlock(entry.linkedEdit.id);
+          if (failedBlockSaves.has(entry.linkedEdit.id)) throw failedBlockSaves.get(entry.linkedEdit.id);
+        }
+      }
+    } else if (entry.kind === 'repair') {
+      const expected = direction === 'undo' ? entry.after : entry.before;
+      const current = useStore.getState().blocksById[entry.id];
+      if (!current || current.label !== expected) throw new Error('The repaired note changed since this history step.');
+      const updated = direction === 'undo'
+        ? await backendApi.undoDuplicateLabelRepair(entry.id, entry.after, entry.before)
+        : await backendApi.repairDuplicateLabel(entry.id, entry.after);
+      useStore.setState(state => {
+        const blocksById = { ...state.blocksById, [entry.id]: { ...state.blocksById[entry.id], ...updated, content: state.blocksById[entry.id]?.content } };
+        return { ...normalizeBlocks(state.blockOrder.map(id => blocksById[id]).filter(Boolean)), blocksRevision: state.blocksRevision + 1 };
+      });
+    } else if (entry.kind === 'relabel') {
+      const expected = direction === 'undo' ? entry.after : entry.before;
+      for (const id of entry.ids) {
+        const current = await ensureFullBlock(id);
+        const previous = expected[id];
+        if (!previous || current.title !== previous.title || current.label !== previous.label || current.content !== previous.content) {
+          throw new Error('A note affected by this rename changed. Review it before trying again.');
+        }
+      }
+      const oldPrefix = direction === 'undo' ? entry.newPrefix : entry.oldPrefix;
+      const newPrefix = direction === 'undo' ? entry.oldPrefix : entry.newPrefix;
+      const plan = await store.previewRelabel(oldPrefix, newPrefix);
+      if (plan.conflicts.length) throw new Error(plan.conflicts.join(' '));
+      await store.commitRelabel(plan);
+      const desired = direction === 'undo' ? entry.before : entry.after;
+      for (const id of entry.ids) {
+        const block = useStore.getState().blocksById[id];
+        if (block && desired[id] && block.title !== desired[id].title) {
+          useStore.getState().updateBlock(id, { title: desired[id].title });
+        }
+      }
+      await useStore.getState().flushPendingSaves();
+    } else {
+      const expected = direction === 'undo' ? entry.after : entry.before;
+      for (const id of entry.ids) {
+        const current = await ensureFullBlock(id);
+        if (current.content !== expected[id]) throw new Error('A note affected by this image move changed. Review it before trying again.');
+      }
+      const sourcePath = direction === 'undo' ? entry.destination : entry.source;
+      const destinationPath = direction === 'undo' ? entry.source : entry.destination;
+      const plan = await store.previewAssetMove(sourcePath, destinationPath);
+      if (plan.conflicts.length) throw new Error(plan.conflicts.join(' '));
+      await store.commitAssetMove(plan);
+    }
+    source.pop();
+    rollback = null;
+    destination.push(entry);
+    useStore.setState(state => ({ historyState: {
+      undoLabel: undoEntries.length ? historyLabel(undoEntries[undoEntries.length - 1]) : undefined,
+      redoLabel: redoEntries.length ? historyLabel(redoEntries[redoEntries.length - 1]) : undefined,
+      busy: false,
+      replayRevision: state.historyState.replayRevision + 1
+    } }));
+  } catch (error) {
+    let message = errorMessage(error);
+    if (rollback) {
+      try { await rollback(); }
+      catch (rollbackError) { message += ` Rollback also failed: ${errorMessage(rollbackError)}`; }
+    }
+    useStore.setState(state => ({ persistenceError: message, historyState: {
+      ...state.historyState, busy: false, replayRevision: state.historyState.replayRevision + 1
+    } }));
+  } finally {
+    historyReplayInProgress = false;
+    const queued = queuedHistoryDirection;
+    queuedHistoryDirection = null;
+    if (queued) queueMicrotask(() => {
+      const store = useStore.getState();
+      if (queued === 'undo') void store.historyUndo();
+      else void store.historyRedo();
+    });
+  }
+}
+
 function resetEmbeddedWorkspaceCaches() {
   workspaceGeneration += 1;
   resetEmbeddedEditorLifecycle();
@@ -196,6 +513,7 @@ function stopServerSync() {
 
 function prepareWorkspaceSwitch() {
   if (assetMoveInProgress) throw new Error('Finish the image move before changing workspaces.');
+  clearHistory();
   resetEmbeddedWorkspaceCaches();
   resetImageResourceWorkspace();
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('math-note-workspace-reset'));
@@ -229,6 +547,7 @@ function emptyWorkspaceState(
     viewerOriginalBlocks: {},
     viewerDraftBlockIds: {},
     blockLoadErrors: {},
+    recoveredDrafts: [],
     settings: createDefaultEditorSettings(),
     persistenceError: null,
     ...workspace
@@ -285,7 +604,7 @@ export const useStore = create<AppState>((set, get) => ({
   }),
   viewerOriginalBlocks: {},
   viewerDraftBlockIds: {},
-  resetViewerDrafts: () => set(state => {
+  resetViewerDrafts: () => { clearHistory(); set(state => {
     if (Object.keys(state.viewerDraftBlockIds).length === 0) return state;
     const blocksById = { ...state.blocksById };
     for (const id of Object.keys(state.viewerDraftBlockIds)) {
@@ -301,12 +620,151 @@ export const useStore = create<AppState>((set, get) => ({
       blocksRevision: state.blocksRevision + 1,
       persistenceError: null
     };
-  }),
+  }); },
   imageUploadParams: null,
   setImageUploadParams: (params) => set({ imageUploadParams: params }),
   persistenceError: null,
+  recoveredDrafts: [],
+  reviewRecoveryDrafts: async () => {
+    const workspace = recoveryWorkspace(get());
+    if (!workspace) return;
+    try {
+      const warnings: string[] = [];
+      const drafts = await loadRecoveryDrafts(workspace, warning => warnings.push(warning));
+      for (const draft of drafts) lastRecoveryStamp = Math.max(lastRecoveryStamp, draft.updatedAt);
+      const pending: RecoveryDraft[] = [];
+      for (const draft of drafts) {
+        const current = get().blocksById[draft.id];
+        if (current) {
+          try {
+            const saved = await backendApi.loadBlockContent(draft.id);
+            if (saved && saved.title === draft.title && saved.label === draft.label && saved.content === draft.content) {
+              await discardRecoveryDraft(workspace, draft.id);
+              continue;
+            }
+          } catch (error) { warnings.push(`Could not verify saved version of “${draft.title}”: ${errorMessage(error)}`); }
+        }
+        pending.push(draft);
+      }
+      set({ recoveredDrafts: pending, ...(warnings.length ? { persistenceError: warnings.join(' ') } : {}) });
+    } catch (error) { set({ persistenceError: `Could not read recovery drafts: ${errorMessage(error)}` }); }
+  },
+  restoreRecoveryDraft: async id => {
+    const draft = get().recoveredDrafts.find(item => item.id === id);
+    if (!draft) return;
+    try {
+      if (dirtyBlockVersions.has(id)) throw new Error('This note has newer unsaved edits. Save or copy those edits before restoring the earlier draft.');
+      const latest = await backendApi.loadBlockContent(id);
+      if (!latest || !draft.baseRevision || latest.revision !== draft.baseRevision) throw new Error('The saved note changed or its version cannot be verified. Save this draft as a new note to keep both versions.');
+      set(state => ({ blocksById: { ...state.blocksById, [id]: { ...state.blocksById[id], ...latest } } }));
+      get().updateBlock(id, { title: draft.title, label: draft.label,
+        ...(draft.content !== undefined ? { content: draft.content } : {}) });
+      await get().flushBlock(id);
+      if (failedBlockSaves.has(id)) throw failedBlockSaves.get(id);
+      await clearRecoveredDraft(id);
+      get().openBlockInTab(id, true);
+    } catch (error) { set({ persistenceError: errorMessage(error) }); }
+  },
+  copyRecoveryDraft: async id => {
+    const draft = get().recoveredDrafts.find(item => item.id === id);
+    if (!draft) return;
+    const baseLabel = Array.from(draft.label).length < MAX_BLOCK_LABEL_LENGTH - 30 ? draft.label : `recovered:${id}`;
+    let label = `${baseLabel}/recovered`;
+    let suffix = 2;
+    while (get().blockIdByLabel[label]) label = `${baseLabel}/recovered-${suffix++}`;
+    const titleSuffix = ' (recovered)';
+    const title = `${Array.from(draft.title || 'Untitled note').slice(0, MAX_BLOCK_TITLE_LENGTH - titleSuffix.length).join('')}${titleSuffix}`;
+    const copy = await get().addBlock({ title, label, content: draft.content || '' });
+    if (!copy) return;
+    try { await clearRecoveredDraft(id); get().openBlockInTab(copy.id, true); }
+    catch (error) { set({ persistenceError: errorMessage(error) }); }
+  },
+  discardRecoveryDraft: async id => {
+    try { await clearRecoveredDraft(id); }
+    catch (error) { set({ persistenceError: errorMessage(error) }); }
+  },
   blockLoadErrors: {},
   clearPersistenceError: () => set({ persistenceError: null }),
+  historyState: { busy: false, replayRevision: 0 },
+  historyRequest: null,
+  actionRequest: null,
+  separateNextEdit: () => { forceHistoryBoundary = true; },
+  attachLastEditToCreate: (createdId) => {
+    const latest = undoEntries.at(-1);
+    const previous = undoEntries.at(-2);
+    if (latest?.kind !== 'edit' || latest.field !== 'content' || previous?.kind !== 'create'
+      || previous.block.id !== createdId || latest.at - previous.at > 5000) return;
+    previous.linkedEdit = { id: latest.id, before: latest.before, after: latest.after };
+    undoEntries.pop();
+    trimHistory();
+    updateHistoryState();
+  },
+  historyUndo: async () => {
+    if (get().historyState.busy) { queuedHistoryDirection = 'undo'; return; }
+    if (confirmedActionInProgress || get().historyRequest || get().actionRequest) return;
+    const entry = undoEntries.at(-1);
+    if (!entry) return;
+    const crossTab = !!entry.ownerTab && entry.ownerTab !== get().activeTab;
+    if (entry.kind !== 'edit' || entry.field === 'title' || crossTab) {
+      set({ historyRequest: {
+        direction: 'undo', label: historyLabel(entry), crossTab,
+        affectedNotes: historyAffectedNotes(entry, get().blocksById), change: historyChange(entry, 'undo'),
+        special: entry.kind !== 'edit' || entry.field === 'title'
+      } });
+      return;
+    }
+    await replayHistory('undo');
+  },
+  historyRedo: async () => {
+    if (get().historyState.busy) { queuedHistoryDirection = 'redo'; return; }
+    if (confirmedActionInProgress || get().historyRequest || get().actionRequest) return;
+    const entry = redoEntries.at(-1);
+    if (!entry) return;
+    const crossTab = !!entry.ownerTab && entry.ownerTab !== get().activeTab;
+    if (entry.kind !== 'edit' || entry.field === 'title' || crossTab) {
+      set({ historyRequest: {
+        direction: 'redo', label: historyLabel(entry), crossTab,
+        affectedNotes: historyAffectedNotes(entry, get().blocksById), change: historyChange(entry, 'redo'),
+        special: entry.kind !== 'edit' || entry.field === 'title'
+      } });
+      return;
+    }
+    await replayHistory('redo');
+  },
+  confirmHistoryRequest: async () => {
+    const request = get().historyRequest;
+    if (!request) return;
+    set({ historyRequest: null });
+    await replayHistory(request.direction);
+  },
+  cancelHistoryRequest: () => set({ historyRequest: null }),
+  requestWorkspaceAction: (label, detail, run, details) => new Promise<boolean>(resolve => {
+    if (confirmedActionInProgress || get().historyState.busy || get().actionRequest || get().historyRequest) { resolve(false); return; }
+    pendingAction = { run, resolve };
+    set({ actionRequest: { label, detail, ...details } });
+  }),
+  confirmWorkspaceAction: async () => {
+    const action = pendingAction;
+    if (!action) return;
+    pendingAction = null;
+    set({ actionRequest: null });
+    confirmedActionInProgress = true;
+    try {
+      await action.run();
+      action.resolve(true);
+    } catch (error) {
+      set({ persistenceError: errorMessage(error) });
+      action.resolve(false);
+    } finally {
+      confirmedActionInProgress = false;
+    }
+  },
+  cancelWorkspaceAction: () => {
+    const action = pendingAction;
+    pendingAction = null;
+    set({ actionRequest: null });
+    action?.resolve(false);
+  },
   settings: createDefaultEditorSettings({ "\\R": "\\mathbb{R}", "\\N": "\\mathbb{N}" }),
   assetRevision: 0,
   saveAsset: async (file: File, filename: string, overwrite = false) => {
@@ -331,6 +789,7 @@ export const useStore = create<AppState>((set, get) => ({
     assetMoveInProgress = true;
     try {
       await get().flushPendingSaves();
+      const before = Object.fromEntries(await Promise.all(plan.impacts.map(async impact => [impact.blockId, (await ensureFullBlock(impact.blockId)).content || ''] as const)));
       let result: Awaited<ReturnType<typeof backendApi.commitAssetMove>>;
       try { result = await backendApi.commitAssetMove(plan); }
       catch (error) {
@@ -345,11 +804,15 @@ export const useStore = create<AppState>((set, get) => ({
         for (const updated of result.updatedBlocks) {
           const current = blocksById[updated.id];
           if (current) blocksById[updated.id] = { ...current, content: updated.content,
-            hasContent: updated.hasContent, references: updated.references };
+            hasContent: updated.hasContent, references: updated.references, revision: updated.revision ?? current.revision };
         }
         return { blocksById, assetRevision: state.assetRevision + 1,
           blocksRevision: state.blocksRevision + 1, persistenceError: null };
       });
+      pushHistory({ kind: 'assetMove', source: result.plan.source, destination: result.plan.destination,
+        ids: result.plan.impacts.map(impact => impact.blockId), before,
+        after: Object.fromEntries(result.updatedBlocks.map(block => [block.id, block.content || ''])), title: result.plan.source,
+        ownerTab: get().activeTab, at: Date.now() });
       return result.warning;
     } finally { assetMoveInProgress = false; }
   },
@@ -375,6 +838,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (backendApi.mode !== "none") {
       await get().loadBlocks();
       await get().loadSettings();
+      await get().reviewRecoveryDrafts();
       get().initSync();
     }
     set({ isLoaded: true });
@@ -467,6 +931,7 @@ export const useStore = create<AppState>((set, get) => ({
         }));
         await get().loadBlocks();
         await get().loadSettings();
+        await get().reviewRecoveryDrafts();
         set({ isLoaded: true });
       }
     } catch (error) {
@@ -495,6 +960,7 @@ export const useStore = create<AppState>((set, get) => ({
       }));
       await get().loadBlocks();
       await get().loadSettings();
+      await get().reviewRecoveryDrafts();
       const first = get().blockOrder[0];
       if (first && get().openTabs.length === 0) set({ openTabs: [first], activeTab: first });
       set({ isLoaded: true });
@@ -528,16 +994,19 @@ export const useStore = create<AppState>((set, get) => ({
       const data = await backendApi.loadSettings();
       if (generation !== workspaceGeneration) return;
       if (data) {
+        const normalized = normalizeEditorSettings(data, createDefaultEditorSettings());
+        const safeData = normalized.settings;
+        if (normalized.issues.length) set({ persistenceError: `Some workspace preferences are invalid and were ignored: ${normalized.issues.join(' ')}` });
         if (preserveSession) {
-          set({ settings: data });
+          set({ settings: safeData });
           return;
         }
         const validIds = new Set(get().blockOrder);
-        const openTabs = (data.workspaceSession?.openTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
-        const activeTab = openTabs.includes(data.workspaceSession?.activeTab || '') ? data.workspaceSession!.activeTab : openTabs[0] || null;
-        const lockedTabs = (data.workspaceSession?.lockedTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
+        const openTabs = (safeData.workspaceSession?.openTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
+        const activeTab = openTabs.includes(safeData.workspaceSession?.activeTab || '') ? safeData.workspaceSession!.activeTab : openTabs[0] || null;
+        const lockedTabs = (safeData.workspaceSession?.lockedTabs || []).filter((id: unknown): id is string => typeof id === 'string' && validIds.has(id));
         set({
-          settings: data,
+          settings: safeData,
           openTabs,
           activeTab,
           viewOnlyBlocks: Object.fromEntries(lockedTabs.map(id => [id, true]))
@@ -560,6 +1029,8 @@ export const useStore = create<AppState>((set, get) => ({
       }
     };
     try {
+      const issues = validateEditorSettings(settingsWithSession);
+      if (issues.length) throw new Error(issues.join(' '));
       set({ settings: settingsWithSession, persistenceError: null });
       await backendApi.saveSettings(settingsWithSession);
       return true;
@@ -573,6 +1044,7 @@ export const useStore = create<AppState>((set, get) => ({
   restoreBackup: async (path) => {
     await get().flushPendingSaves();
     await backendApi.restoreBackup(path);
+    clearHistory();
     await get().loadBlocks();
     if (path === 'setting/settings.json') await get().loadSettings();
   },
@@ -614,7 +1086,7 @@ export const useStore = create<AppState>((set, get) => ({
         return {
           blocksById: {
             ...state.blocksById,
-            [id]: { ...current, content: fullBlock.content }
+            [id]: { ...current, content: fullBlock.content, revision: fullBlock.revision || current.revision }
           },
           blockLoadErrors
         };
@@ -670,6 +1142,8 @@ export const useStore = create<AppState>((set, get) => ({
           persistenceError: null
         };
       });
+      pushHistory({ kind: 'create', block: { ...newBlock }, index: get().blockOrder.indexOf(newBlock.id),
+        title: newBlock.title, ownerTab: get().activeTab, at: Date.now() });
       return newBlock;
     } catch (e) {
       console.warn("Failed to add block", e);
@@ -724,6 +1198,14 @@ export const useStore = create<AppState>((set, get) => ({
           persistenceError: null
         };
       });
+      if (data.content !== undefined && data.content !== current.content) {
+        pushHistory({ kind: 'edit', id, field: 'content', before: current.content || '', after: data.content,
+          title: current.title, ownerTab: get().activeTab, at: Date.now() });
+      }
+      if (data.title !== undefined && data.title !== current.title) {
+        pushHistory({ kind: 'edit', id, field: 'title', before: current.title, after: data.title,
+          title: current.title, ownerTab: get().activeTab, at: Date.now() });
+      }
       return;
     }
     set((state) => {
@@ -744,6 +1226,25 @@ export const useStore = create<AppState>((set, get) => ({
       };
     });
 
+    if (data.content !== undefined && data.content !== current.content) {
+      pushHistory({ kind: 'edit', id, field: 'content', before: current.content || '', after: data.content,
+        title: current.title, ownerTab: get().activeTab, at: Date.now() });
+    }
+    if (data.title !== undefined && data.title !== current.title) {
+      pushHistory({ kind: 'edit', id, field: 'title', before: current.title, after: data.title,
+        title: current.title, ownerTab: get().activeTab, at: Date.now() });
+    }
+
+    const workspace = recoveryWorkspace(get());
+    if (workspace) {
+      const draft = get().blocksById[id];
+      try {
+        lastRecoveryStamp = Math.max(Date.now(), lastRecoveryStamp + 1);
+        saveRecoveryDraft(workspace, { id, title: draft.title, label: draft.label, content: draft.content,
+          baseRevision: current.revision, updatedAt: lastRecoveryStamp },
+          error => set({ persistenceError: `Could not save recovery draft: ${errorMessage(error)}` }));
+      } catch (error) { set({ persistenceError: `Could not save recovery draft: ${errorMessage(error)}` }); }
+    }
     dirtyBlockVersions.set(id, (dirtyBlockVersions.get(id) || 0) + 1);
     scheduleBlockSave(id);
   },
@@ -773,7 +1274,17 @@ export const useStore = create<AppState>((set, get) => ({
   },
   commitRelabel: async (plan) => {
     await get().flushPendingSaves();
-    const result = await backendApi.commitRelabel(plan);
+    const affectedIds = [...new Set([
+      ...plan.blockChanges.map(change => change.id),
+      ...plan.referenceImpacts.filter(impact => impact.changed).map(impact => impact.blockId)
+    ])];
+    const before = Object.fromEntries(await Promise.all(affectedIds.map(async id => [id, await ensureFullBlock(id)] as const)));
+    let result: Awaited<ReturnType<typeof backendApi.commitRelabel>>;
+    try { result = await backendApi.commitRelabel(plan); }
+    catch (error) {
+      await get().loadBlocks();
+      throw error;
+    }
     set(state => {
       const blocksById = { ...state.blocksById };
       const labelMap = new Map<string, string>();
@@ -786,6 +1297,7 @@ export const useStore = create<AppState>((set, get) => ({
           label: updated.label,
           title: updated.title,
           references: updated.references,
+          revision: updated.revision ?? current.revision,
           hasContent: updated.hasContent,
           ...(current.content !== undefined ? { content: updated.content } : {})
         };
@@ -806,10 +1318,15 @@ export const useStore = create<AppState>((set, get) => ({
         persistenceError: null
       };
     });
+    const after = Object.fromEntries(result.updatedBlocks.map(block => [block.id, { ...block }]));
+    pushHistory({ kind: 'relabel', oldPrefix: result.plan.oldPrefix, newPrefix: result.plan.newPrefix,
+      ids: affectedIds, before, after, title: result.plan.oldPrefix,
+      ownerTab: get().activeTab, at: Date.now() });
   },
   repairDuplicateLabel: async (id, newLabel) => {
     try {
       await get().flushBlock(id);
+      const previous = get().blocksById[id];
       const updated = await backendApi.repairDuplicateLabel(id, newLabel);
       set(state => {
         const current = state.blocksById[id];
@@ -831,6 +1348,8 @@ export const useStore = create<AppState>((set, get) => ({
           persistenceError: null
         };
       });
+      if (previous) pushHistory({ kind: 'repair', id, before: previous.label, after: updated.label,
+        title: previous.title, ownerTab: get().activeTab, at: Date.now() });
       return true;
     } catch (e) {
       set({ persistenceError: errorMessage(e) });
@@ -838,15 +1357,14 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
   deleteBlock: async (id) => {
-    if (syncTimeouts[id]) {
-      clearTimeout(syncTimeouts[id]);
-      delete syncTimeouts[id];
-    }
-    const activeSave = blockSaveChains.get(id);
-    if (activeSave) await activeSave;
+    await get().flushBlock(id);
+    if (failedBlockSaves.has(id)) throw failedBlockSaves.get(id);
+    const originalIndex = get().blockOrder.indexOf(id);
+    const ownerTab = get().activeTab;
+    const original = originalIndex >= 0 ? await ensureFullBlock(id) : null;
     dirtyBlockVersions.delete(id);
     try {
-      await backendApi.deleteBlock(id);
+      await backendApi.deleteBlock(id, original?.revision);
       set((state) => {
         const idx = state.blockOrder.indexOf(id);
         if (idx === -1) return state;
@@ -878,6 +1396,10 @@ export const useStore = create<AppState>((set, get) => ({
           persistenceError: null
         };
       });
+      try { await clearRecoveredDraft(id); }
+      catch (error) { set({ persistenceError: `Note deleted, but its recovery draft could not be cleared: ${errorMessage(error)}` }); }
+      if (original) pushHistory({ kind: 'delete', block: original, index: originalIndex,
+        title: original.title, ownerTab, at: Date.now() });
     } catch (e) {
       console.warn("Failed to delete block", e);
       set({ persistenceError: errorMessage(e) });
@@ -1090,7 +1612,7 @@ export const useStore = create<AppState>((set, get) => ({
             const current = state.blocksById[msg.block.id];
             if (current) {
               // Only update if something changed
-              if (current.content !== msg.block.content || current.title !== msg.block.title || current.label !== msg.block.label || current.references !== msg.block.references) {
+              if (current.content !== msg.block.content || current.title !== msg.block.title || current.label !== msg.block.label || current.revision !== msg.block.revision) {
                 const next = { ...current, ...msg.block, content: current.content !== undefined ? msg.block.content : undefined };
                 const blocksById = { ...state.blocksById, [next.id]: next };
                 const normalized = normalizeBlocks(state.blockOrder.map(id => blocksById[id]).filter(Boolean));
@@ -1116,7 +1638,13 @@ export const useStore = create<AppState>((set, get) => ({
             }
             return state;
           });
+        } else if (msg.type === 'reload') {
+          void refreshServerBlocks();
         } else if (msg.type === 'delete' && msg.id) {
+          if (dirtyBlockVersions.has(msg.id)) {
+            set({ persistenceError: 'This note was deleted elsewhere. Your unsaved draft is still in the editor.' });
+            return;
+          }
           set(state => {
             const idx = state.blockOrder.indexOf(msg.id);
             if (idx === -1) return state;
@@ -1150,6 +1678,7 @@ export const useStore = create<AppState>((set, get) => ({
       } catch (err) {}
     };
     eventSource.onopen = () => {
+      void refreshServerBlocks();
       set(state => state.persistenceError === 'Workspace connection lost. Your latest changes may not be saved.'
         ? { persistenceError: null }
         : state);
@@ -1166,6 +1695,31 @@ function scheduleBlockSave(id: string) {
     delete syncTimeouts[id];
     void flushBlockSave(id);
   }, 500);
+}
+
+async function refreshServerBlocks() {
+  if (backendApi.mode !== 'server') return;
+  const generation = workspaceGeneration;
+  try {
+    const remote = await backendApi.loadBlocks();
+    if (generation !== workspaceGeneration || backendApi.mode !== 'server') return;
+    useStore.setState(state => {
+      const merged = remote.map(block => {
+        const current = state.blocksById[block.id];
+        if (!current) return block;
+        if (dirtyBlockVersions.has(block.id)) return current;
+        return current.revision === block.revision && current.content !== undefined
+          ? { ...block, content: current.content }
+          : block;
+      });
+      for (const id of dirtyBlockVersions.keys()) {
+        if (!remote.some(block => block.id === id) && state.blocksById[id]) merged.push(state.blocksById[id]);
+      }
+      return { ...normalizeBlocks(merged), blocksRevision: state.blocksRevision + 1 };
+    });
+  } catch (error) {
+    useStore.setState({ persistenceError: `Could not refresh workspace: ${errorMessage(error)}` });
+  }
 }
 
 async function flushBlockSave(id: string): Promise<void> {
@@ -1202,8 +1756,26 @@ async function flushBlockSave(id: string): Promise<void> {
         failedBlockSaves.delete(id);
         useStore.setState({ persistenceError: null });
 
+        // An acknowledged write advances the base revision even when the user
+        // typed again while the request was in flight. The next save must use
+        // this new base without replacing that newer local draft.
+        useStore.setState(currentState => {
+          const current = currentState.blocksById[id];
+          if (!current || !result.block?.revision) return currentState;
+          return { blocksById: { ...currentState.blocksById, [id]: { ...current, revision: result.block.revision } } };
+        });
+
         if (dirtyBlockVersions.get(id) === version) {
           dirtyBlockVersions.delete(id);
+          const workspace = recoveryWorkspace(useStore.getState());
+          if (workspace) {
+            try {
+              const draft = getLocalRecoveryDraft(workspace, id);
+              if (draft && draft.title === block.title && draft.label === block.label && draft.content === block.content) {
+                await discardRecoveryDraft(workspace, id, draft.updatedAt);
+              }
+            } catch (error) { useStore.setState({ persistenceError: `Could not clear saved recovery draft: ${errorMessage(error)}` }); }
+          }
         }
 
         if (result.updatedBlocks?.length) {
@@ -1225,6 +1797,7 @@ async function flushBlockSave(id: string): Promise<void> {
                 label: updatedBlock.label,
                 title: updatedBlock.title,
                 references: updatedBlock.references,
+                revision: updatedBlock.revision,
                 ...(current.content !== undefined ? { content: updatedBlock.content } : {})
               };
               changed = true;

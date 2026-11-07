@@ -1,30 +1,31 @@
-function editorContextMenuTemplate(params, webContents) {
+function editorContextMenuTemplate(params, webContents, selectedSpelling = null, workspaceHistory = null) {
   const template = [];
   const flags = params.editFlags || {};
 
-  if (params.isEditable && params.spellcheckEnabled && params.misspelledWord) {
-    const suggestions = [...new Set(params.dictionarySuggestions || [])].slice(0, 6);
+  const misspelledWord = params.misspelledWord || selectedSpelling?.word;
+  if (params.isEditable && params.spellcheckEnabled && misspelledWord) {
+    const suggestions = [...new Set(params.misspelledWord ? params.dictionarySuggestions || [] : selectedSpelling?.suggestions || [])].slice(0, 6);
     if (suggestions.length) {
       for (const suggestion of suggestions) {
         template.push({
           label: suggestion,
-          click: () => webContents.replaceMisspelling(suggestion)
+          click: () => params.misspelledWord ? webContents.replaceMisspelling(suggestion) : webContents.insertText(suggestion)
         });
       }
     } else {
       template.push({ label: 'No spelling suggestions', enabled: false });
     }
     template.push({
-      label: `Add “${params.misspelledWord}” to dictionary`,
-      click: () => webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord)
+      label: `Add “${misspelledWord}” to dictionary`,
+      click: () => webContents.session.addWordToSpellCheckerDictionary(misspelledWord)
     });
     template.push({ type: 'separator' });
   }
 
   if (params.isEditable) {
     template.push(
-      { role: 'undo', enabled: !!flags.canUndo },
-      { role: 'redo', enabled: !!flags.canRedo },
+      workspaceHistory ? { label: 'Undo', enabled: true, click: workspaceHistory.undo } : { role: 'undo', enabled: !!flags.canUndo },
+      workspaceHistory ? { label: 'Redo', enabled: true, click: workspaceHistory.redo } : { role: 'redo', enabled: !!flags.canRedo },
       { type: 'separator' },
       { role: 'cut', enabled: !!flags.canCut },
       { role: 'copy', enabled: !!flags.canCopy },

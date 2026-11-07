@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { BlockData } from '../store';
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from './block-metadata';
-import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle } from './label-policy';
+import { makeInitialBlockFilename, normalizeBlockLabel, normalizeBlockTitle } from './label-policy';
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
@@ -316,27 +316,51 @@ export const googleDriveWorkspace = {
             const text = await readText(file.id);
             const { data, content } = parseFrontmatter(text);
             const id = metadataText(data.id, file.id);
-            fileByBlockId.set(id, file);
-            return { id, title: normalizeBlockTitle(metadataText(data.title, file.name.replace(/\.md$/i, ''))), label: normalizeBlockLabel(metadataText(data.label, file.name.replace(/\.md$/i, ''))), references: computeReferences(content), hasContent: content.trim().length > 0, _fileMeta: { driveFileId: file.id, version: file.version, fileName: file.name } };
+            return { id, title: normalizeBlockTitle(metadataText(data.title, file.name.replace(/\.md$/i, ''))), label: normalizeBlockLabel(metadataText(data.label, file.name.replace(/\.md$/i, ''))), references: computeReferences(content), hasContent: content.trim().length > 0, revision: file.version, _fileMeta: { driveFileId: file.id, version: file.version, fileName: file.name } };
         }));
+        const resolved = new Map<string, DriveFile>();
+        for (const block of blocks) {
+            const existing = resolved.get(block.id);
+            if (existing) throw new Error(`Two Google Drive Markdown files use note ID "${block.id}": "${existing.name}" and "${block._fileMeta.fileName}". Give one file a different ID before opening this folder.`);
+            resolved.set(block.id, markdown.find(file => file.id === block._fileMeta.driveFileId)!);
+        }
+        fileByBlockId.clear();
+        for (const [id, file] of resolved) fileByBlockId.set(id, file);
         return blocks.sort((a, b) => a.title.localeCompare(b.title));
     },
     async loadBlock(id: string): Promise<BlockData | null> {
         const file = fileByBlockId.get(id); if (!file) return null;
         const { data, content } = parseFrontmatter(await readText(file.id));
-        return { id, title: normalizeBlockTitle(metadataText(data.title, file.name.replace(/\.md$/i, ''))), label: normalizeBlockLabel(metadataText(data.label, file.name.replace(/\.md$/i, ''))), content, references: computeReferences(content), _fileMeta: { driveFileId: file.id, version: file.version, fileName: file.name } };
+        return { id, title: normalizeBlockTitle(metadataText(data.title, file.name.replace(/\.md$/i, ''))), label: normalizeBlockLabel(metadataText(data.label, file.name.replace(/\.md$/i, ''))), content, references: computeReferences(content), revision: file.version, _fileMeta: { driveFileId: file.id, version: file.version, fileName: file.name } };
     },
     async addBlock(data: Partial<BlockData>) {
         const block = { id: uuidv4(), title: normalizeBlockTitle(metadataText(data.title, 'New Block')), label: normalizeBlockLabel(metadataText(data.label, 'block')), content: data.content || '' };
-        const file = await createTextFile(makeBlockFilename(block.title, block.label, block.id), stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content));
+        const file = await createTextFile(makeInitialBlockFilename(block.title, block.id), stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content));
         fileByBlockId.set(block.id, file);
-        return { ...block, references: computeReferences(block.content), _fileMeta: { driveFileId: file.id, version: file.version, fileName: file.name } };
+        return { ...block, references: computeReferences(block.content), revision: file.version, _fileMeta: { driveFileId: file.id, version: file.version, fileName: file.name } };
+    },
+    async restoreBlock(block: BlockData): Promise<BlockData> {
+        if (typeof block.content !== 'string') throw new Error('Full note content is required to restore a deleted note');
+        const existing = await this.loadBlocks();
+        if (existing.some(candidate => candidate.id === block.id)) throw new Error(`Note ID "${block.id}" already exists`);
+        if (existing.some(candidate => candidate.label === block.label)) throw new Error(`Label "${block.label}" already exists`);
+        const file = await createTextFile(
+            makeInitialBlockFilename(block.title, block.id),
+            stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content)
+        );
+        fileByBlockId.set(block.id, file);
+        return {
+            ...block,
+            hasContent: block.content.trim().length > 0,
+            references: computeReferences(block.content),
+            revision: file.version, _fileMeta: { driveFileId: file.id, version: file.version, fileName: file.name }
+        };
     },
     async updateBlock(block: BlockData) {
         const file = fileByBlockId.get(block.id); if (!file) throw new Error('Google Drive file not found; reload the workspace');
-        const next = await updateTextFile(file, makeBlockFilename(block.title, block.label, block.id), stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ''));
+        const next = await updateTextFile(file, file.name, stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || ''));
         fileByBlockId.set(block.id, next);
-        return { ...block, references: computeReferences(block.content || ''), _fileMeta: { driveFileId: next.id, version: next.version, fileName: next.name } };
+        return { ...block, references: computeReferences(block.content || ''), revision: next.version, _fileMeta: { driveFileId: next.id, version: next.version, fileName: next.name } };
     },
     async deleteBlock(id: string) { const file = fileByBlockId.get(id); if (file) await driveFetch(`/drive/v3/files/${encodeURIComponent(file.id)}`, { method: 'DELETE' }); fileByBlockId.delete(id); },
     async loadSettings<T>(fallback: T): Promise<T> {

@@ -5,6 +5,7 @@ import { MathTitle } from './MathTitle';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { normalizeBlockLabel, normalizeBlockTitle, validateBlockMetadata } from '../lib/label-policy';
 import { rankSearchResults } from '../lib/search-ranking';
+import { useDialogFocus } from '../lib/use-dialog-focus';
 
 export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
     const blocksRevision = useStore(state => state.blocksRevision);
@@ -24,6 +25,8 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
     const inputRef = useRef<HTMLInputElement>(null);
     const confirmRef = useRef<HTMLButtonElement>(null);
     const parentRef = useRef<HTMLDivElement>(null);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useDialogFocus(dialogRef, isOpen, onClose, 'input[aria-label="Search blocks"]');
 
     const searchResults = useMemo(() => {
         const recentIds = [
@@ -129,6 +132,8 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
     return (
         <div className="fixed inset-0 bg-black/50 flex justify-center items-start pt-[20vh] z-[200] p-4" onClick={onClose}>
             <div 
+                ref={dialogRef}
+                role="dialog" aria-modal="true" aria-label="Search blocks"
                 className="relative bg-surface border border-outline rounded-xl shadow-2xl w-full max-w-xl overflow-hidden flex flex-col"
                 onClick={e => e.stopPropagation()}
             >
@@ -136,6 +141,9 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                     <Search className="text-secondary" size={20} />
                     <input 
                         ref={inputRef}
+                        aria-label="Search blocks"
+                        aria-controls="block-search-results"
+                        aria-activedescendant={searchResults[selectedIndex] ? `block-search-result-${searchResults[selectedIndex].id}` : undefined}
                         type="text"
                         value={searchQuery}
                         onChange={e => setSearchQuery(e.target.value)}
@@ -145,6 +153,7 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                     />
                 </div>
                 <div 
+                    id="block-search-results"
                     ref={parentRef}
                     className="max-h-[50vh] overflow-y-auto w-full p-2"
                 >
@@ -160,8 +169,9 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                                 const b = searchResults[virtualRow.index];
                                 const i = virtualRow.index;
                                 return (
-                                    <div
+                                    <button type="button"
                                         key={virtualRow.key}
+                                        id={`block-search-result-${b.id}`}
                                         style={{
                                             position: 'absolute',
                                             top: 0,
@@ -171,22 +181,22 @@ export function SearchModal({ isOpen, onClose }: { isOpen: boolean, onClose: () 
                                             transform: `translateY(${virtualRow.start}px)`,
                                         }}
                                         onClick={() => handleSelect(b.id)}
-                                        className={`px-3 py-2 cursor-pointer rounded flex flex-col ${i === selectedIndex ? 'bg-accent/20 text-accent' : 'hover:bg-outline/50'}`}
+                                        className={`px-3 py-2 cursor-pointer rounded flex flex-col text-left ${i === selectedIndex ? 'bg-accent/20 text-accent' : 'hover:bg-outline/50'}`}
                                     >
                                         <MathTitle text={b.title || b.label || 'Untitled'} className="font-semibold" />
                                         <span className={`text-[11px] truncate ${i === selectedIndex ? 'text-accent/70' : 'text-secondary'}`}>{b.label}</span>
-                                    </div>
+                                    </button>
                                 );
                             })}
                         </div>
                     ) : (
                         searchQuery && backendMode !== 'viewer' && !createValidationError && !creationError ? (
-                            <div 
+                            <button type="button"
                                 onClick={() => handleSelect()}
-                                className="px-3 py-3 cursor-pointer rounded bg-accent/20 text-accent flex flex-col items-center justify-center text-center"
+                                className="w-full px-3 py-3 cursor-pointer rounded bg-accent/20 text-accent flex flex-col items-center justify-center text-center"
                             >
                                 <span className="font-semibold flex items-center gap-2"><Plus size={16} /> Create "{searchQuery}"</span>
-                            </div>
+                            </button>
                         ) : (
                             <div className={`p-4 text-center text-sm ${createValidationError || creationError ? 'text-red-400' : 'text-secondary'}`} role={createValidationError || creationError ? 'alert' : undefined}>
                                 {creationError || createValidationError || 'No blocks found'}

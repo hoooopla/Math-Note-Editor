@@ -4,6 +4,23 @@ test.beforeEach(async ({ request }) => {
     expect((await request.post('/api/test/reset')).ok()).toBeTruthy();
 });
 
+test('renders headings when an existing note loads without an edit', async ({ page, request }) => {
+    const label = `test:loaded-headings-${Date.now()}`;
+    const created = await request.post('/api/blocks', {
+        data: { title: 'Loaded headings', label, content: '# Setup\n\nText\n\n## Result\n\nMore text' }
+    });
+    expect(created.ok()).toBeTruthy();
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(label);
+    await search.press('Enter');
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await expect(editor.locator('.cm-heading-line')).toHaveCount(2);
+    await expect(editor.locator('.cm-heading-level-1')).toContainText('Setup');
+    await expect(editor.locator('.cm-heading-level-2')).toContainText('Result');
+});
+
 test('renders headings flush left in white, with editable full-size inline math', async ({ page }) => {
     await page.goto('/');
     const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();

@@ -102,6 +102,7 @@ export function FindPanel({ onClose }: { onClose: () => void }) {
     const [wholeWord, setWholeWord] = useState(false);
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
     const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+    const [unreadableCount, setUnreadableCount] = useState(0);
     const [loadedRevision, setLoadedRevision] = useState(0);
     const [visibleRevision, setVisibleRevision] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -172,6 +173,7 @@ export function FindPanel({ onClose }: { onClose: () => void }) {
     }, [scope, activeTab]);
     useEffect(() => {
         resetContentFindCache(workspaceRevision);
+        setUnreadableCount(0);
         if (!indexedQuery || scope === 'visible') { setProgress(null); return; }
         const indexedBlocks = blocksRef.current;
         let cancelled = false;
@@ -201,8 +203,9 @@ export function FindPanel({ onClose }: { onClose: () => void }) {
             while (!cancelled && next < missing.length) {
                 const id = missing[next++];
                 let body: string | null = null;
-                try { body = await readIndexedBody(id, workspaceRevision); } catch { /* individual unreadable note is skipped */ }
+                try { body = await readIndexedBody(id, workspaceRevision); } catch { body = null; }
                 if (!cancelled) {
+                    if (body === null) setUnreadableCount(value => value + 1);
                     if (body && scope === 'tabs') visitLinks(body, indexedBlocks[id].label);
                     done++;
                     setProgress({ done, total: missing.length });
@@ -555,6 +558,8 @@ export function FindPanel({ onClose }: { onClose: () => void }) {
         </div>
         {scope === 'visible' && <p className="px-3 pb-2 text-[11px] text-secondary">Displayed text and titles in this tab, including expanded notes and open explanations</p>}
         {scope === 'tabs' && <p className="px-3 pb-2 text-[11px] text-secondary">Displayed text and titles across open tabs, including expanded notes</p>}
+        {scope === 'all' && <p className="px-3 pb-2 text-[11px] text-secondary">Results are limited to 200 matches per note and 1,000 overall. Refine the query to see later matches.</p>}
+        {unreadableCount > 0 && <p className="px-3 pb-2 text-[11px] text-amber-400" role="status">{unreadableCount} note{unreadableCount === 1 ? '' : 's'} could not be read; results are incomplete.</p>}
         <div ref={resultListRef} className="max-h-[min(45vh,22rem)] overflow-y-auto border-t border-outline p-1" role="listbox" aria-label="Content search results">
             {results.length ? <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
                 {rowVirtualizer.getVirtualItems().map(row => {
@@ -566,7 +571,7 @@ export function FindPanel({ onClose }: { onClose: () => void }) {
                         <span className="block truncate text-secondary">{result.kind === 'title' || result.kind === 'visibleTitle' ? 'Title: ' : result.kind === 'label' ? 'Label: ' : result.kind === 'math' ? 'Math: ' : ''}<ResultExcerpt content={result.displayContent ?? result.content} match={result.displayMatch ?? result.match} /></span>
                     </button>;
                 })}
-            </div> : <p className="p-3 text-center text-xs text-secondary">{!query ? 'Type to find in notes' : queryIsSettling || progress ? 'Searching notes…' : 'No matches'}</p>}
+            </div> : <p className="p-3 text-center text-xs text-secondary">{!query ? 'Type to find in notes' : queryIsSettling || progress ? 'Searching notes…' : unreadableCount ? 'No matches in readable notes' : 'No matches'}</p>}
         </div>
     </aside>;
 }

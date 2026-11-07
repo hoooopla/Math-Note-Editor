@@ -70,7 +70,8 @@ export const headingPlugin = ViewPlugin.fromClass(class {
 
     update(update: ViewUpdate) {
         if (update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged ||
-            update.startState.readOnly !== update.state.readOnly) {
+            update.startState.readOnly !== update.state.readOnly ||
+            syntaxTree(update.startState) !== syntaxTree(update.state)) {
             this.decorations = headingDecorations(update.view);
         }
     }

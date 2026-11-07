@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { chromium } from 'playwright';
 
 const projectDir = path.resolve(import.meta.dirname, '..');
 const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'math-note-desktop-smoke-'));
@@ -83,12 +84,34 @@ try {
   });
   if (!noteResponse.ok) throw new Error('Could not save a note in the desktop workspace.');
   const note = await noteResponse.json();
+  const currentRevision = async () => (await (await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`)).json()).revision;
   const updateResponse = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...note, content: 'Updated shared workspace' })
+    body: JSON.stringify({ ...note, content: 'Updated shared workspace', baseRevision: note.revision })
   });
   if (!updateResponse.ok) throw new Error('Could not update a note in the desktop workspace.');
+
+  const recoveryDraft = { id: note.id, title: note.title, label: note.label,
+    content: 'Unsaved desktop edit', baseRevision: note.revision, updatedAt: Date.now() };
+  const writeDraft = async draft => fetch(`${url}/api/recovery/${encodeURIComponent(note.id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft)
+  });
+  if (!(await writeDraft(recoveryDraft)).ok) throw new Error('Could not write a desktop recovery draft.');
+  if (!(await writeDraft({ ...recoveryDraft, content: 'Old draft', updatedAt: recoveryDraft.updatedAt - 1 })).ok) {
+    throw new Error('Could not test recovery write ordering.');
+  }
+  const diskDraftFiles = await fs.readdir(path.join(workspace, '.math-note-recovery'));
+  if (diskDraftFiles.length !== 1) throw new Error('Desktop recovery draft was not written to one workspace file.');
+  const diskDraft = JSON.parse(await fs.readFile(path.join(workspace, '.math-note-recovery', diskDraftFiles[0]), 'utf-8'));
+  const listedDrafts = await (await fetch(`${url}/api/recovery`)).json();
+  if (diskDraft.content !== recoveryDraft.content || listedDrafts.drafts?.[0]?.content !== recoveryDraft.content) {
+    throw new Error('An older recovery write replaced the newer draft on disk.');
+  }
+  if (!(await fetch(`${url}/api/recovery/${encodeURIComponent(note.id)}`, { method: 'DELETE' })).ok ||
+      (await (await fetch(`${url}/api/recovery`)).json()).drafts?.length !== 0) {
+    throw new Error('Could not discard a desktop recovery draft.');
+  }
 
   await fs.access(path.join(workspace, 'setting', 'settings.json'));
   const backupDirectory = path.join(workspace, '.math-note-backups');
@@ -121,7 +144,7 @@ try {
   const caseRenameResponse = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...note, title: 'desktop smoke test', content: 'Shared workspace' })
+    body: JSON.stringify({ ...note, title: 'desktop smoke test', content: 'Shared workspace', baseRevision: await currentRevision() })
   });
   if (!caseRenameResponse.ok) throw new Error(`Could not apply a case-only title rename: ${await caseRenameResponse.text()}`);
   await new Promise(resolve => setTimeout(resolve, 350));
@@ -141,23 +164,78 @@ try {
   const ordinaryRenameResponse = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...note, title: 'Renamed desktop note', content: 'Shared workspace' })
+    body: JSON.stringify({ ...note, title: 'Renamed desktop note', content: 'Shared workspace', baseRevision: await currentRevision() })
   });
   if (!ordinaryRenameResponse.ok) throw new Error(`Could not apply an ordinary title rename: ${await ordinaryRenameResponse.text()}`);
   await new Promise(resolve => setTimeout(resolve, 350));
   const afterOrdinaryRename = (await fs.readdir(workspace)).filter(file => file.endsWith('.md') && file.includes(note.id));
-  if (afterOrdinaryRename.length !== 1 || !afterOrdinaryRename[0].startsWith('Renamed desktop note')) {
-    throw new Error(`An ordinary title rename left an unexpected file set: ${afterOrdinaryRename.join(', ')}`);
+  if (afterOrdinaryRename.length !== 1 || afterOrdinaryRename[0] !== noteFilename) {
+    throw new Error(`A title rename changed the stable note filename: ${afterOrdinaryRename.join(', ')}`);
   }
   const blocksAfterOrdinaryRename = await (await fetch(`${url}/api/blocks?metaOnly=true`)).json();
   if (!blocksAfterOrdinaryRename.some(block => block.id === note.id && block.title === 'Renamed desktop note')) {
     throw new Error('The filesystem watcher removed the note after an ordinary title rename.');
   }
+  const finderFilename = `Finder renamed--${note.id}.md`;
+  await fs.rename(path.join(workspace, noteFilename), path.join(workspace, finderFilename));
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const afterFinderRename = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`);
+  if (!afterFinderRename.ok || (await afterFinderRename.json()).title !== 'Renamed desktop note') {
+    throw new Error('Renaming a Markdown file outside the app lost the note.');
+  }
+  const beforeExternalEdit = await currentRevision();
+  const renamedText = await fs.readFile(path.join(workspace, finderFilename), 'utf-8');
+  await fs.writeFile(path.join(workspace, finderFilename), renamedText.replace('Shared workspace', 'Changed in Finder'));
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const current = await (await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`)).json();
+    if (current.content.includes('Changed in Finder')) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const externallyEdited = await (await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`)).json();
+  if (!externallyEdited.content.includes('Changed in Finder')) throw new Error('An external Markdown edit did not appear in the workspace.');
+  const staleExternalWrite = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...externallyEdited, content: 'Stale app edit', baseRevision: beforeExternalEdit })
+  });
+  if (staleExternalWrite.status !== 409 || !(await fs.readFile(path.join(workspace, finderFilename), 'utf-8')).includes('Changed in Finder')) {
+    throw new Error('An old app revision overwrote an external Markdown edit.');
+  }
+  const restartDraft = { id: note.id, title: externallyEdited.title, label: externallyEdited.label,
+    content: 'Draft across desktop restart', baseRevision: externallyEdited.revision, updatedAt: Date.now() + 1000 };
+  if (!(await writeDraft(restartDraft)).ok) throw new Error('Could not save the restart recovery draft.');
+  await fs.writeFile(path.join(workspace, '.math-note-recovery', 'damaged.json'), '{invalid recovery json');
   if (await fs.access(path.join(workspace, 'legacy-note.md.bak')).then(() => true, () => false)) {
     throw new Error('A legacy sidecar backup was not removed after migration.');
   }
   if (await fs.readFile(path.join(backupDirectory, 'legacy-note.md.bak'), 'utf-8') !== 'legacy backup') {
     throw new Error('A legacy sidecar backup was not migrated into the centralized backup folder.');
+  }
+  server.kill();
+  await once(server, 'exit');
+  const restartedPort = await availablePort();
+  const restartedUrl = `http://127.0.0.1:${restartedPort}`;
+  const restarted = spawn(process.execPath, [path.join(projectDir, 'desktop-server', 'server.cjs'), '--production', '--port', String(restartedPort)], {
+    cwd: projectDir,
+    env: { ...process.env, MATH_NOTE_DESKTOP: 'true', MATH_NOTE_WORKSPACE: workspace, MATH_NOTE_DIST_DIR: path.join(projectDir, 'dist') },
+    stdio: 'inherit'
+  });
+  let browser;
+  try {
+    await waitForServer(restartedUrl);
+    const drafts = await (await fetch(`${restartedUrl}/api/recovery`)).json();
+    if (drafts.drafts?.[0]?.content !== restartDraft.content) throw new Error('The recovery draft did not survive a desktop server restart.');
+    if (drafts.errors?.length !== 1 || !drafts.errors[0].includes('damaged.json')) {
+      throw new Error('The damaged disk record was not reported alongside the valid draft.');
+    }
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    await page.goto(restartedUrl);
+    await page.getByRole('dialog', { name: 'Review saved drafts' }).getByText('Draft across desktop restart').waitFor();
+  } finally {
+    await browser?.close();
+    restarted.kill();
+    if (restarted.exitCode === null) await Promise.race([once(restarted, 'exit'), new Promise(resolve => setTimeout(resolve, 3000))]);
   }
   console.log('Desktop workspace smoke test passed.');
 } finally {

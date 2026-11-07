@@ -4,12 +4,15 @@ import { X } from 'lucide-react';
 import ForceGraph2D from 'react-force-graph-2d';
 import { SidebarTree } from './LabelTree';
 import { splitPath } from '../lib/utils/path';
+import { useDialogFocus } from '../lib/use-dialog-focus';
 
 export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
     const blocksRevision = useStore(state => state.blocksRevision);
     const blocks = useMemo(() => getOrderedBlocks(useStore.getState()), [blocksRevision]);
     const openBlockInTab = useStore(state => state.openBlockInTab);
     const containerRef = useRef<HTMLDivElement>(null);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useDialogFocus(dialogRef, isOpen, onClose);
     const fgRef = useRef<any>(null);
     const [dimensions, setDimensions] = React.useState({ width: 800, height: 600 });
     const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
@@ -89,10 +92,10 @@ export function GraphModal({ isOpen, onClose }: { isOpen: boolean, onClose: () =
 
     return (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-base w-full max-w-5xl h-[80vh] rounded-xl shadow-2xl flex flex-col border border-outline overflow-hidden">
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="graph-view-title" className="bg-base w-full max-w-5xl h-[80vh] rounded-xl shadow-2xl flex flex-col border border-outline overflow-hidden">
                 <div className="flex items-center justify-between p-4 border-b border-outline">
-                    <h2 className="text-lg font-semibold">Graph View</h2>
-                    <button onClick={onClose} className="p-1 hover:bg-outline rounded-lg text-secondary transition-colors">
+                    <h2 id="graph-view-title" className="text-lg font-semibold">Graph View</h2>
+                    <button onClick={onClose} aria-label="Close graph view" className="p-1 hover:bg-outline rounded-lg text-secondary transition-colors">
                         <X size={20} />
                     </button>
                 </div>

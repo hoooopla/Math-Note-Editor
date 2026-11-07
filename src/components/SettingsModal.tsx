@@ -4,6 +4,7 @@ import { X, Plus, Trash2, ArrowUp, ArrowDown, ChevronDown, Image as ImageIcon } 
 import { BackupRecovery } from './BackupRecovery';
 import { ManageAssets } from './ManageAssets';
 import { buildInfo } from '../lib/build-info';
+import { validateEditorSettings } from '../lib/settings-validation';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -230,6 +231,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             }
             const preferences = { ...(parsed as Record<string, unknown>) };
             delete preferences.workspaceSession;
+            const issues = validateEditorSettings(preferences);
+            if (issues.length) throw new Error(`Invalid settings file: ${issues.join(' ')}`);
             const saved = await saveSettings({ ...settings, ...preferences });
             setImportMessage(saved ? 'Settings imported into this Google Drive folder. Open tabs were kept separate.' : useStore.getState().persistenceError || 'Could not import settings.');
         } catch (error) {

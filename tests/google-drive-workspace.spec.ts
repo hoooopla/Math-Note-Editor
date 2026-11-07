@@ -47,7 +47,7 @@ async function installGoogleDriveMock(
             const assetsQuery = query.includes("'assets-folder' in parents");
             const figuresQuery = query.includes("'figures-folder' in parents");
             return route.fulfill({ json: { files: [
-                ...(rootQuery ? [{ id: 'file-1', name: 'Drive Note.md', mimeType: 'text/markdown', version: '1' }] : []),
+                ...(rootQuery ? [{ id: 'file-1', name: 'Drive Note.md', mimeType: 'text/markdown', version: remoteVersion }] : []),
                 ...(nestedSettings && rootQuery ? [{ id: 'setting-folder', name: 'setting', mimeType: 'application/vnd.google-apps.folder' }] : []),
                 ...(settingsText && (nestedSettings ? settingFolderQuery : rootQuery) ? [{ id: 'settings-1', name: settingsName, mimeType: 'application/json', version: String(settingsVersion) }] : []),
                 ...(withAssets && rootQuery ? [{ id: 'assets-folder', name: 'assets', mimeType: 'application/vnd.google-apps.folder' }] : []),
@@ -200,6 +200,25 @@ test('stops instead of overwriting a newer Drive file', async ({ page }) => {
     await editor.blur();
 
     await expect(page.getByRole('alert')).toContainText('changed in Google Drive');
+    expect(drive.patched()).toBe(0);
+});
+
+test('Drive conflict draft survives reload and keeps the newer file when copied', async ({ page }) => {
+    const drive = await installGoogleDriveMock(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+    const editor = page.locator('[role="tabpanel"][aria-hidden="false"] .cm-content').first();
+    await expect(editor).toContainText('Original Drive content');
+    drive.setRemoteVersion('2');
+    await editor.fill('Unsent Drive draft');
+    await expect(page.getByRole('alert')).toContainText('changed in Google Drive');
+    await page.reload();
+    await page.getByRole('button', { name: 'Choose Google Drive Folder' }).click();
+    const review = page.getByRole('dialog', { name: 'Review saved drafts' });
+    await expect(review).toContainText('Unsent Drive draft');
+    await expect(review.getByRole('button', { name: 'Restore in note' })).toHaveCount(0);
+    await review.getByRole('button', { name: 'Save as new note' }).click();
+    await expect(page.getByRole('tab', { name: /Drive Note \(recovered\)/ })).toBeVisible();
     expect(drive.patched()).toBe(0);
 });
 

@@ -1,7 +1,7 @@
 import { BlockData } from './index';
 import { v4 as uuidv4 } from 'uuid';
 import { computeReferences, metadataText, parseFrontmatter, stringifyFrontmatter } from '../lib/block-metadata';
-import { makeBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
+import { makeInitialBlockFilename, normalizeBlockLabel, normalizeBlockTitle, validateBlockLabel, validateBlockMetadata, validateBlockTitle } from '../lib/label-policy';
 import { applySafeRelabelPlan, buildSafeRelabelPlan, relabelPlanSignatureInput, SafeRelabelPlan } from '../lib/safe-relabel';
 import { googleDriveWorkspace } from '../lib/google-drive-workspace';
 import { loadDriveSession, saveDriveSession } from '../lib/drive-session-storage';
@@ -146,11 +146,13 @@ export interface BackendApi {
     loadBlocks: () => Promise<BlockData[]>;
     loadBlockContent: (id: string) => Promise<BlockData | null>;
     addBlock: (data: Partial<BlockData>) => Promise<BlockData>;
+    restoreBlock: (block: BlockData) => Promise<BlockData>;
     updateBlock: (id: string, data: BlockData) => Promise<{ block: BlockData, updatedBlocks?: BlockData[] }>;
     repairDuplicateLabel: (id: string, newLabel: string) => Promise<BlockData>;
+    undoDuplicateLabelRepair: (id: string, currentLabel: string, oldLabel: string) => Promise<BlockData>;
     previewRelabel: (oldPrefix: string, newPrefix: string) => Promise<SafeRelabelPlan>;
     commitRelabel: (plan: SafeRelabelPlan) => Promise<{ plan: SafeRelabelPlan, updatedBlocks: BlockData[] }>;
-    deleteBlock: (id: string) => Promise<void>;
+    deleteBlock: (id: string, baseRevision?: string) => Promise<void>;
 }
 
 let dirHandle: FileSystemDirectoryHandle | null = null;
@@ -678,11 +680,15 @@ export const api: BackendApi = {
             try {
                 for (const block of updatedBlocks) written.push(await googleDriveWorkspace.updateBlock(block));
             } catch (error) {
+                const rollbackErrors: string[] = [];
                 for (const block of written) {
                     const original = blocks.find(candidate => candidate.id === block.id);
-                    if (original) await googleDriveWorkspace.updateBlock(original).catch(() => {});
+                    if (original) {
+                        try { await googleDriveWorkspace.updateBlock(original); }
+                        catch (rollbackError) { rollbackErrors.push(`${original.title}: ${String(rollbackError)}`); }
+                    }
                 }
-                throw new Error(`Could not update every note. The original and copied image remain available. ${String(error)}`);
+                throw new Error(`Could not update every note. The original and copied image remain available. ${String(error)}${rollbackErrors.length ? ` Rollback also failed for ${rollbackErrors.join('; ')}. Review those notes in Drive.` : ''}`);
             }
             let warning: string | undefined;
             try { await googleDriveWorkspace.deleteAsset(plan.source); }
@@ -732,13 +738,15 @@ export const api: BackendApi = {
                         // Store the relative path instead of just the name in the map, or use data.id
                         const fileId = currentPath ? `${currentPath}/${entry.name}`.replace('.md', '') : entry.name.replace('.md', '');
                         const id = metadataText(data.id, fileId);
+                        const fileName = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+                        if (blocksMap.has(id)) throw new Error(`Two Markdown files use note ID "${id}": "${blocksMap.get(id)?._fileMeta?.fileName}" and "${fileName}". Give one file a different ID before opening this folder.`);
                         blocksMap.set(id, {
                             id,
                             title: normalizeBlockTitle(metadataText(data.title)),
                             label: normalizeBlockLabel(metadataText(data.label)),
                             references: computeReferences(content),
                             hasContent: content.trim().length > 0,
-                            _fileMeta: { fileName: currentPath ? `${currentPath}/${entry.name}` : entry.name }
+                            _fileMeta: { fileName }
                         });
                     } else if (entry.kind === 'directory') {
                         const newPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
@@ -803,7 +811,7 @@ export const api: BackendApi = {
             if (metadataError) throw new Error(metadataError);
             const block = { id, title, label, content: data.content || "", references: computeReferences(data.content || "") };
 
-            const baseFilename = makeBlockFilename(block.title, block.label, block.id);
+            const baseFilename = makeInitialBlockFilename(block.title, block.id);
             let newFilename = baseFilename;
             let counter = 1;
             while(true) {
@@ -822,6 +830,47 @@ export const api: BackendApi = {
         }
         throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot create blocks' : 'No writable backend is connected');
     },
+    restoreBlock: async (block) => {
+        const id = block.id;
+        const title = normalizeBlockTitle(metadataText(block.title));
+        const label = normalizeBlockLabel(metadataText(block.label));
+        const content = block.content;
+        const metadataError = validateBlockMetadata(title, label);
+        if (typeof id !== 'string' || !id || id.length > 256) throw new Error('A valid note ID is required');
+        if (metadataError) throw new Error(metadataError);
+        if (typeof content !== 'string') throw new Error('Full note content is required to restore a deleted note');
+        const restored = { id, title, label, content, hasContent: content.trim().length > 0, references: computeReferences(content) };
+        if (useServer) {
+            const res = await fetch('/api/blocks/restore', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(restored)
+            });
+            await requireOk(res, 'Restoring block');
+            return await res.json();
+        }
+        if (api.mode === 'google') return googleDriveWorkspace.restoreBlock(restored);
+        if (api.mode === 'local' && dirHandle) {
+            const existing = await api.loadBlocks();
+            if (existing.some(candidate => candidate.id === id)) throw new Error(`Note ID "${id}" already exists`);
+            if (existing.some(candidate => candidate.label === label)) throw new Error(`Label "${label}" already exists`);
+            const filename = makeInitialBlockFilename(title, id);
+            let fileHandle: FileSystemFileHandle;
+            try {
+                fileHandle = await dirHandle.getFileHandle(filename);
+                throw new Error(`A file named "${filename}" already exists`);
+            } catch (error) {
+                if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error;
+            }
+            fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+            try {
+                await replaceLocalFile(fileHandle, stringifyFrontmatter({ id, title, label }, content));
+            } catch (error) {
+                await dirHandle.removeEntry(filename).catch(() => {});
+                throw error;
+            }
+            return restored;
+        }
+        throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot restore blocks' : 'No writable backend is connected');
+    },
     updateBlock: async (id, block) => {
         const normalizedBlock = {
             ...block,
@@ -832,7 +881,7 @@ export const api: BackendApi = {
         if (metadataError) throw new Error(metadataError);
         block = normalizedBlock;
         if (useServer) {
-            const body = JSON.stringify(block);
+            const body = JSON.stringify({ ...block, baseRevision: block.revision });
             const bodyBytes = new Blob([body]).size;
             // The Fetch limit applies to the total size of *in-flight* keepalive
             // bodies, not each request independently. Large or concurrent saves
@@ -859,51 +908,8 @@ export const api: BackendApi = {
         if (api.mode === "local" && dirHandle) {
             const location = await getFileLocationByBlockId(id);
             if (location) {
-                const filename = location.name;
-                const expectedFilename = makeBlockFilename(block.title, block.label, block.id);
                 const contents = stringifyFrontmatter({ id: block.id, title: block.title, label: block.label }, block.content || "");
-                if (filename !== expectedFilename) {
-                    let expectedHandle: FileSystemFileHandle | null = null;
-                    try { expectedHandle = await location.directory.getFileHandle(expectedFilename); }
-                    catch (error) {
-                        if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error;
-                    }
-                    const sameEntry = expectedHandle
-                        ? (typeof expectedHandle.isSameEntry === 'function'
-                            ? await expectedHandle.isSameEntry(location.handle)
-                            : expectedHandle.name === location.handle.name)
-                        : false;
-                    if (sameEntry) {
-                        // A case-only rename may resolve to the existing entry
-                        // on macOS or Windows. Do not create and then remove an
-                        // alias of the same note; retain its current spelling.
-                        await writeLocalFile(location, contents);
-                        block.references = computeReferences(block.content || "");
-                        return { block };
-                    }
-                    let newFilename = expectedFilename;
-                    let counter = 1;
-                    while(true) {
-                        try {
-                            await location.directory.getFileHandle(newFilename);
-                            newFilename = expectedFilename.replace(/\.md$/, `-${counter}.md`);
-                            counter++;
-                        } catch(e) {
-                            break;
-                        }
-                    }
-                    await backupLocalFile(location);
-                    const newHandle = await location.directory.getFileHandle(newFilename, { create: true });
-                    try {
-                        await replaceLocalFile(newHandle, contents);
-                        await location.directory.removeEntry(filename);
-                    } catch(error) {
-                        await location.directory.removeEntry(newFilename).catch(() => {});
-                        throw error;
-                    }
-                } else {
-                    await writeLocalFile(location, contents);
-                }
+                await writeLocalFile(location, contents);
                 
                 // Client-side cascades (simplified for FS mode)
                 block.references = computeReferences(block.content || "");
@@ -939,6 +945,25 @@ export const api: BackendApi = {
             return result.block;
         }
         throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot repair labels' : 'No writable backend is connected');
+    },
+    undoDuplicateLabelRepair: async (id, currentLabel, oldLabel) => {
+        if (useServer) {
+            const res = await fetch(`/api/workspace/duplicate-labels/${encodeURIComponent(id)}/undo-resolve`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ currentLabel, oldLabel })
+            });
+            await requireOk(res, 'Undoing duplicate label repair');
+            return await res.json();
+        }
+        if ((api.mode === 'local' && dirHandle) || api.mode === 'google') {
+            const blocks = api.mode === 'google' ? await loadAllGoogleBlocks() : await loadAllLocalBlocks();
+            const current = blocks.find(block => block.id === id);
+            if (!current || current.label !== currentLabel || !blocks.some(block => block.id !== id && block.label === oldLabel)) {
+                throw new Error('The duplicate label repair changed since it was recorded.');
+            }
+            return (await api.updateBlock(id, { ...current, label: oldLabel })).block;
+        }
+        throw new Error('No writable backend is connected');
     },
     previewRelabel: async (oldPrefix, newPrefix) => {
         if (useServer) {
@@ -996,17 +1021,28 @@ export const api: BackendApi = {
             const planned = applySafeRelabelPlan(blocks, current);
             if (api.mode === 'google') {
                 const updatedBlocks: BlockData[] = [];
-                for (let index = 0; index < blocks.length; index++) {
-                    const before = blocks[index];
-                    const after = planned[index];
-                    if (before.label === after.label && before.content === after.content) continue;
-                    updatedBlocks.push(await googleDriveWorkspace.updateBlock({
-                        ...before,
-                        label: after.label,
-                        content: after.content,
-                        references: computeReferences(after.content || ''),
-                        hasContent: (after.content || '').trim().length > 0
-                    }));
+                try {
+                    for (let index = 0; index < blocks.length; index++) {
+                        const before = blocks[index];
+                        const after = planned[index];
+                        if (before.label === after.label && before.content === after.content) continue;
+                        updatedBlocks.push(await googleDriveWorkspace.updateBlock({
+                            ...before,
+                            label: after.label,
+                            content: after.content,
+                            references: computeReferences(after.content || ''),
+                            hasContent: (after.content || '').trim().length > 0
+                        }));
+                    }
+                } catch (error) {
+                    const rollbackErrors: string[] = [];
+                    for (const updated of [...updatedBlocks].reverse()) {
+                        const original = blocks.find(candidate => candidate.id === updated.id);
+                        if (!original) continue;
+                        try { await googleDriveWorkspace.updateBlock(original); }
+                        catch (rollbackError) { rollbackErrors.push(`${original.title}: ${String(rollbackError)}`); }
+                    }
+                    throw new Error(`Rename stopped before every note was updated. ${String(error)}${rollbackErrors.length ? ` Rollback also failed for ${rollbackErrors.join('; ')}. Review those notes in Drive.` : ''}`);
                 }
                 return { plan: current, updatedBlocks };
             }
@@ -1047,9 +1083,9 @@ export const api: BackendApi = {
         }
         throw new Error(api.mode === 'viewer' ? 'Read-only viewer cannot relabel blocks' : 'No writable backend is connected');
     },
-    deleteBlock: async (id) => {
+    deleteBlock: async (id, baseRevision) => {
         if (useServer) {
-            const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            const res = await fetch(`/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseRevision }) });
             await requireOk(res, 'Deleting block');
         } else if (api.mode === 'google') {
             await googleDriveWorkspace.deleteBlock(id);
