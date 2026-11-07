@@ -1,4 +1,4 @@
-import { isEscaped, pairedDollarPositions, syntaxPositions, parseEmbeddedText as parseCore, resolveEmbeddedLabel as resolveCore } from './note-display-core.mjs';
+import { isEscaped, pairedDollarPositions, syntaxPositions, parseEmbeddedText as parseCore, parseEmbeddedLinks as parseLinksCore, resolveEmbeddedLabel as resolveCore } from './note-display-core.mjs';
 
 export interface EmbeddedLinkSyntax {
     from: number;
@@ -25,60 +25,7 @@ export function parseEmbeddedText(rawInput: string): Omit<EmbeddedLinkSyntax, "f
 }
 
 export function parseEmbeddedLinks(documentText: string): EmbeddedLinkSyntax[] {
-    const links: EmbeddedLinkSyntax[] = [];
-    const documentMathDollars = new Set<number>();
-    let lineStart = 0;
-    while (lineStart <= documentText.length) {
-        const newline = documentText.indexOf("\n", lineStart);
-        const lineEnd = newline === -1 ? documentText.length : newline;
-        for (const position of pairedDollarPositions(documentText.slice(lineStart, lineEnd))) {
-            documentMathDollars.add(lineStart + position);
-        }
-        if (newline === -1) break;
-        lineStart = newline + 1;
-    }
-    let documentMath = false;
-    for (let index = 0; index < documentText.length - 1; index++) {
-        const character = documentText[index];
-        if (character === "\n") {
-            documentMath = false;
-            continue;
-        }
-        if (documentMathDollars.has(index)) {
-            documentMath = !documentMath;
-            continue;
-        }
-        if (documentMath || character !== "[" || documentText[index + 1] !== "[" || isEscaped(documentText, index)) continue;
-
-        const innerStart = index + 2;
-        const lineEnd = documentText.indexOf("\n", innerStart);
-        const limit = lineEnd === -1 ? documentText.length : lineEnd;
-        const inner = documentText.slice(innerStart, limit);
-        const pairedDollars = pairedDollarPositions(inner);
-        let innerMath = false;
-        let close = -1;
-        for (let offset = 0; offset < inner.length - 1; offset++) {
-            if (pairedDollars.has(offset)) {
-                innerMath = !innerMath;
-                continue;
-            }
-            if (!innerMath && inner[offset] === "]" && inner[offset + 1] === "]" && !isEscaped(inner, offset)) {
-                close = innerStart + offset;
-                break;
-            }
-        }
-        if (close === -1) continue;
-
-        const rawText = documentText.slice(innerStart, close);
-        links.push({
-            from: index,
-            to: close + 2,
-            rawText: documentText.slice(index, close + 2),
-            ...parseEmbeddedText(rawText)
-        });
-        index = close + 1;
-    }
-    return links;
+    return parseLinksCore(documentText);
 }
 
 export function resolveEmbeddedLabel(parsed: Pick<EmbeddedLinkSyntax, "label" | "relative">, parentLabel: string): string {

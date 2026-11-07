@@ -4,7 +4,7 @@ import path from 'node:path';
 import MarkdownIt from 'markdown-it';
 import katex from 'katex';
 import sanitizeHtml from 'sanitize-html';
-import { parseEmbeddedText, resolveEmbeddedLabel, standoutDisplayTitle, splitMathTitle } from '../../src/lib/note-display-core.mjs';
+import { parseEmbeddedText, parseEmbeddedLinks, resolveEmbeddedLabel, standoutDisplayTitle, splitMathTitle } from '../../src/lib/note-display-core.mjs';
 
 const escape = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const slug = s => encodeURIComponent(s);
@@ -69,29 +69,31 @@ function reference(raw, note, stack) {
 }
 function render(note, stack=[note.label]) {
   const md = new MarkdownIt({html:true,linkify:true,typographer:false});
+  const linkCache = new Map();
+  const linksFor = text => {
+    if (!linkCache.has(text)) linkCache.set(text, parseEmbeddedLinks(text));
+    return linkCache.get(text);
+  };
   const trustedTokens=[];
   const tokenPrefix=`KATEX${crypto.randomUUID().replaceAll('-','')}TOKEN`;
   const trustedToken=value=>{ const index=trustedTokens.push(value)-1; return `${tokenPrefix}${index}END`; };
   const mathToken=(tex,display)=>trustedToken(math(tex,display));
   md.block.ruler.before('paragraph','block_reference',(state,start,end,silent) => {
     const line = state.src.slice(state.bMarks[start]+state.tShift[start],state.eMarks[start]).trim();
-    const match = /^\[\[([^\]\n]+)\]\]$/.exec(line);
-    if (!match) return false;
+    const link=linksFor(line).find(item=>item.from===0 && item.to===line.length);
+    if (!link) return false;
     if (silent) return true;
-    const token=state.push('block_reference','',0); token.content=match[1]; state.line=start+1; return true;
+    const token=state.push('block_reference','',0); token.content=link.text; state.line=start+1; return true;
   });
   md.renderer.rules.block_reference = (tokens,i) => {const parts=reference(tokens[i].content,note,stack);return trustedToken(parts.title+parts.body);};
   md.inline.ruler.before('link','note_reference',(state,silent) => {
-    if (state.src.slice(state.pos,state.pos+2)!=='[[' || state.pos>0 && state.src[state.pos-1]==='\\') return false;
-    const end=state.src.indexOf(']]',state.pos+2);
-    if (end<0 || state.src.slice(state.pos+2,end).includes('\n')) return false;
+    if (state.src.slice(state.pos,state.pos+2)!=='[[') return false;
+    const link=linksFor(state.src).find(item=>item.from===state.pos);
+    if (!link) return false;
     if (!silent) {
-      const t=state.push('note_reference','',0);t.content=state.src.slice(state.pos+2,end);
-      const from=state.src.lastIndexOf('\n',state.pos-1)+1;
-      const lineEnd=state.src.indexOf('\n',end+2);
-      t.meta={standalone:!state.src.slice(from,state.pos).trim() && !state.src.slice(end+2,lineEnd<0?state.src.length:lineEnd).trim()};
+      const t=state.push('note_reference','',0);t.content=link.text;
     }
-    state.pos=end+2; return true;
+    state.pos=link.to; return true;
   });
   md.renderer.rules.note_reference = (tokens,i) => {const parts=reference(tokens[i].content,note,stack);return trustedToken(parts.title+parts.body);};
   // The title stays in its sentence; the body occupies the next visual row.
