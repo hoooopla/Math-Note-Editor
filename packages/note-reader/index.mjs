@@ -59,12 +59,11 @@ function reference(raw, note, stack) {
   const title=alias || target.title;
   const displayTitle=describeEmbeddedPresentation(raw,note.label,title).displayTitle;
   const link = `<a class="note-reference${standout?' standout':''}" href="${urlFor(target)}">${renderTitle(displayTitle)}</a>`;
-  if (!open) return {title:link,body:''};
   if (stack.includes(target.label)) return {title:`${link}<span class="embed-cycle" title="Circular embed: already shown above"> ↩</span>`,body:''};
   const kind=standout?'standout-embed':'inline-embed';
   const id=`embed-body-${++embedSequence}`;
-  const button=`<button type="button" class="embed-title ${kind}" aria-expanded="true" aria-controls="${id}" data-outline-title="${escape(displayTitle)}">${renderTitle(displayTitle)}</button>`;
-  const body=`<div class="note-embed ${kind}" id="${id}"><div class="embed-content">${render(target,[...stack,target.label])}</div><a class="embed-open" href="${urlFor(target)}" aria-label="Open ${escape(target.title)} as a note">Open note ↗</a></div>`;
+  const button=`<button type="button" class="embed-title ${kind}" aria-expanded="${open}" aria-controls="${id}" data-outline-title="${escape(displayTitle)}">${renderTitle(displayTitle)}</button>`;
+  const body=`<div class="note-embed ${kind}" id="${id}"${open?'':' hidden'}><div class="embed-content">${render(target,[...stack,target.label])}</div><a class="embed-open" href="${urlFor(target)}" aria-label="Open ${escape(target.title)} as a note">Open note ↗</a></div>`;
   return {title:standout?`<div class="standout-title-row">${button}</div>`:button,body,standout};
 }
 function render(note, stack=[note.label]) {
