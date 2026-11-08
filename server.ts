@@ -1208,8 +1208,24 @@ async function startServer() {
                 const id = metadataText(parsed.data.id, filename.replace(".md", ""));
                 const mappedFilename = blockIdToFileMap.get(id);
                 if (mappedFilename && mappedFilename !== filename) {
-                    console.error(`Ignoring duplicate block id "${id}" in "${filename}"; already loaded from "${mappedFilename}"`);
-                    return;
+                    // Some watchers report only the new path for an external
+                    // rename. Check the old path on disk before treating the
+                    // new path as a duplicate of the same note.
+                    try {
+                        const mappedPath = path.join(BLOCKS_DIR, mappedFilename);
+                        rejectWorkspaceSymlinks(mappedPath);
+                        const mappedText = await fs.readFile(mappedPath, 'utf-8');
+                        const mappedId = metadataText(parseFrontmatter(mappedText).data.id, path.basename(mappedFilename, '.md'));
+                        if (mappedId === id) {
+                            console.error(`Ignoring duplicate block id "${id}" in "${filename}"; already loaded from "${mappedFilename}"`);
+                            return;
+                        }
+                    } catch (error) {
+                        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                            console.warn(`Could not verify the previous path for note "${id}": ${error}`);
+                            return;
+                        }
+                    }
                 }
                 
                 const existing = blocksMap.get(id);

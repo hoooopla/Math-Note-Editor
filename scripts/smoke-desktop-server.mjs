@@ -178,13 +178,29 @@ try {
   }
   const finderFilename = `Finder renamed--${note.id}.md`;
   await fs.rename(path.join(workspace, noteFilename), path.join(workspace, finderFilename));
-  await new Promise(resolve => setTimeout(resolve, 400));
-  const afterFinderRename = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`);
-  if (!afterFinderRename.ok || (await afterFinderRename.json()).title !== 'Renamed desktop note') {
+  const renameDeadline = Date.now() + 3000;
+  let foundRenamedNote = false;
+  while (Date.now() < renameDeadline) {
+    const response = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`);
+    if (response.ok && (await response.json()).title === 'Renamed desktop note') {
+      foundRenamedNote = true;
+      break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (!foundRenamedNote) {
     throw new Error('Renaming a Markdown file outside the app lost the note.');
   }
   const beforeExternalEdit = await currentRevision();
   const renamedText = await fs.readFile(path.join(workspace, finderFilename), 'utf-8');
+  const duplicateFilename = `Duplicate--${note.id}.md`;
+  await fs.writeFile(path.join(workspace, duplicateFilename), renamedText.replace('Shared workspace', 'Duplicate should not replace note'));
+  await new Promise(resolve => setTimeout(resolve, 350));
+  const afterDuplicate = await fetch(`${url}/api/blocks/${encodeURIComponent(note.id)}`);
+  if (!afterDuplicate.ok || (await afterDuplicate.json()).content !== 'Shared workspace') {
+    throw new Error('A second Markdown file with the same ID replaced the original note.');
+  }
+  await fs.unlink(path.join(workspace, duplicateFilename));
   await fs.writeFile(path.join(workspace, finderFilename), renamedText.replace('Shared workspace', 'Changed in Finder'));
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
