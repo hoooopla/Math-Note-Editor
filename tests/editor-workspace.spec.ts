@@ -257,7 +257,9 @@ test('validates settings and supports keyboard dialog navigation', async ({ page
     await expect(page.getByRole('tab', { name: 'Math Macros' })).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('Home');
     await expect(page.getByRole('tab', { name: 'General Setting' })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByLabel('Current workspace')).toContainText('Local server · blocks');
+    const { workspaceName } = await (await page.request.get('/api/runtime')).json() as { workspaceName: string };
+    expect(workspaceName).toMatch(/^math-note-browser-tests-/);
+    await expect(page.getByLabel('Current workspace')).toContainText(`Local server · ${workspaceName}`);
     await keyboardTab.click();
 
     await page.getByLabel('Global Search Shortcut').fill('k');
