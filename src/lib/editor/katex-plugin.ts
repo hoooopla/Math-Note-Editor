@@ -2,6 +2,8 @@ import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetTy
 import { RangeSetBuilder, StateField, EditorState, Facet, StateEffect, Transaction } from "@codemirror/state";
 import katex from "katex";
 import { isTikzCdMath, renderTikzCd } from "./tikz-cd-renderer";
+import { mathRenderDiagnostic, renderMathError } from "./math-render-error";
+import { recoveryCandidates, RecoveryRange } from "./math-recovery";
 import { maskMathExplanations, prepareExplainedMath } from "./math-tooltip-syntax";
 import "katex/dist/katex.min.css"; 
 import { findHighlightField, findHighlightOverlaps, setFindHighlight } from "./find-highlight";
@@ -440,19 +442,121 @@ function tikzCdImage(src: string, alt: string, onLoad?: () => void) {
     return image;
 }
 
-function renderExplainedKatex(text: string, dom: HTMLElement, displayMode: boolean, macros: Record<string, string>) {
+function renderExplainedKatex(text: string, dom: HTMLElement, displayMode: boolean, macros: Record<string, string>,
+    throwOnError = true, recoveryId?: string) {
     const prepared = prepareExplainedMath(text);
     const allowed = new Set(prepared.explanations.map(item => item.id));
     katex.render(prepared.tex, dom, {
         displayMode,
-        throwOnError: true,
+        throwOnError,
+        errorColor: '#f2a7ac',
         macros: { ...macros },
-        trust: context => context.command === '\\htmlData' &&
-            Object.keys((context as { attributes?: Record<string, string> }).attributes || {}).length === 1 &&
-            allowed.has((context as { attributes?: Record<string, string> }).attributes?.['data-math-tooltip-id'] || ''),
+        trust: context => {
+            if (context.command !== '\\htmlData') return false;
+            const attributes = (context as { attributes?: Record<string, string> }).attributes || {};
+            return Object.keys(attributes).length === 1 && (
+                allowed.has(attributes['data-math-tooltip-id'] || '') ||
+                (recoveryId !== undefined && attributes['data-math-recovery-id'] === recoveryId)
+            );
+        },
         strict: code => code === 'htmlExtension' ? 'ignore' : 'warn'
     });
     return prepared;
+}
+
+function katexPositionMatchesSource(source: string) {
+    try { return prepareExplainedMath(source).tex === source; }
+    catch { return false; }
+}
+
+function renderPartialKatex(text: string, dom: HTMLElement, displayMode: boolean,
+    macros: Record<string, string>, error: unknown) {
+    if (!(error instanceof katex.ParseError) || !/^Undefined control sequence/.test(error.rawMessage)) return false;
+    try {
+        renderExplainedKatex(text, dom, displayMode, macros, false);
+        if (!dom.querySelector('.katex')) return false;
+        const sample = document.createElement('span');
+        sample.style.color = '#f2a7ac';
+        for (const token of dom.querySelectorAll<HTMLElement>('.katex-html .mord.text')) {
+            if (token.style.color === sample.style.color && token.textContent?.startsWith('\\')) {
+                token.classList.add('cm-math-unknown-command');
+            }
+        }
+        const note = document.createElement('span');
+        note.className = 'cm-math-partial-note';
+        note.textContent = displayMode ? `Error: ${error.rawMessage}` : '(unknown command)';
+        note.title = error.rawMessage;
+        dom.classList.add('cm-math-partial');
+        if (displayMode) {
+            const formula = dom.firstElementChild;
+            if (!formula) return false;
+            const row = document.createElement('div');
+            row.className = 'cm-math-partial-row';
+            row.append(formula, note);
+            dom.appendChild(row);
+        } else dom.appendChild(note);
+        return true;
+    } catch { return false; }
+}
+
+const recoveryPlans = new Map<string, RecoveryRange | null>();
+function renderRecoveredKatex(text: string, dom: HTMLElement, displayMode: boolean,
+    macros: Record<string, string>, error: unknown, onEdit?: (event: Event) => void): RecoveryRange | null {
+    if (!displayMode || !(error instanceof katex.ParseError) || text.length > 20_000) return null;
+    const key = `${text}\u0000${JSON.stringify(macros)}`;
+    const cached = recoveryPlans.get(key);
+    const candidates = cached === undefined ? recoveryCandidates(text, error.position).slice(0, 28)
+        : cached ? [cached] : [];
+    if (!candidates.length) return null;
+    const recoveryId = `recovery-${Math.random().toString(36).slice(2)}`;
+    const placeholder = `\\htmlData{math-recovery-id=${recoveryId}}{\\text{?}}`;
+    let best: RecoveryRange | null = null;
+    let bestDom: HTMLElement | null = null;
+    for (const candidate of candidates) {
+        const repaired = text.slice(0, candidate.from) + placeholder + text.slice(candidate.to);
+        const scratch = document.createElement('div');
+        try {
+            renderExplainedKatex(repaired, scratch, true, macros, true, recoveryId);
+            if (!scratch.querySelector('[data-math-recovery-id]')) continue;
+            if (!best || candidate.to - candidate.from < best.to - best.from) {
+                best = candidate;
+                bestDom = scratch;
+            }
+            if (candidate.to - candidate.from <= 2) break;
+        } catch { /* Try the next structural boundary. */ }
+    }
+    if (cached === undefined) {
+        recoveryPlans.set(key, best);
+        while (recoveryPlans.size > 64) recoveryPlans.delete(recoveryPlans.keys().next().value!);
+    }
+    if (!best || !bestDom) return null;
+    dom.replaceChildren(...bestDom.childNodes);
+    const target = dom.querySelector<HTMLElement>('[data-math-recovery-id]')!;
+    target.classList.add('cm-math-recovered-fragment');
+    target.removeAttribute('data-math-recovery-id');
+    target.setAttribute('aria-label', `Unrendered math source: ${text.slice(best.from, best.to)}`);
+    const source = document.createElement('code');
+    source.textContent = text.slice(best.from, best.to);
+    target.replaceChildren(source);
+    if (onEdit) {
+        target.setAttribute('role', 'button');
+        target.tabIndex = 0;
+        target.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') onEdit(event);
+        });
+    }
+    const note = document.createElement('span');
+    note.className = 'cm-math-partial-note cm-math-recovered-note';
+    note.textContent = `Error: ${error.rawMessage}`;
+    const formula = dom.firstElementChild;
+    if (formula) {
+        const row = document.createElement('div');
+        row.className = 'cm-math-partial-row';
+        row.append(formula, note);
+        dom.appendChild(row);
+    }
+    dom.classList.add('cm-math-partial');
+    return best;
 }
 
 class MathWidget extends WidgetType {
@@ -494,18 +598,36 @@ class MathWidget extends WidgetType {
         span.className = baseClass;
         span.style.cursor = this.isReadOnly ? "default" : "text";
         span.dataset.mathReadOnly = String(this.isReadOnly);
+        let errorSourceRange: { from: number; to: number } | undefined;
 
-        const focusSource = (e: Event, pos: number) => {
+        const focusSource = (e: Event, pos: number, head = pos) => {
             if (view.state.readOnly) return;
             e.preventDefault();
             e.stopPropagation();
             view.dispatch({
-                selection: { anchor: pos },
+                selection: { anchor: pos, head },
                 effects: setEditorFocus.of(true)
             });
             view.focus();
         };
-        const handleFocus = (e: Event) => focusSource(e, view.posAtDOM(span));
+        const focusErrorSource = (e: Event) => {
+            const widgetPos = view.posAtDOM(span);
+            const range = errorSourceRange && view.state.field(parsedRangesField).find(item =>
+                item.from === widgetPos && item.text === this.text &&
+                item.type === (this.isBlock ? 'blockMath' : 'inlineMath'));
+            if (!range) return focusSource(e, widgetPos);
+            const raw = view.state.doc.sliceString(range.from, range.to);
+            const inner = raw.indexOf(this.text);
+            if (inner < 0) return focusSource(e, widgetPos);
+            focusSource(e, range.from + inner + errorSourceRange!.from, range.from + inner + errorSourceRange!.to);
+        };
+        const handleFocus = (e: Event) => {
+            const target = e.target instanceof Element ? e.target.closest(
+                '.cm-math-render-error, .cm-math-unknown-command, .cm-math-partial-note, .cm-math-recovered-fragment') : null;
+            if (target || (errorSourceRange && span.classList.contains('cm-math-partial') &&
+                !span.querySelector('.cm-math-recovered-fragment'))) focusErrorSource(e);
+            else focusSource(e, view.posAtDOM(span));
+        };
         const explanationTargetAt = (event: Event) => {
             const direct = event.target instanceof Element
                 ? event.target.closest<HTMLElement>('[data-math-tooltip-id]') : null;
@@ -575,16 +697,16 @@ class MathWidget extends WidgetType {
         if (this.isBlock && isTikzCdMath(this.text)) {
             span.textContent = 'Rendering diagram…';
             span.classList.add('cm-tikzcd-loading');
-            void renderTikzCd(this.text).then(src => {
+            void renderTikzCd(this.text, this.macros).then(src => {
                 if (!span.isConnected) return;
                 const image = tikzCdImage(src, 'Commutative diagram');
                 span.replaceChildren(image);
                 span.classList.remove('cm-tikzcd-loading');
             }).catch(error => {
                 if (!span.isConnected) return;
-                span.textContent = this.text;
-                span.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
-                span.title = error instanceof Error ? error.message : String(error);
+                span.classList.remove('cm-tikzcd-loading');
+                renderMathError(span, mathRenderDiagnostic(error, this.text, 'tikz'), true,
+                    !this.isReadOnly && !this.isLinked, focusErrorSource);
             });
         } else {
             try {
@@ -644,10 +766,17 @@ class MathWidget extends WidgetType {
                         openExplanation(target);
                     });
                 }
-            } catch (e: any) {
-                span.innerText = this.text;
-                span.className = `${baseClass} text-red-500 bg-red-500/10 px-1 rounded`;
-                span.title = e.message;
+            } catch (error) {
+                const diagnostic = mathRenderDiagnostic(error, this.text, 'katex',
+                    katexPositionMatchesSource(this.text));
+                errorSourceRange = diagnostic.sourceRange;
+                if (!renderPartialKatex(this.text, span, this.isBlock, this.macros, error)) {
+                    const recovered = renderRecoveredKatex(this.text, span, this.isBlock, this.macros, error,
+                        !this.isReadOnly && !this.isLinked ? focusErrorSource : undefined);
+                    if (recovered) errorSourceRange = recovered;
+                    else renderMathError(span, diagnostic, this.isBlock,
+                        !this.isReadOnly && !this.isLinked, focusErrorSource);
+                }
             }
         }
         if (this.isBlock) {
@@ -706,9 +835,8 @@ function mathPreview(dom: HTMLElement, view: EditorView, displayMode: boolean, b
     const setRenderStatus = (status: "ready" | "loading" | "error") => {
         // CodeMirror adds cm-tooltip after creating the inline preview. Keep
         // that host-owned class when a later render changes our status classes.
-        dom.classList.remove("cm-tikzcd-loading", "text-red-500", "bg-red-500/10", "font-mono", "text-sm");
+        dom.classList.remove("cm-tikzcd-loading");
         if (status === "loading") dom.classList.add("cm-tikzcd-loading");
-        if (status === "error") dom.classList.add("text-red-500", "bg-red-500/10", "font-mono", "text-sm");
     };
     return {
         update(nextText: string, macros: Record<string, string>, immediate = false) {
@@ -721,13 +849,14 @@ function mathPreview(dom: HTMLElement, view: EditorView, displayMode: boolean, b
             diagramAbort = undefined;
             const render = () => {
                 if (destroyed) return;
+                dom.classList.remove('cm-math-partial');
                 if (displayMode && isTikzCdMath(nextText)) {
                     diagramAbort = new AbortController();
                     const signal = diagramAbort.signal;
                     dom.textContent = 'Rendering diagram…';
                     setRenderStatus("loading");
-                    void renderTikzCd(nextText, signal).then(src => {
-                        if (destroyed || text !== nextText || !dom.isConnected) return;
+                    void renderTikzCd(nextText, macros, signal).then(src => {
+                        if (signal.aborted || destroyed || text !== nextText || macrosKey !== nextKey || !dom.isConnected) return;
                         const image = tikzCdImage(src, 'Commutative diagram preview', () => {
                             if (!destroyed && dom.isConnected) view.requestMeasure();
                         });
@@ -735,18 +864,22 @@ function mathPreview(dom: HTMLElement, view: EditorView, displayMode: boolean, b
                         setRenderStatus("ready");
                         view.requestMeasure();
                     }).catch(error => {
-                        if (signal.aborted || destroyed || text !== nextText || !dom.isConnected) return;
-                        dom.textContent = nextText;
+                        if (signal.aborted || destroyed || text !== nextText || macrosKey !== nextKey || !dom.isConnected) return;
+                        renderMathError(dom, mathRenderDiagnostic(error, nextText, 'tikz'), true, false);
                         setRenderStatus("error");
-                        dom.title = error instanceof Error ? error.message : String(error);
                         view.requestMeasure();
                     });
                 } else {
                     try {
                         renderExplainedKatex(nextText, dom, displayMode, macros);
                         setRenderStatus("ready");
-                    } catch {
-                        dom.textContent = nextText;
+                    } catch (error) {
+                        if (!renderPartialKatex(nextText, dom, displayMode, macros, error)) {
+                            if (!renderRecoveredKatex(nextText, dom, displayMode, macros, error)) {
+                                renderMathError(dom, mathRenderDiagnostic(error, nextText, 'katex',
+                                    katexPositionMatchesSource(nextText)), displayMode, false);
+                            }
+                        }
                         setRenderStatus("error");
                     }
                     view.requestMeasure();

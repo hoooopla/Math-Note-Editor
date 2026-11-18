@@ -7,7 +7,41 @@ export function isTikzCdMath(source: string) {
     return end >= 0 && source.slice(end + closing.length).trim() === '';
 }
 
-type Pending = { id: number; source: string; signal?: AbortSignal; onAbort?: () => void;
+/** Translate the string expansions shared with KaTeX into TeX definitions. */
+export function tikzMacroDefinitions(macros: Record<string, string>): string {
+    const definitions: string[] = [];
+    for (const [name, body] of Object.entries(macros).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+        if (!/^\\[A-Za-z]+$/.test(name) || typeof body !== 'string' || body.length > 10_000) continue;
+        let depth = 0;
+        let argumentsUsed = 0;
+        let valid = true;
+        for (let i = 0; i < body.length; i++) {
+            if (body[i] === '\\' && i + 1 < body.length) {
+                i++;
+            } else if (body[i] === '{') {
+                depth++;
+            } else if (body[i] === '}') {
+                if (--depth < 0) valid = false;
+            } else if (body[i] === '%') {
+                valid = false;
+            } else if (body[i] === '#') {
+                const next = body[++i];
+                if (next !== '#') {
+                    if (!next || !/[1-9]/.test(next)) valid = false;
+                    else argumentsUsed = Math.max(argumentsUsed, Number(next));
+                }
+            }
+        }
+        if (!valid || depth !== 0) continue;
+        const parameters = Array.from({ length: argumentsUsed }, (_, index) => `#${index + 1}`).join('');
+        definitions.push(`\\def${name}${parameters}{${body}}`);
+    }
+    const result = definitions.join('\n');
+    if (result.length > 50_000) throw new Error('Diagram macros are too large.');
+    return result;
+}
+
+type Pending = { id: number; source: string; macroDefinitions: string; cacheKey: string; signal?: AbortSignal; onAbort?: () => void;
     resolve: (value: string) => void; reject: (error: Error) => void };
 const results = new Map<string, string>();
 const MAX_RESULTS = 64;
@@ -69,8 +103,8 @@ async function finish(error?: Error, svg?: string) {
             .replace(/(["'])(?:#fff(?:fff)?|white)\1/gi, '$1#1a1d23$1')
             .replace(/(["'])(?:#000(?:000)?|black)\1/gi, '$1#fff$1');
         const image = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(darkSvg)}`;
-        results.delete(job.source);
-        results.set(job.source, image);
+        results.delete(job.cacheKey);
+        results.set(job.cacheKey, image);
         while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
         job.resolve(image);
     } catch (reason) {
@@ -84,7 +118,8 @@ function runNext() {
     if (!ready || active || !frame?.contentWindow) return;
     active = queue.shift();
     if (!active) return;
-    frame.contentWindow.postMessage({ mathNoteTikz: true, id: active.id, source: active.source }, '*');
+    frame.contentWindow.postMessage({ mathNoteTikz: true, id: active.id, source: active.source,
+        macroDefinitions: active.macroDefinitions }, '*');
     timer = setTimeout(() => {
         // A timed-out engine may still be working. Restart it rather than
         // delivering a late image to the next job.
@@ -122,14 +157,21 @@ function onMessage(event: MessageEvent) {
     } else void finish(new Error('Diagram renderer returned invalid SVG.'));
 }
 
-export function renderTikzCd(source: string, signal?: AbortSignal): Promise<string> {
-    const cached = results.get(source);
-    if (cached) return Promise.resolve(cached);
+export function renderTikzCd(source: string, macros: Record<string, string> = {}, signal?: AbortSignal): Promise<string> {
     if (source.length > 50_000) return Promise.reject(new Error('Diagram source is too large.'));
+    let macroDefinitions: string;
+    try {
+        macroDefinitions = tikzMacroDefinitions(macros);
+    } catch (error) {
+        return Promise.reject(error);
+    }
+    const cacheKey = JSON.stringify([source, macroDefinitions]);
+    const cached = results.get(cacheKey);
+    if (cached) return Promise.resolve(cached);
     if (signal?.aborted) return Promise.reject(new DOMException('Rendering cancelled.', 'AbortError'));
     ensureFrame();
     return new Promise((resolve, reject) => {
-        const job: Pending = { id: ++sequence, source, signal, resolve, reject };
+        const job: Pending = { id: ++sequence, source, macroDefinitions, cacheKey, signal, resolve, reject };
         if (signal) {
             job.onAbort = () => {
                 const index = queue.indexOf(job);

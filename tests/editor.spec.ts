@@ -85,6 +85,51 @@ test('standout label context menu copies the full label without toggling the emb
     await expect(menu).toBeHidden();
 });
 
+test('standout labels keep math dollar signs in source order when clipped', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 700 });
+    const suffix = Date.now();
+    const label = String.raw`test:${suffix}/${'shared-'.repeat(16)}Cauchy--Schwarz inequality for $\R^n$`;
+    const target = await (await page.request.post('/api/blocks', {
+        data: { title: String.raw`Cauchy--Schwarz inequality for $\R^n$`, label, content: 'Proof' }
+    })).json() as { id: string };
+    const sourceLabel = `test:math-label-source-${suffix}`;
+    await page.request.post('/api/blocks', {
+        data: { title: 'Math label source', label: sourceLabel, content: `[[${encodeEmbeddedLabel(label, { standout: true })}]]` }
+    });
+    await openEditor(page);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const search = page.getByPlaceholder('Search blocks or create new...');
+    await search.fill(sourceLabel);
+    await search.press('Enter');
+    const labelChip = page.getByTestId(`standout-label-${target.id}`);
+    expect(await labelChip.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+    const checkOrder = async () => {
+        const positions = await labelChip.evaluate(element => {
+            const textNode = element.querySelector('bdi')?.firstChild;
+            if (!textNode?.textContent) return null;
+            const dollars = [...textNode.textContent.matchAll(/\$/g)].map(match => match.index);
+            if (dollars.length !== 2) return null;
+            const positions = dollars.map(index => {
+                const range = document.createRange();
+                range.setStart(textNode, index);
+                range.setEnd(textNode, index + 1);
+                return range.getBoundingClientRect().left;
+            });
+            const chip = element.getBoundingClientRect();
+            return { positions, left: chip.left, right: chip.right };
+        });
+        expect(positions).not.toBeNull();
+        expect(positions!.positions[1]).toBeGreaterThan(positions!.positions[0]);
+        expect(positions!.positions[1]).toBeGreaterThanOrEqual(positions!.left);
+        expect(positions!.positions[1]).toBeLessThan(positions!.right);
+    };
+    await labelChip.hover();
+    await checkOrder();
+    await labelChip.click();
+    await expect(page.getByTestId(`embedded-editor-host-${target.id}`)).toBeVisible();
+    await checkOrder();
+});
+
 test('long standout titles take space before the label grows', async ({ page }) => {
     await page.setViewportSize({ width: 1200, height: 800 });
     const suffix = Date.now();

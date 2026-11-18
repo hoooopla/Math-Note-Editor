@@ -25,12 +25,14 @@ new MutationObserver(records => {
 
 addEventListener('message', event => {
   if (event.source !== parent || current !== null || !event.data || event.data.mathNoteTikz !== true) return;
-  const { id, source } = event.data;
-  if (typeof id !== 'number' || typeof source !== 'string') return;
+  const { id, source, macroDefinitions = '' } = event.data;
+  if (typeof id !== 'number' || typeof source !== 'string' ||
+      typeof macroDefinitions !== 'string' || macroDefinitions.length > 50_000) return;
   current = id;
   const script = document.createElement('script');
   script.type = 'text/tikz';
-  script.textContent = '\\usepackage{tikz-cd}\n\\begin{document}\n' + source + '\n\\end{document}';
+  script.textContent = '\\usepackage{amsmath}\n\\usepackage{amssymb}\n\\usepackage{tikz-cd}\n' +
+    macroDefinitions + '\n\\begin{document}\n' + source + '\n\\end{document}';
   document.body.appendChild(script);
 });
 

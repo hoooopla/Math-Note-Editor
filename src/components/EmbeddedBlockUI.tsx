@@ -385,7 +385,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                                 <MathTitle text={renderedTitle} className="font-semibold" />
                                 {keyboardCaret}
                             </div>
-                            <span data-testid={`standout-label-${targetBlock.id}`} className="standout-label-tail min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50 opacity-0 group-hover/embed:opacity-100 transition-opacity" title={`${fullLabel}\nRight-click to copy label`} aria-label={`Label ${fullLabel}`} onContextMenu={openLabelMenu}>{fullLabel}</span>
+                            <span data-testid={`standout-label-${targetBlock.id}`} className="standout-label-tail min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50 opacity-0 group-hover/embed:opacity-100 transition-opacity" title={`${fullLabel}\nRight-click to copy label`} aria-label={`Label ${fullLabel}`} onContextMenu={openLabelMenu}><bdi dir="ltr">{fullLabel}</bdi></span>
                         </div>
                         <span className="text-secondary/40 hover:text-secondary opacity-0 group-hover/embed:opacity-100 transition-all mr-1" title="Cmd/Ctrl + Click to open in new tab">
                             <ExternalLink size={14} />
@@ -659,7 +659,7 @@ export function EmbeddedBlockUI({ text, parentLabel, visitedLabels = [], occurre
                     </span>
                     <span className="standout-title-label-group flex min-w-0 items-center gap-3 opacity-0 group-hover/embed:opacity-100 transition-opacity">
                         <span data-testid={`standout-label-${targetBlock.id}`} className="standout-label-tail min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-mono text-secondary/80 bg-background px-1.5 py-0.5 rounded-md border border-outline/50" title={`${fullLabel}\nRight-click to copy label`} aria-label={`Label ${fullLabel}`}
-                              onContextMenu={openLabelMenu}>{fullLabel}</span>
+                              onContextMenu={openLabelMenu}><bdi dir="ltr">{fullLabel}</bdi></span>
                         <span className="text-secondary/40 hover:text-secondary transition-colors" title="Cmd/Ctrl + Click to open in new tab"
                               onClick={(e) => {
                                   e.stopPropagation();

@@ -105,6 +105,98 @@ body {
   place-items: center;
 }
 
+.cm-math-render-error {
+  box-sizing: border-box;
+  font-family: var(--font-sans);
+  font-size: 1em;
+  line-height: 1.45;
+  color: var(--color-secondary);
+}
+
+.cm-math-render-error-block {
+  display: grid;
+  gap: .15rem;
+  width: fit-content;
+  max-width: min(100%, 38rem);
+  margin: .15rem auto;
+  padding: .2rem .55rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+  border-left: 2px solid color-mix(in srgb, #e06c75 75%, transparent);
+}
+
+.cm-math-render-error-inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .35em;
+  max-width: min(24em, 72vw);
+  padding: 0 .1em;
+  vertical-align: baseline;
+  white-space: nowrap;
+  overflow: hidden;
+  border-bottom: 1px dotted color-mix(in srgb, #e06c75 85%, transparent);
+}
+
+.cm-math-render-error-heading { color: #f2a7ac; font-weight: 600; }
+.cm-math-render-error-inline .cm-math-render-error-heading { flex: none; }
+.cm-math-render-error-inline .cm-math-render-error-message { overflow: hidden; text-overflow: ellipsis; }
+.cm-math-render-error-message { color: var(--color-secondary); }
+.cm-math-render-error-excerpt {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  color: var(--color-primary);
+  font-size: .95em;
+}
+.cm-math-render-error-excerpt mark {
+  color: #f2a7ac;
+  background: transparent;
+  text-decoration: underline dotted #e06c75;
+  text-underline-offset: .18em;
+}
+.cm-math-render-error-editable { cursor: text; }
+.cm-math-render-error-editable:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.cm-math-render-error-action { color: var(--color-accent); font-size: .9em; }
+
+.cm-math-partial-note {
+  margin-left: .4em;
+  color: #f2a7ac;
+  font-family: var(--font-sans);
+  font-size: .85em;
+  white-space: nowrap;
+}
+.cm-math-partial-row { display: flex; flex-direction: column; align-items: stretch; gap: .15em; }
+.cm-math-partial-row .katex-display { min-width: 0; max-width: 100%; }
+.cm-math-partial-row .cm-math-partial-note {
+  margin: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.cm-math-unknown-command {
+  display: inline-block;
+  border: 1px solid #e06c75;
+  border-radius: .22em;
+  padding: 0 .12em;
+  background: color-mix(in srgb, #e06c75 9%, transparent);
+}
+.cm-math-recovered-fragment {
+  display: inline-block;
+  position: relative;
+  z-index: 2;
+  border: 1px solid #e06c75;
+  border-radius: .22em;
+  padding: 0 .12em;
+  color: #f2a7ac;
+  background: color-mix(in srgb, #e06c75 9%, transparent);
+  font-family: var(--font-mono);
+  cursor: text;
+}
+.cm-math-recovered-fragment:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.cm-math-recovered-fragment code { font-size: .85em; white-space: pre; }
+
 .cm-math-rendered {
   max-width: 100%;
   overflow-x: auto;
